@@ -1,0 +1,30 @@
+logLevel: info
+logDestinations: [stdout]
+
+# MediaMTX 會先呼叫本機 Transformers API，通過授權後才允許推流端或讀取端連線。
+authMethod: http
+authHTTPAddress: http://127.0.0.1:8001/v1/live/mediamtx/auth
+authHTTPExclude: []
+
+# RTSP/TCP 通常可通過主機防火牆，不必另外開放 RTP UDP 連接埠範圍。
+rtsp: true
+rtspTransports: [tcp]
+rtspAddress: :8554
+
+# RTMP 可作為另一種推流協定。
+rtmp: true
+rtmpAddress: :1935
+
+# 此部署只需要 RTSP／RTMP 輸入，以及 API 透過 RTSP 讀取串流。
+hls: false
+webrtc: false
+srt: false
+moq: false
+playback: false
+api: false
+metrics: false
+pprof: false
+
+paths:
+  all_others:
+

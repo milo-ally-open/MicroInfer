@@ -1,0 +1,26 @@
+# Python environments and bytecode
+.venv/
+__pycache__/
+*.py[cod]
+
+# Hugging Face 快取與模型權重（包含無副檔名的 blobs）
+/checkpoints/**
+!/checkpoints/val.md
+!/checkpoints/val.xlsx
+**/.cache/
+**/models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# Runtime outputs
+/logs/
+/results/
+*.log
+*.pid
+
+# Local secrets
+.env
+.env.*
+!.env.example

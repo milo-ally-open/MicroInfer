@@ -1,0 +1,10 @@
+# 模型別名及其推論、網路、媒體設定與服務入口集中登錄於此。
+default_model: mage-vl-4b
+default_backend: transformers
+models:
+  mage-vl-4b:
+    display_name: Mage-VL-4B
+    inference_config: src/inference/mage_vl_4b/configs/inference.yml
+    network_config: src/inference/mage_vl_4b/configs/network.yml
+    media_config: src/inference/mage_vl_4b/configs/mediamtx.yml
+    service_entrypoint: src/inference/mage_vl_4b/main.py

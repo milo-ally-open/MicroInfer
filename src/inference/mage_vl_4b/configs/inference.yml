@@ -1,0 +1,132 @@
+hardware:
+  expected_gpu: NVIDIA GeForce RTX 4090
+
+model:
+  # id 是 Hugging Face 上游模型識別碼，與本專案的 mage-vl-4b 別名不同，請勿改寫。
+  id: microsoft/Mage-VL
+  revision: d88b153285f1633a61b2f693c59c8576693af185
+  dtype: bfloat16
+  device_map: auto
+  # 請先確認此模型版本與已安裝的核心均相容，再設定為 sdpa 或 flash_attention_2。
+  attn_implementation: null
+  experts_implementation: null
+  # Hugging Face 核心映射為選用功能；啟用前請固定並檢視遠端核心來源。
+  use_kernels: false
+  kernel_config: null
+  use_safetensors: true
+  weights_only: true
+  offload_buffers: false
+  disable_mmap: null
+  # Accelerate 選用卸載目錄；若模型完全常駐 GPU，請維持 null。
+  offload_folder: null
+  quantization:
+    # 可選 none、nf4、int8 或 prequantized；後者使用模型權重內附的量化中繼資料。
+    method: none
+    quant_type: nf4
+    double_quant: true
+    compute_dtype: bfloat16
+    quant_storage: null
+    llm_int8_enable_fp32_cpu_offload: false
+    llm_int8_threshold: 6.0
+    llm_int8_has_fp16_weight: false
+    llm_int8_skip_modules: null
+    gpu_max_memory: 22GiB
+    cpu_max_memory: null
+
+processor:
+  # 除非已確認快速處理器可用，否則交由 Transformers 選擇處理器實作。
+  use_fast: null
+
+backend:
+  name: transformers
+
+runtime:
+  hf_home: checkpoints
+  hf_endpoint: https://huggingface.co
+  local_files_only: false
+  hf_hub_disable_xet: true
+  hf_hub_download_timeout_seconds: 120
+  environment: {}
+  conda_env: magevl-transformers
+  python_venv: .venv/magevl-transformers
+  cuda_visible_devices: null
+  uvicorn_workers: 1
+  uvicorn_log_level: info
+  uvicorn_access_log: true
+  uvicorn_timeout_keep_alive_seconds: 5
+  startup_timeout_seconds: 2400
+  startup_poll_interval_seconds: 2
+  startup_log_file: logs/transformers-startup.log
+  startup_result_file: logs/transformers-startup.json
+
+api:
+  image_resampling: lanczos
+  max_image_side: 896
+  max_images_per_request: 1
+  max_image_bytes: 10485760
+  max_image_pixels: 16777216
+  max_chat_request_bytes: 15728640
+  max_video_bytes: 209715200
+  max_video_request_bytes: 210763776
+  max_video_duration_seconds: 120
+  video_max_frames: 16
+  video_max_frame_side: 896
+  video_backend: frames
+  codec:
+    engine: hevc
+    target_canvas: 32
+    max_pixels: 150000
+    timeout_seconds: 900
+    ffmpeg_bin: ffmpeg
+    ffprobe_bin: ffprobe
+  live_stream:
+    video_backend: frames
+    sample_interval_seconds: 2
+    window_seconds: 8
+    max_duration_seconds: 3600
+    max_sessions: 1
+    open_timeout_seconds: 10
+    read_timeout_seconds: 5
+    reconnect_interval_seconds: 2
+    codec_target_canvas: 16
+    codec_max_pending_segments: 2
+
+  max_context_tokens: 8192
+  max_new_tokens: 512
+  max_concurrent_requests: 4
+  image_url_timeout_seconds: 10
+  stream_timeout_seconds: 300
+
+generation:
+  max_tokens_default: 128
+  temperature: 0.0
+  top_p: 1.0
+  top_k: 50
+  min_p: null
+  repetition_penalty: 1.0
+  no_repeat_ngram_size: 0
+  num_beams: 1
+  use_cache: true
+  # HF 快取實作為選用設定；模型支援時可選 dynamic、static、offloaded、offloaded_static、quantized、
+  # hybrid、hybrid_chunked、offloaded_hybrid 或 offloaded_hybrid_chunked。
+  cache_implementation: null
+  cache_config: null
+  # 進階實驗可在此加入 GenerationMixin 參數；API 安全限制仍會生效。
+  advanced_kwargs: {}
+
+optimization:
+  pytorch:
+    allow_tf32: true
+    cudnn_allow_tf32: true
+    cudnn_benchmark: false
+    float32_matmul_precision: high
+  torch_compile:
+    # 此功能仍屬實驗性；編譯可能增加啟動時間與記憶體用量，模型遠端程式碼也可能造成計算圖中斷。
+    enabled: false
+    backend: inductor
+    mode: default
+    fullgraph: false
+    dynamic: true
+
+
+
