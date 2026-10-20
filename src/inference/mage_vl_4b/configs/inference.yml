@@ -66,6 +66,7 @@ api:
   max_image_bytes: 10485760
   max_image_pixels: 16777216
   max_chat_request_bytes: 15728640
+  max_live_request_bytes: 65536
   max_video_bytes: 209715200
   max_video_request_bytes: 210763776
   max_video_duration_seconds: 120

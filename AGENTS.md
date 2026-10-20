@@ -7,9 +7,9 @@
 ## 目前狀態
 
 - `src/inference/` 已有 Mage-VL-4B 的 Transformers 推論 API、模型登錄表及啟動器。
-- `src/gateway/` 目前是 Go 閘道的目錄骨架，尚未實作 Go 服務。目錄職責見 `src/gateway/README.md`。
+- `src/gateway/` 已實作 Go API 閘道 v1；目前能力與限制見 `src/gateway/README.md` 及 `docs/Specifications/gateway/`。
 - 目前已登錄的模型為 `mage-vl-4b`，上游模型是 `microsoft/Mage-VL`。不要把專案別名和 Hugging Face `repo_id` 混為一談。
-- SGLang、vLLM 和 Go 閘道未列為目前已實作功能；除非使用者提出要求，不要將規劃中的功能寫成已完成。
+- SGLang、vLLM 和第二個模型尚未實作；不要將規劃中的功能寫成已完成。Go 閘道 v1 已實作，但仍須依實際驗收證據描述其能力，不代表已部署或通過真實模型整合。
 
 ## 重要目錄與文件
 
@@ -18,7 +18,7 @@ checkpoints/                         # 本機模型權重與 Hugging Face 快取
 docs/                                # 專案文件
 scripts/download.py                  # 通用 Hugging Face 模型下載工具
 scripts/README.md                    # 下載工具使用說明
-src/gateway/                         # Go API 閘道骨架
+src/gateway/                         # Go API 閘道與 route/stream/upstream/videoproxy 模組
 src/inference/                       # 推論模型登錄、啟動器與 API
 src/inference/model_registry.yaml    # 模型別名與設定檔登錄
 src/inference/mage_vl_4b/            # Mage-VL-4B Transformers 服務
@@ -29,10 +29,10 @@ tests/                               # 測試目錄
 
 ## 架構邊界
 
-- 閘道層預計負責客戶端認證與 API Key、租戶識別、請求政策、限流、路由、可觀測性，以及視訊請求和 SSE 回應的轉送。
+- 閘道層負責客戶端認證與 API Key、租戶識別、請求政策、限流、路由、可觀測性，以及視訊請求和 SSE 回應的轉送。
 - 推論層負責模型權重與生命週期、影像／視訊理解、生成及 GPU 資源管理。不要把模型推論或 GPU 管理移入閘道。
 - MediaMTX 是即時推流時使用的 sidecar，不是模型服務或 API 閘道。圖片與上傳視訊檔案流程不應要求 MediaMTX。
-- 推論 API 預設為 `127.0.0.1:8001`；未來閘道預留 `8000`。實際端點以目前設定檔為準，不要在程式中另行硬編碼。
+- 推論 API 預設為 `127.0.0.1:8001`；Gateway 預設監聽 `127.0.0.1:8000`。實際端點以目前設定檔為準，不要在程式中另行硬編碼。
 - `/v1/chat/completions` 支援文字／圖片輸入與 SSE 文字輸出。視訊檔案理解及即時視訊輸入依各自 API 逐段／單次回應；「流式輸出」指模型文字 token 的 SSE 輸出，不代表視訊輸入必須逐 token 或逐影格回傳。
 
 ## 設定與權重

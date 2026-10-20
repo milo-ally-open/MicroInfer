@@ -80,8 +80,8 @@ async def limit_api_request_content_length(request: Request, call_next: Any) -> 
     limits = {
         "/v1/chat/completions": ("Chat request", inference.MAX_CHAT_REQUEST_BYTES),
         "/v1/videos/understand": ("Video upload request", inference.MAX_VIDEO_REQUEST_BYTES),
-        "/v1/live/sessions": ("Live session request", 64 * 1024),
-        "/v1/live/mediamtx/auth": ("MediaMTX authorization request", 64 * 1024),
+        "/v1/live/sessions": ("Live session request", inference.MAX_LIVE_REQUEST_BYTES),
+        "/v1/live/mediamtx/auth": ("MediaMTX authorization request", inference.MAX_LIVE_REQUEST_BYTES),
     }
     configured_limit = limits.get(request.url.path) if request.method == "POST" else None
     if configured_limit is not None:

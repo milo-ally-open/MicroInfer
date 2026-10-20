@@ -12,6 +12,8 @@
 
 三個設定檔目前位於 `src/inference/mage_vl_4b/configs/`；Python 依賴清單與鎖定檔位於 `src/inference/mage_vl_4b/requirements/`。`model_registry.yaml` 保存預設設定路徑及 `main.py` 服務入口；明確指定命令列設定時，該次啟動會以命令列路徑覆蓋相應的登錄表路徑。
 
+`inference.yml` 的 `api.max_chat_request_bytes`、`api.max_live_request_bytes`、`api.max_video_request_bytes` 與 `api.max_video_bytes` 分別控制聊天本文、live 建立／MediaMTX callback 本文、視訊 multipart 本文及單一視訊檔案上限。Gateway 的相應本文上限不得高於推論設定。目前 API 實作要求聊天內容至少包含一個 `image_url`；純文字聊天會回 HTTP 400，README 的 API 範圍說明與此行為差異仍待產品契約確認。
+
 ## 完整啟動順序
 
 啟動依賴順序如下：
@@ -81,4 +83,4 @@ MediaMTX 啟動後，客戶端才建立即時工作階段、依回應中的 RTSP
 - `POST /v1/videos/understand`：上傳視訊檔案並取得理解結果。
 - `/v1/live/*`：即時視訊工作階段 API；需另行啟動 MediaMTX。
 
-`requirements/requirements.txt` 列出直接依賴，`requirements/requirements-lock.txt` 固定環境套件版本。瀏覽器展示頁與 Python 客戶端範例位於 `examples/`。
+`requirements/requirements.txt` 列出直接依賴，`requirements/requirements-lock.txt` 固定環境套件版本。端到端 Python 客戶端範例位於專案根目錄的 `example.py`，透過 Go Gateway 呼叫推論服務。

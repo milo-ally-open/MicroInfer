@@ -1,0 +1,59 @@
+listener:
+  host: 127.0.0.1
+  port: 8000
+
+# 設定為外部客戶端可到達的 Gateway URL；TLS 可由前置 Proxy 終止。
+public_base_url: http://127.0.0.1:8000
+
+upstream:
+  base_url: http://127.0.0.1:8001
+  max_idle_connections: 100
+  max_idle_connections_per_host: 20
+  idle_connection_seconds: 90
+  tcp_keepalive_seconds: 30
+  expect_continue_seconds: 1
+
+# 對外別名與推論服務的識別碼分開保存。首版只登錄已實作的模型。
+models:
+  mage-vl-4b:
+    upstream_model: microsoft/Mage-VL
+    base_url: http://127.0.0.1:8001
+
+limits:
+  chat_request_bytes: 15728640
+  video_request_bytes: 210763776
+  live_request_bytes: 65536
+  json_response_bytes: 20971520
+  sse_event_bytes: 1048576
+  max_header_bytes: 1048576
+  stream_buffer_bytes: 32768
+
+timeouts:
+  connect_seconds: 10
+  request_seconds: 300
+  video_request_seconds: 900
+  stream_idle_seconds: 60
+  stream_max_seconds: 900
+  readiness_seconds: 3
+  read_header_seconds: 10
+  idle_connection_seconds: 60
+  shutdown_grace_seconds: 30
+
+# 單執行個體 token bucket；Gateway 重啟後計數重設。
+rate_limit:
+  requests_per_second: 5
+  burst: 10
+
+# 機密由程序環境指定檔案路徑或簽章金鑰，不寫入此 YAML。
+auth:
+  api_keys_file_env: GATEWAY_API_KEYS_FILE
+
+session:
+  hmac_keys_env: GATEWAY_SESSION_HMAC_KEYS
+  # 至少覆蓋推論 live 工作階段最長時間；舊金鑰需保留至簽發句柄到期。
+  handle_ttl_seconds: 3660
+
+observability:
+  log_level: info
+  metrics_enabled: true
+  metrics_path: /metrics
