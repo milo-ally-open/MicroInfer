@@ -129,7 +129,7 @@
 - **AC-34.1** 線上 `TokenScheduler.schedule_batch()` 呼叫 `engine/batch_planner.py`，批次尊重活動序列數與 scheduled-token 上限；同一階段的多個 decode 各分配一個 token，多個完整 prompt prefill 可共用一批。
 - **AC-34.2** 每個批次中的 request ID 唯一；規劃輸入進度或限制無效時明確拋出 `ValueError`。目前線上不切分 prefill，也不混合 prefill/decode。
 - **AC-34.3** `KVCacheManager.reserve_batch()` 以全有或全無方式建立邏輯 lease；容量不足不改變已用 block 狀態，成功 lease 可個別釋放並重用 block ID。此 helper 目前不接入線上 Engine 准入。
-- **AC-34.4** Engine 將 `ScheduledBatch` 傳至 `Worker.execute_batch()`，並驗證逐 request 結果；Mage-VL Runner 目前仍逐筆 forward。文件不得因此宣稱 tensor-level batched forward、continuous batching 或實體 GPU cache page。
+- **AC-34.4** Engine 將 `ScheduledBatch` 傳至 `Worker.execute_batch()`，並驗證逐 request 結果；Mage-VL 對相容輸入可用單次多序列 forward，不相容時逐 request fallback。此能力不代表 continuous batching 或實體 GPU cache page。
 
 ### REQ-35：提供不依賴推論服務 import 的 Mage-VL 能力探測範例
 
@@ -220,3 +220,4 @@
 | 2026-10-20 | 重新定義 vLLM 職責參考下的五元件最小 Engine，補上 Token Scheduler、KV block manager、子程序 Worker 與逐步 Runner 的可驗收行為。 |
 | 2026-10-20 | 新增尚未接入線上路徑的批次規劃／原子 KV lease 驗收規格，以及 scripts 下的離線能力探測範例。 |
 | 2026-10-22 | 將 REQ-34 更新為線上同階段批次規劃，新增 fused Runner batch、chunked/mixed scheduling、實際 Cache lifecycle 與 EngineClient 程序邊界的後續驗收條件。 |
+| 2026-10-22 | 完成 REQ-38：Mage-VL 相容請求共用多序列 prefill/decode forward，Cache 分離回每個 request；文字 SSE 仍逐 token 發送。假模型 CPU 驗證範例已加入，未在此工作區執行。 |

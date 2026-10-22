@@ -38,7 +38,7 @@
 
 - 不接入 vLLM/SGLang，不增加模型或模型精度測試。
 - 不載入真實權重或啟動 GPU；本地模型程式與權重鍵相容性須後續整合驗收。
-- 不實作 GPU 實體分頁 cache、prefix cache、KV eviction／offload、chunked prefill、batched forward、多 GPU 或多 Engine Core。
+- 不實作 GPU 實體分頁 cache、prefix cache、KV eviction／offload、chunked prefill、多 GPU 或多 Engine Core。
 - 不把批次規劃 helper 接入線上 Scheduler／Worker；不宣稱已支援 continuous batching。
 - 不改 Go Gateway，不改 API 路徑及既有外部 response schema。
 - 重用已存在於 Git 忽略 `checkpoints/` 的固定 revision 快照，不重複下載或修改權重；不載入模型、不啟動 GPU／MediaMTX、不操作遠端伺服器、不提交或推送。

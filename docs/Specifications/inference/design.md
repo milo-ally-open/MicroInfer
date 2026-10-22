@@ -73,10 +73,10 @@ API Server process
 - Prefill 是完整 prompt 的單一 turn，Scheduler 將 `prompt_tokens` 作為該輪預算。由於尚未實作 chunked prefill，prompt 必須不超過 `max_num_scheduled_tokens`。
 - Decode 每個 turn 僅分配一個 token。完成當輪後，未完成 request 放回佇列尾端，讓其他活動序列先執行。
 - `batch_planner.py` 目前規劃同階段 prefill 或 decode 批次，尊重活動序列與 token 預算；`batch_wait_seconds` 給近時到達請求一個短暫合併窗口。
-- 目前不切分 prefill，不混合 prefill 與 decode。批次內 Mage-VL Runner 仍逐 request 執行獨立 forward，未合併成一次 GPU forward。
+- 目前不切分 prefill，不混合 prefill 與 decode。相容的同階段請求已可在 Mage-VL Runner 共用一次模型 forward；Cache 長度或輸入張量結構不相容時逐 request fallback。
 - 等待佇列滿時回傳 `429`；取消、模型錯誤及串流中斷均從排程狀態移除 request。
 
-`engine/batch_planner.py` 由線上 `TokenScheduler.schedule_batch()` 呼叫，輸出 `ScheduledBatch` 並由 Engine Core 傳至 Worker。Runner 目前依序執行批次中的 work items；批次 RPC 與共用 token 規劃已接入，但不代表 tensor-level batched forward、chunked prefill、混合排程或 continuous batching。
+`engine/batch_planner.py` 由線上 `TokenScheduler.schedule_batch()` 呼叫，輸出 `ScheduledBatch` 並由 Engine Core 傳至 Worker。Mage-VL Runner 對相容的同階段請求合併多模態張量並執行一次多序列 forward；輸入鍵／張量維度或 Cache 結構不相容時逐請求 fallback。Prefill 以左側 padding 對齊 token 序列，分離 Cache 時剪除 padding 的 KV，因此每個 request 的 Cache 長度仍對應實際 prompt 長度；decode 僅合併 Cache 長度及 layer 張量相容的請求。此處不包括 chunked prefill、混合排程或 continuous batching。
 
 ### KV Cache Manager
 
@@ -84,13 +84,13 @@ API Server process
 
 Worker 內的模型保留 Transformers Cache tensor；Engine 的 block table用於容量准入與生命週期追蹤，尚未映射成 attention 層可直接索引的實體 GPU page。因此目前不支援物理 block 重排、prefix/prompt cache reuse、KV eviction 或 VRAM 池化。`/health` 的 `kv_cache.estimated_bytes` 是估算預留量，不等於 CUDA 實際配置。
 
-`KVCacheManager.reserve_batch()` 為規劃中的批次排程提供全有或全無的邏輯 block 預留；容量不足時不會留下部分 lease。這是容量帳本操作，不會把多個 request 的 Transformers Cache tensor 合併，也不會改變線上 Engine 目前逐 request 的 `reserve()` 呼叫。
+`KVCacheManager.reserve_batch()` 為規劃中的批次排程提供全有或全無的邏輯 block 預留；容量不足時不會留下部分 lease。這是容量帳本操作，不會管理 Runner 持有的每 request Transformers Cache tensor，也不會改變線上 Engine 目前逐 request 的 `reserve()` 呼叫。
 
 ### Worker／Model Runner
 
 `engine/worker.py` 定義 `ModelWorker`、保留供單元測試使用的 `InProcessModelWorker`，並由線上 app 使用 `MultiprocessModelWorker`。Worker 子程序在啟動時載入 Adapter／Runner；父程序不持有模型權重。
 
-Runner 的生成狀態以 request ID 保存輸入 IDs、attention mask、`past_key_values`、抽樣設定和產生 token。`prefill_generation()` 首次送入多模態輸入並得到首 token；後續 `decode_generation_step()` 使用 cache，只餵新 token，避免重跑視覺 Encoder。每個 request 完成或取消時釋放生成狀態。
+Runner 的生成狀態以 request ID 保存輸入 IDs、attention mask、`past_key_values`、抽樣設定和產生 token。`prefill_generation()` 首次送入多模態輸入並得到首 token；後續 `decode_generation_step()` 使用 cache，只餵新 token，避免重跑視覺 Encoder。相容請求共用一次 forward 後，輸出 Cache 會拆回獨立 request 狀態；每個 request 完成或取消時釋放生成狀態。API 仍透過逐 token text event 輸出文字 SSE。
 
 目前 sampler 僅接受單序列、`num_beams=1`、`use_cache=true`，及 greedy／temperature／top-k／top-p／min-p／repetition penalty／no-repeat n-gram。自訂 generation kwargs、不同 Cache implementation、beam search 不可用；模型不支援 cache step 接口時 Worker 啟動／請求會以明確錯誤失敗。
 
@@ -126,7 +126,7 @@ Runner 的生成狀態以 request ID 保存輸入 IDs、attention mask、`past_k
 
 ## nano-vLLM 參考與本專案候選設計
 
-> 本節依 nano-vLLM 的 Engine／Scheduler／Runner 協作方式評估本專案現況；已接入線上的同階段批次仍逐 request forward，實體 KV page 尚未實作。
+> 本節依 nano-vLLM 的 Engine／Scheduler／Runner 協作方式評估本專案現況；相容的 Mage-VL 同階段批次已共用一次 forward，實體 KV page 尚未實作。
 
 ### 可借鑑的設計
 
@@ -140,11 +140,11 @@ nano-vLLM 的公開範例以文字 prompt 呼叫 Qwen3，並以自訂 attention/
 | Engine Core | 驅動每輪排程、執行及結果回收 | 統一管理推論請求狀態，協調 Scheduler、Worker 和每請求事件輸出 |
 | Scheduler | 從等待／執行序列選取本輪工作及 token 數 | 線上已透過 `batch_planner` 產生同階段多筆計畫；chunked prefill／prefill-decode 混合仍待模型 Cache 能力驗證 |
 | KV Cache Manager | 管理可由模型注意力實際索引的 KV blocks | 先保留容量帳本；只有 Runner／attention 能讀寫實體 page 後，才稱為實體 KV block manager |
-| Worker／Model Runner | 批次準備張量、執行模型並管理 GPU cache | Worker 子程序獨佔模型、GPU tensor 和 Transformers Cache；批次 RPC 已接入，但 Runner 目前分別執行各 request 的 forward |
+| Worker／Model Runner | 批次準備張量、執行模型並管理 GPU cache | Worker 子程序獨佔模型、GPU tensor 和 Transformers Cache；相容輸入使用多序列 forward，不相容輸入逐 request fallback |
 
 ### 對照目前版本
 
-Engine Core 背景迴圈管理本輪 Worker 批次與逐 request 事件；request 的準備／adapter task／Runner cache 仍分別由 Engine caller、Adapter 和 Runner 持有。Scheduler 已將 `batch_planner.py` 接在線上同階段 prefill/decode 路徑，Worker RPC 一次可傳多筆 work item；Mage-VL Runner 仍依序呼叫單 request forward。`KVCacheManager` 只記錄邏輯容量和 lease，實際 `past_key_values`／Transformers Cache tensor 留在 Worker，尚無供 attention 使用的實體 page table。這與 nano-vLLM 的融合批次執行和實體 KV block 管理仍有差距。
+Engine Core 背景迴圈管理本輪 Worker 批次與逐 request 事件；request 的準備／adapter task／Runner cache 仍分別由 Engine caller、Adapter 和 Runner 持有。Scheduler 已將 `batch_planner.py` 接在線上同階段 prefill/decode 路徑，Worker RPC 一次可傳多筆 work item；Mage-VL Runner 已對相容輸入執行單次多序列 forward，Cache 仍由 Runner 的 request state 持有。`KVCacheManager` 目前只記錄 Engine 端邏輯容量和 lease，尚無供 attention 使用的實體 page table。這與 nano-vLLM 的實體 KV block 管理仍有差距。
 
 ### 建議的最小目標形狀
 
@@ -165,9 +165,9 @@ Worker 已是獨立程序，因此 GPU tensor、cache tensor 及實體 KV page �
 
 ### KV Cache 與排程的遷移順序
 
-1. 擴充 `scripts/mage_vl_4b/test.py` 或另加不匯入 `src/` 的假模型測試，記錄兩筆以上圖片／影片輸入的 tensor 相容性及各自 Cache 長度；目前能力探測仍以單一輸入為主。
-2. 為形狀相容的輸入實作一次多 request forward，並以 fake model 驗證 batch 維度、結果映射、取消與 Cache 隔離；不相容的輸入明確 fallback。
-3. 多序列 Cache 驗收後，再實作 chunked prefill 與 prefill/decode 混合排程；視覺特徵只能在首次前向處理，不能因文字 chunk 重複編碼。
+1. 已為相容的多模態輸入實作一次多 request forward；新增假模型 CPU 驗證範例，涵蓋合併 batch、結果映射、不同長度 prefill 的 Cache 去 padding，及相同 Cache 長度 decode。此範例因工作區 Python 未安裝 PyTorch而尚未執行。
+2. 固定 revision Mage-VL 對相容輸入共用一次 forward，不相容輸入明確退回單 request 路徑；真實圖片／影片 batch 及 GPU 行為仍待模型環境驗收。
+3. 下一步實作 chunked prefill 與 prefill/decode 混合排程；視覺特徵只能在首次前向處理，不能因文字 chunk 重複編碼。
 4. 讓 KV 管理契約連到 Worker 內每 request 的 Transformers Cache handle／長度／釋放；在 attention 消費 block table 前仍只稱為 Cache lifecycle 管理，不稱實體 paged block。
 5. 以 `EngineClient` 分離 API Server 與 Engine Core，保留現有 Worker 子程序；完成後再量測 mixed chat、影片及 Live 的吞吐、SSE 首 token 延遲、後續 token 間隔、取消回收和顯存峰值。
 

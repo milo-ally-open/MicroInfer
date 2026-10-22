@@ -1,7 +1,7 @@
 """定義推論引擎元件的線上契約與排程資料結構。
 
 Engine 請求可帶小型資料或本機媒體參照，不傳影片 bytes、GPU tensor 或模型 Cache。
-Worker 批次入口已接入現行路徑；Mage-VL Runner 暫時限制每批一個 work item。
+Worker 批次入口已接入現行路徑；Mage-VL Runner 會合併相容輸入，不相容時逐請求執行。
 """
 
 from __future__ import annotations
