@@ -30,6 +30,8 @@
 
 Scheduler 為活動 chat、影片及 Live 工作每輪分配 token 預算；滿載時等待佇列耗盡後回 `429`。prefill 不切塊，完整 prompt 必須不大於 `engine.max_num_scheduled_tokens`。每輪只執行一個 request，尚無 batched forward 或 continuous batching。
 
+Engine 已將每輪工作經 `Worker.execute_batch(requests)` 傳到 Mage-VL `ModelRunner.execute_batch(requests)`；目前 Runner 明確限制每批一個 request，這是穩定介面，不代表多請求共用一次模型 forward。文字 SSE 仍由逐 token `text` 事件輸出。
+
 Engine 對每個生成請求依序執行輸入準備、KV 容量預留、Scheduler 准入、Worker prefill／decode、狀態更新及事件發布。成功、拒絕、取消、Worker 逾時或異常均經同一個 `finally` 收尾，回收 Scheduler 名額與邏輯 KV reservation，並取消可能部分建立的 Runner 狀態。`stream_chat()` 逐個 token 發出文字事件；API 路由將其序列化為 OpenAI SSE chunk，取消 HTTP 串流時會關閉生成 iterator 以觸發收尾。
 
 `engine/batch_planner.py` 提供可單獨測試的批次規劃邏輯，能依 decode／prefill token 預算、序列上限、chunk 大小及輪轉 cursor 建立純資料計畫；`KVCacheManager.reserve_batch()` 能原子預留一組邏輯 lease。兩者目前均未接入線上 Engine／Worker，不能據此宣稱服務已支援 chunked prefill 或 batched inference。

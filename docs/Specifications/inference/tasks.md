@@ -34,6 +34,7 @@
 - [x] **T-33 同步元件架構文件並執行無 GPU 驗收** — 範圍：Inference Spec、`src/inference/README.md`、`tests/inference/`；交付：記錄固定 revision 調研、元件邊界、顯存載入時序限制與驗收結果；覆蓋：REQ-36 / AC-36.1、AC-36.2、AC-36.3、AC-36.4、AC-36.5、AC-36.6、AC-36.7；依賴：T-30、T-31、T-32；狀態（當時）：40 項 Inference 測試、7 項 end-to-end 契約測試、Spec 校驗、compileall、test.py `--help`、`test.yaml` YAML 解析與 `git diff --check` 通過；未載入模型或執行 GPU 驗收。
 - [x] **T-34 將固定 revision 模型定義拆入 Mage-VL 模型包** — 範圍：`models/mage_vl_4b/components/`、`tests/inference/test_source_contract.py`、Inference Spec／README；交付：本地設定、輸出、視覺元件／視覺塔、多模態模型、生成頭、Gate 及上游授權檔案；Worker 改載入模型包中的生成類別，並在載入權重前核對 revision；覆蓋：REQ-37 / AC-37.1、AC-37.2、AC-37.3、AC-37.4、AC-37.5；依賴：T-30、T-31；狀態：程式已拆分，既有來源契約已依本地載入方式更新；語法編譯通過；未載入權重，未驗證 state-dict 整合、服務啟動或 GPU 行為。
 - [ ] **T-35 驗收本地 Mage-VL 模型類別與固定權重整合** — 範圍：`models/mage_vl_4b/components/`、Worker 啟動及既有 API；交付：在具備合適記憶體／GPU 的模型環境載入固定 revision，驗證 state-dict 權重、`prepare_inputs_for_generation`、圖片／影片輸入及既有 response contract；覆蓋：REQ-37 / AC-37.4、AC-37.5；依賴：T-34；狀態：部分完成（2026-10-22，本機 RTX 4060 Laptop GPU 以 NF4 載入固定權重，圖片 chat 經 Gateway→Inference 返回 200；影片輸入尚未驗證）；不做精度基準。
+- [x] **T-36 建立 Runner 批次呼叫入口並保留文字串流** — 範圍：`engine/engine.py`、`engine/worker.py`、`models/mage_vl_4b/adapter.py`、`model_runner.py`；交付：Engine 每輪透過 `execute_batch(requests)` 到 Runner，結果依 request ID 回傳；目前 Mage-VL 限制 batch size 為 1，不宣稱 batched forward；逐 token `text` 事件仍序列化為 OpenAI SSE chunk；覆蓋：REQ-31 / AC-31.3、AC-31.4；REQ-33 / AC-33.1；依賴：T-23、T-24、T-34；狀態：fake Runner 驗證單請求 prefill/decode、逐段文字事件及錯誤清理通過，未執行 GPU 測試。
 
 ## 驗收紀錄
 

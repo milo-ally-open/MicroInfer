@@ -6,8 +6,10 @@ import importlib
 import multiprocessing
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import Any, Protocol
+
+from engine.contracts import ScheduledWorkItem, WorkerResult
 
 
 class ModelWorker(Protocol):
@@ -16,6 +18,8 @@ class ModelWorker(Protocol):
     def start(self) -> None: ...
 
     def invoke(self, operation: str, *args: Any, **kwargs: Any) -> Any: ...
+
+    def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> Sequence[WorkerResult]: ...
 
     def stream(self, operation: str, *args: Any, **kwargs: Any) -> Iterator[Any]: ...
 
@@ -39,6 +43,32 @@ class InProcessModelWorker:
     def invoke(self, operation: str, *args: Any, **kwargs: Any) -> Any:
         method = getattr(self.model_adapter, operation)
         return method(*args, **kwargs)
+
+    def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> Sequence[WorkerResult]:
+        method = getattr(self.model_adapter, "execute_batch", None)
+        if callable(method):
+            return method(requests)
+
+        # 舊版 fake Adapter 可逐項執行；正式模型 Adapter 使用明確的批次契約。
+        results: list[WorkerResult] = []
+        for request in requests:
+            operation = {
+                "prefill": "prefill_generation",
+                "decode": "decode_generation_step",
+            }.get(request.phase.value)
+            if operation is None:
+                raise ValueError(f"Unsupported model execution phase: {request.phase.value}")
+            step = self.invoke(operation, request.request_id, request.token_budget)
+            results.append(
+                WorkerResult(
+                    request_id=request.request_id,
+                    text_delta=str(step.get("text", "")),
+                    generated_tokens=int(step.get("generated_tokens", 0)),
+                    finished=bool(step.get("done", False)),
+                    finish_reason=step.get("finish_reason"),
+                )
+            )
+        return results
 
     def stream(self, operation: str, *args: Any, **kwargs: Any) -> Iterator[Any]:
         method = getattr(self.model_adapter, operation)
@@ -168,6 +198,9 @@ class MultiprocessModelWorker:
 
     def invoke(self, operation: str, *args: Any, **kwargs: Any) -> Any:
         return self._request("invoke", operation=operation, args=args, kwargs=kwargs)
+
+    def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> Sequence[WorkerResult]:
+        return self.invoke("execute_batch", tuple(requests))
 
     def stream(self, operation: str, *args: Any, **kwargs: Any) -> Iterator[Any]:
         with self._rpc_lock:

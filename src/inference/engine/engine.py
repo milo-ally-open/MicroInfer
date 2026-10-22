@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from engine.contracts import ExecutionPhase, ScheduledWorkItem
 from engine.errors import InferenceError
 from engine.kv_cache import KVCacheManager
 from engine.scheduler import SchedulerFullError, TokenScheduler
@@ -167,10 +168,17 @@ class InferenceEngine:
             while True:
                 turn = self.scheduler.acquire_turn(request_id)
                 try:
-                    operation = "prefill_generation" if turn.phase == "prefill" else "decode_generation_step"
-                    step = self.worker.invoke(operation, request_id, turn.token_budget)
-                    generated_tokens = int(step.get("generated_tokens", 0))
-                    done = bool(step.get("done", False))
+                    work_item = ScheduledWorkItem(
+                        request_id=request_id,
+                        phase=ExecutionPhase(turn.phase),
+                        token_budget=turn.token_budget,
+                    )
+                    results = self.worker.execute_batch((work_item,))
+                    if len(results) != 1 or results[0].request_id != request_id:
+                        raise RuntimeError("Model Worker returned an invalid single-request batch result.")
+                    step = results[0]
+                    generated_tokens = step.generated_tokens
+                    done = step.finished
                     self.scheduler.complete_turn(
                         request_id, generated_tokens=generated_tokens, finished=done
                     )
@@ -178,8 +186,8 @@ class InferenceEngine:
                     self.scheduler.cancel_request(request_id)
                     scheduled = False
                     raise
-                if step.get("text"):
-                    yield InferenceStreamEvent("text", text=str(step["text"]))
+                if step.text_delta:
+                    yield InferenceStreamEvent("text", text=step.text_delta)
                 if done:
                     result = self.worker.invoke(finish_operation, request_id)
                     finished = True

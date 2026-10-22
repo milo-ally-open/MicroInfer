@@ -1,6 +1,7 @@
-"""定義五個推論引擎元件之間的目標契約；目前尚未接入線上批次路徑。
+"""定義推論引擎元件的線上契約與排程資料結構。
 
 Engine 請求可帶小型資料或本機媒體參照，不傳影片 bytes、GPU tensor 或模型 Cache。
+Worker 批次入口已接入現行路徑；Mage-VL Runner 暫時限制每批一個 work item。
 """
 
 from __future__ import annotations
@@ -161,6 +162,6 @@ class KVCacheManagerProtocol(Protocol):
 class ModelWorkerProtocol(Protocol):
     def start(self) -> None: ...
 
-    def execute_batch(self, batch: ScheduledBatch) -> Sequence[WorkerResult]: ...
+    def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> Sequence[WorkerResult]: ...
 
     def close(self) -> None: ...

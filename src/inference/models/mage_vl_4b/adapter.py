@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
 from engine.engine import InferenceResult
 from engine.errors import InferenceError
 from media.video import probe_video_metadata, sample_video_frames
@@ -205,6 +207,16 @@ class MageVLModelAdapter:
         if token_budget != 1:
             raise RuntimeError("Decode scheduling must assign exactly one token per turn.")
         return self.model_runner.decode_generation_step(request_id)
+
+    def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> tuple[WorkerResult, ...]:
+        """將 Scheduler work items 交給模型 Runner，逐請求回傳生成結果。"""
+        for request in requests:
+            task = self._task(request.request_id)
+            if request.phase is ExecutionPhase.PREFILL and request.token_budget != task["prompt_tokens"]:
+                raise RuntimeError("Scheduler prefill token budget does not match the prepared prompt.")
+            if request.phase is ExecutionPhase.DECODE and request.token_budget != 1:
+                raise RuntimeError("Decode scheduling must assign exactly one token per turn.")
+        return self.model_runner.execute_batch(requests)
 
     def finish_chat_generation(self, request_id: str) -> InferenceResult:
         task = self._task(request_id)
