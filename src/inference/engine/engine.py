@@ -114,6 +114,12 @@ class InferenceEngine:
         try:
             self.worker.start()
             profile = self.worker.health_info().get("kv_cache_profile", {})
+            if "physical_blocks" in profile:
+                allocation = self.kv_cache.snapshot()
+                if int(profile["physical_blocks"]) != allocation["capacity_blocks"]:
+                    raise RuntimeError("Engine KV block count does not match the Worker physical page pool.")
+                if int(profile.get("block_size_tokens", 0)) != self.kv_cache.block_size_tokens:
+                    raise RuntimeError("Engine KV block size does not match the Worker physical page pool.")
             self.kv_cache.set_bytes_per_token(int(profile.get("bytes_per_token", 0)))
         except BaseException:
             with self._state_lock:
@@ -223,10 +229,10 @@ class InferenceEngine:
             if context is not None:
                 self._cancel_context(context)
             else:
-                if lease_created:
-                    self.kv_cache.release(request_id)
                 if prepared:
                     self._cancel_worker_generation(request_id)
+                if lease_created:
+                    self.kv_cache.release(request_id)
 
     def _dispatch_batches(self) -> None:
         """集中執行 Scheduler 批次，並把每個結果送回對應的請求 stream。"""
@@ -321,8 +327,8 @@ class InferenceEngine:
             context.terminal = True
             self._contexts.pop(context.request_id, None)
         self.scheduler.cancel_request(context.request_id)
-        self.kv_cache.release(context.request_id)
         self._cancel_worker_generation(context.request_id)
+        self.kv_cache.release(context.request_id)
         context.events.put(error)
 
     def _cancel_context(self, context: _GenerationContext) -> None:
@@ -333,8 +339,8 @@ class InferenceEngine:
             context.cancelled = True
             self._contexts.pop(context.request_id, None)
         self.scheduler.cancel_request(context.request_id)
-        self.kv_cache.release(context.request_id)
         self._cancel_worker_generation(context.request_id)
+        self.kv_cache.release(context.request_id)
 
     def _cancel_worker_generation(self, request_id: str) -> None:
         try:

@@ -40,8 +40,8 @@
 ### 程式與文件現況
 
 - src/gateway/README.md 描述已實作的 Go Gateway v1 及各套件職責；真實推論服務與 MediaMTX 整合仍未驗證。
-- src/inference/model_registry.yaml 將專案別名 mage-vl-4b 登錄到 Mage-VL-4B Transformers 服務。
-- 推論設定中的模型識別碼是 microsoft/Mage-VL；這是 Hugging Face 上游 repo_id，不是專案別名。
+- src/inference/model_registry.yaml 將專案別名 mage-vl-4b 登錄到 src/inference/models/mage_vl_4b/ 模型包。
+- 推論設定 src/inference/models/mage_vl_4b/configs/inference.yml 中的模型識別碼是 microsoft/Mage-VL；這是 Hugging Face 上游 repo_id，不是專案別名。
 - 推論服務目前提供 GET /health、GET /v1/models、POST /v1/chat/completions、POST /v1/videos/understand，以及 /v1/live/* 工作階段 API。
 - POST 聊天、視訊上傳及即時工作階段建立目前要求 Content-Length。當前推論設定的聊天本文上限為 15,728,640 bytes、視訊請求本文上限為 210,763,776 bytes、單一視訊檔上限為 209,715,200 bytes；即時工作階段建立上限目前為 65,536 bytes。
 - 即時工作階段回應包含 RTSP／RTMP 發布 URL、事件 URL、停止 URL 及上游工作階段識別碼。MediaMTX 授權回呼目前直接呼叫推論服務，且只允許作用中的工作階段路徑。

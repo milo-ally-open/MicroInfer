@@ -1,17 +1,19 @@
-# 行為規格：五元件最小 Inference Engine
+# 行為規格：Inference Engine 三層架構與 Qwen3 深度遷移
 
 > 提案：[proposal.md](proposal.md)｜技術設計：[design.md](design.md)｜任務／驗收：[tasks.md](tasks.md)
-> 項目狀態：五元件已實作；執行證據與尚未執行的硬體驗收見 [tasks.md](tasks.md)。
+> 項目狀態：REQ-17 至 REQ-41 記錄共用 Engine 與 Mage-VL 現況；REQ-42 至 REQ-48 規範 Qwen3-0.6B 三層架構，實作及驗收狀態見 [tasks.md](tasks.md)。
 
 ## 名詞與現況基線
 
 - **API Server**：FastAPI HTTP routes、schema、錯誤及 SSE/JSON response。
 - **Engine Core**：獨立程序，協調 API 推論工作、Scheduler、KV Cache Manager 及 GPU Worker lifecycle；API Server 透過 `EngineClient` IPC 存取。
 - **Token Scheduler**：以 prompt／decode token turn 排程活動 request。
-- **KV Cache Manager**：按 token 容量建立邏輯 block table、估算 reservation、回收 block ID；底層 Cache tensor 仍由 Model Runner 管理。
+- **KV Cache Manager**：按 token 容量分配 block table、估算 reservation 並回收 block ID；Mage-VL 使用邏輯 lease，Qwen3 Worker 將相同 ID 對應至實體 GPU page。
 - **Model Worker**：獨立子程序，載入模型並處理 Engine IPC；單一 Worker 對應一份模型副本。
 - **Model Runner**：Mage-VL 模型載入、逐步 forward、`past_key_values` 及 token 選取。
 - `mage-vl-4b` 是專案別名，對應 Hugging Face `microsoft/Mage-VL`；固定 revision 為 `d88b153285f1633a61b2f693c59c8576693af185`。
+- **Qwen3 三層**：生態兼容層處理 Hugging Face config/tokenizer/checkpoint 格式；性能優化層持有本地模型執行、Scheduler、Worker 與實體 KV pool；對外接口層維持共用 FastAPI／OpenAI schema／SSE。新需求只適用於 `qwen3-0.6b`。
+- **Qwen3 實作**：固定 revision 透過 `AutoConfig`／`AutoTokenizer`／Safetensors 相容層讀取；本地 PyTorch 計算圖執行 Qwen3，Runner 合併同階段多 request forward，Engine block ID 對應 GPU Worker 實體 KV pool。SDPA 前會 gather page，不宣稱自訂 PagedAttention kernel。
 
 ## 需求與驗收條件
 
@@ -70,7 +72,7 @@
 
 - **AC-25.1** 模型包入口提供 Worker factory，並以既有共用 API、Engine、Media 元件組裝服務。
 - **AC-25.2** `src/`、`inference/`、`models/` 根目錄仍非 Python package；相同 API 契約的新模型只需新增模型包及一筆登錄。
-- **AC-25.3** 文件清楚標示目前只有 Mage-VL 一個模型；不預設第二個模型。
+- **AC-25.3** 模型清單與 `model_registry.yaml` 一致，分別記錄專案別名及上游 `repo_id`；未登錄的模型不得描述為已支援。
 
 ### REQ-26：所有 HTTP 推論 route 透過 Engine
 
@@ -151,7 +153,7 @@
 ### REQ-37：將 Mage-VL 固定 revision 模型定義拆入模型包
 
 - **AC-37.1** `models/mage_vl_4b/components/` 分別保存固定 revision 的模型設定／輸出、視覺元件、視覺塔、多模態組裝、生成頭及可選 StreamMind Gate；共用 `engine/` 不依賴這些模型類別。
-- **AC-37.2** Worker 直接從模型包載入 `MageVLForConditionalGeneration`，不使用 `AutoModelForCausalLM` 動態執行快照內的模型類別；Qwen3 骨幹仍由 Transformers `AutoModel.from_config()` 組成。
+- **AC-37.2** Mage-VL Worker 直接從模型包載入 `MageVLForConditionalGeneration`，不使用 `AutoModelForCausalLM` 動態執行快照內的模型類別；Qwen3 的目標模型載入方式另依 REQ-43、REQ-44 驗收。
 - **AC-37.3** 模型程式固定 revision 與 `inference.yml` 選定 revision 不一致時，在權重載入前明確失敗；Processor 仍由 `AutoProcessor` 從相同本地快照載入。
 - **AC-37.4** 拆分保留原始模型 module attribute 名稱與生成方法簽章，使固定 checkpoint 的 state-dict 路徑及現有 Adapter／Runner 呼叫契約不變；真實權重相容性須另外執行模型整合驗收。
 - **AC-37.5** 此次不載入權重、不啟動 CUDA/GPU、不宣稱模型輸出等價或效能改善；文件標明靜態檢查與未執行的實機驗收。
@@ -180,6 +182,56 @@
 - **AC-41.2** Engine Core 在獨立程序中協調 Scheduler、KV 管理和 GPU Worker；程序訊息只傳送可序列化請求資料、事件及錯誤，不傳 GPU tensor 或模型 Cache。
 - **AC-41.3** IPC 支援啟動／就緒、請求錯誤、逾時、客戶端取消與優雅關閉；文字 SSE chunk、順序、finish usage 和 `[DONE]` 與既有 API 契約一致。
 - **AC-41.4** 多程序 fake Worker 測試驗證 API／Engine／Worker PID 隔離、事件串流、取消與資源收尾；真模型驗收不得由 mock 結果替代。
+
+### REQ-42：Inference Engine 以三層定義所有權與依賴方向
+
+- **AC-42.1** 對外接口層只負責 HTTP 請求／schema／錯誤／JSON 與 SSE 序列化；不載入模型、操作 GPU 或管理 KV tensor。
+- **AC-42.2** 生態兼容層處理 Hugging Face config、tokenizer/chat template、固定 revision 與 Safetensors 權重格式；不執行模型 `forward()`、生成迴圈或 cache 分配。
+- **AC-42.3** 性能優化層擁有 Engine Core／Scheduler／GPU Worker、Qwen3 計算圖、批次 Model Runner、採樣和實體 KV page；不依賴 FastAPI request/response。
+- **AC-42.4** 相依方向為 API → Engine domain/IPC → Qwen Runner → 生態兼容輸入；`engine/` 不匯入 Qwen 私有模組，Mage-VL 不因 Qwen 重構而改變執行路徑。
+
+### REQ-43：Qwen 生態兼容層固定且驗證上游資產
+
+- **AC-43.1** `models/qwen3_0_6b/compatibility/` 使用 `AutoConfig` 讀取本機固定 revision、`AutoTokenizer` 套用既有 chat template，並由 Safetensors loader 將 checkpoint tensor 映射至本地模型；不使用 `AutoModelForCausalLM` 或 `generate()`。
+- **AC-43.2** 載入前驗證 `model_type`、YAML 中的上游 repo／完整 revision、Hugging Face `local_dir` metadata 的 commit hash 與必要權重檔清單；載入時驗證必要鍵、重複／缺失鍵與 tensor shape，任何不相容均使 Worker 啟動失敗，不回退到其他模型執行路徑。
+- **AC-43.3** 服務僅從明確 `local_model_path` 離線載入；不得啟用 `trust_remote_code` 或由模型快照執行遠端 Python 程式。
+- **AC-43.4** Tokenizer、模型 alias、repo_id、revision 與生成設定由同一模型登錄及 YAML 配置；HTTP API 只回報專案別名 `qwen3-0.6b`。
+
+### REQ-44：Qwen3 模型計算圖由本地性能層持有
+
+- **AC-44.1** 本地模型依固定 revision 支援 Qwen3-0.6B 的 embedding、28 層 decoder、16 query heads／8 KV heads、128 head dimension、Q/K RMSNorm、RoPE、SiLU gated MLP、final RMSNorm 及 tied output embedding。
+- **AC-44.2** 本地 `torch.nn.Module` 權重名稱／shape 與已登記 Safetensors snapshot 相容；未知必要 tensor、shape 不符或 tied embedding 衝突在 Worker ready 前明確失敗。
+- **AC-44.3** 真實固定 snapshot 的 logits／greedy token 與同版本 Transformers Qwen3 參考 forward 在約定數值容差內一致；此檢查僅驗證計算相容性，不是資料集精度評測。
+- **AC-44.4** Attention、RoPE、RMSNorm、MLP、模型組裝、sampling 具有各自明確模組邊界；首版使用 PyTorch／SDPA，不宣稱自訂 CUDA/Triton kernel。
+
+### REQ-45：Qwen Worker 實際管理固定物理 KV block pool
+
+- **AC-45.1** GPU Worker 按 Qwen YAML 的 `block_size_tokens`、`num_blocks` 與 KV dtype 建立實體 K/V tensor pool；pool 必須在 Worker 回報 ready 前成功配置。
+- **AC-45.2** Engine 分配給 request 的 block ID 與 Worker pool slot 使用相同 ID；Attention 依 block table 和 token offset 寫入／讀取對應 slot，並核對 Cache 長度與 prompt/decode 進度。
+- **AC-45.3** Engine 邏輯容量與 Worker 實體 block 數由同一 YAML 欄位推導；配置不合法、capacity 不一致或實體分配失敗時拒絕啟動或准入，不超額使用 page。
+- **AC-45.4** 成功完成、取消、准入後失敗、Worker exception、逾時及 shutdown 均回收該 request lease；後續 request 可重用已釋放 page，並以測試驗證租戶間 Cache 隔離。
+- **AC-45.5** 首版不共享 prefix block、不做 eviction/offload；若 Attention 需將 paged K/V gather 成連續張量供 SDPA，文件明確記錄此成本，不稱為 PagedAttention kernel。
+
+### REQ-46：Qwen Model Runner 執行相容的多序列批次 forward
+
+- **AC-46.1** `execute_batch(requests)` 對同一 phase 的相容 prefill 或 decode request 執行單次模型批次 forward，並依 request ID 回傳各自 logits、完成狀態與 token 增量。
+- **AC-46.2** 不同 prompt/cache 長度使用明確的 padding／attention mask／position；每個 request 的 block table、sampling state、EOS 與 finish reason 相互隔離。
+- **AC-46.3** 混合 prefill/decode 可在同一 Worker RPC 中拆成對應 phase 子批次；Scheduler 仍按 token budget 輪轉，decode 每輪每 request 至多輸出一 token。
+- **AC-46.4** Runner 不相容的 phase/config 以具體錯誤拒絕，不退回逐 request `generate()`；必要的逐序列 Attention 操作不得被描述為 fused Attention kernel。
+
+### REQ-47：三層遷移保留 Qwen 對外文字與 SSE 契約
+
+- **AC-47.1** `qwen3-0.6b` 的 `/health`、`/v1/models`、非串流與 `stream: true` Chat Completions 路徑、方法、Chat schema 與專案模型別名維持不變；`/health` 可揭露實際 backend、Scheduler、page pool 與 GPU 記憶體觀測欄位。
+- **AC-47.2** 每生成一個非空文字 token，API 仍依序送出 OpenAI SSE content chunk；結尾保留 finish usage 和 `[DONE]`，prefill 中間塊不輸出假 token 或空內容 chunk。
+- **AC-47.3** 客戶端斷開／取消會向 Engine／Worker 傳送取消，停止未來 token，釋放 Scheduler slot 和物理 KV page；其他 stream 的事件不被吞併或交錯。
+- **AC-47.4** HTTP、SSE 格式化和錯誤映射留在共用 `api/`；模型包不能為了新 Runner 改 route response schema。
+
+### REQ-48：以分層驗收及性能觀測完成 Qwen 遷移
+
+- **AC-48.1** `tests/inference/` 以合成權重／小型 config 驗證 checkpoint key mapping、模型 shape、batch 結果映射、不同長度 mask、KV block 寫入／回收、錯誤清理和 SSE domain event；不下載模型。
+- **AC-48.2** 固定 snapshot GPU 驗收記錄硬體、Python／PyTorch／Transformers 版本、模型載入、數值相容、單請求與併發聊天、取消後 page 回收及文字 SSE 完整結尾；不得用 mock 結果替代。
+- **AC-48.3** 性能報告記錄 prompt/output 長度、併發數、TTFT、inter-token latency、request/token throughput、peak allocated/reserved VRAM；首版建立基線，不設硬 SLA。
+- **AC-48.4** 測試目錄保持 `tests/inference/`、`tests/gateway/`、`tests/end2end/` 分層，不增加模型資料集精度評測。
 
 ## 五個元件對照
 

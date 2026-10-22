@@ -1,0 +1,68 @@
+# Mage-VL 探索設定；沿用正式 inference.yml 結構，輸出 token 數預設為 8。
+hardware:
+  expected_gpu: NVIDIA GeForce RTX 4090
+
+model:
+  id: microsoft/Mage-VL
+  revision: d88b153285f1633a61b2f693c59c8576693af185
+  dtype: bfloat16
+  device_map: auto
+  attn_implementation: null
+  experts_implementation: null
+  use_kernels: false
+  kernel_config: null
+  use_safetensors: true
+  weights_only: true
+  offload_buffers: false
+  disable_mmap: null
+  offload_folder: null
+  quantization:
+    method: none
+    quant_type: nf4
+    double_quant: true
+    compute_dtype: bfloat16
+    quant_storage: null
+    llm_int8_enable_fp32_cpu_offload: false
+    llm_int8_threshold: 6.0
+    llm_int8_has_fp16_weight: false
+    llm_int8_skip_modules: null
+    gpu_max_memory: 22GiB
+    cpu_max_memory: null
+
+processor:
+  use_fast: null
+
+backend:
+  name: transformers
+
+runtime:
+  hf_home: checkpoints
+  local_files_only: true
+
+api:
+  image_resampling: lanczos
+  max_image_side: 896
+  max_image_bytes: 10485760
+  max_image_pixels: 16777216
+  max_video_bytes: 209715200
+  max_video_duration_seconds: 120
+  video_max_frames: 16
+  video_max_frame_side: 896
+  video_backend: frames
+  max_new_tokens: 512
+
+generation:
+  max_tokens_default: 8
+
+optimization:
+  pytorch:
+    allow_tf32: true
+    cudnn_allow_tf32: true
+    cudnn_benchmark: false
+    float32_matmul_precision: high
+  torch_compile:
+    enabled: false
+    backend: inductor
+    mode: default
+    fullgraph: false
+    dynamic: true

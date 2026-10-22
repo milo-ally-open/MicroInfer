@@ -117,7 +117,7 @@ class VideoUnderstandingResponse(ChatCompletionResponse):
 
 class HealthResponse(APIModel):
     status: Literal["ok", "starting"]
-    backend: Literal["transformers"] = "transformers"
+    backend: str = "transformers"
     model: str
     revision: str
     quantization: str
@@ -126,6 +126,10 @@ class HealthResponse(APIModel):
     api_pid: int | None = None
     engine_core_pid: int | None = None
     worker_pid: int | None = None
+    scheduler: dict[str, int] = Field(default_factory=dict)
+    kv_cache: dict[str, int] = Field(default_factory=dict)
+    worker_kv_cache: dict[str, int] = Field(default_factory=dict)
+    gpu_peak_memory: dict[str, int] = Field(default_factory=dict)
     gpu: str | None = None
     vram_free_bytes: int | None = None
     vram_total_bytes: int | None = None

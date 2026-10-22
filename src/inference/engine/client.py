@@ -21,6 +21,92 @@ class EngineClientError(RuntimeError):
     """Engine Core IPC 或程序生命週期錯誤。"""
 
 
+class EngineClientStream:
+    """可跨執行緒取消的 EngineClient event iterator。"""
+
+    def __init__(self, client: EngineClient, request_body: dict[str, Any]) -> None:
+        self._client = client
+        self._request_id = uuid.uuid4().hex
+        self._pending = client._register(self._request_id)
+        self._deadline = time.monotonic() + client.request_timeout_seconds
+        self._state_lock = threading.Lock()
+        self._cancel_sent = False
+        self._finished = False
+        try:
+            client._send({
+                "kind": "stream",
+                "request_id": self._request_id,
+                "operation": "stream_chat",
+                "args": (request_body,),
+            })
+        except BaseException:
+            self._finish()
+            raise
+
+    def __iter__(self) -> EngineClientStream:
+        return self
+
+    def __next__(self) -> Any:
+        with self._state_lock:
+            if self._finished:
+                raise StopIteration
+        try:
+            message = self._pending.get(timeout=max(0.01, self._deadline - time.monotonic()))
+        except queue.Empty as exc:
+            self.close()
+            raise TimeoutError(
+                f"Engine Core stream request exceeded {self._client.request_timeout_seconds:g} seconds."
+            ) from exc
+        kind = message.get("kind")
+        if kind == "event":
+            return message["value"]
+        if kind in {"done", "local_stop"}:
+            self._finish()
+            raise StopIteration
+        if kind == "error":
+            self._finish()
+            self._client._raise_remote(message)
+        self._finish()
+        raise EngineClientError(f"Unexpected Engine Core stream message: {kind}")
+
+    def cancel(self) -> None:
+        """向 Engine Core 發送取消，並等候目前批次完成其清理路徑。"""
+        with self._state_lock:
+            if self._finished:
+                return
+            should_send = not self._cancel_sent
+            self._cancel_sent = True
+        if should_send:
+            try:
+                self._client._send({"kind": "cancel", "request_id": self._request_id})
+            except EngineClientError:
+                self._finish()
+                return
+
+        deadline = time.monotonic() + min(30.0, self._client.request_timeout_seconds)
+        while time.monotonic() < deadline:
+            try:
+                message = self._pending.get(timeout=min(0.25, deadline - time.monotonic()))
+            except queue.Empty:
+                continue
+            if message.get("kind") in {"done", "error", "local_stop"}:
+                self._finish()
+                return
+        self._finish()
+
+    def close(self) -> None:
+        self.cancel()
+
+    def _finish(self) -> None:
+        with self._state_lock:
+            if self._finished:
+                return
+            self._finished = True
+        self._client._unregister(self._request_id)
+        # 喚醒可能仍在 IPC queue 讀取中的 __next__ 執行緒。
+        self._pending.put({"kind": "local_stop"})
+
+
 def _load_factory(factory_path: str) -> Any:
     module_name, separator, attribute = factory_path.partition(":")
     if not separator or not module_name or not attribute:
@@ -254,35 +340,8 @@ class EngineClient:
     def generate_chat(self, request_body: dict[str, Any]) -> Any:
         return self._invoke("generate_chat", request_body)
 
-    def stream_chat(self, request_body: dict[str, Any]) -> Iterator[Any]:
-        return self._stream(request_body)
-
-    def _stream(self, request_body: dict[str, Any]) -> Iterator[Any]:
-        request_id = uuid.uuid4().hex
-        pending = self._register(request_id)
-        completed = False
-        try:
-            self._send({"kind": "stream", "request_id": request_id, "operation": "stream_chat", "args": (request_body,)})
-            deadline = time.monotonic() + self.request_timeout_seconds
-            while True:
-                message = pending.get(timeout=max(0.01, deadline - time.monotonic()))
-                kind = message.get("kind")
-                if kind == "event":
-                    yield message["value"]
-                elif kind == "done":
-                    completed = True
-                    return
-                elif kind == "error":
-                    completed = True
-                    self._raise_remote(message)
-                else:
-                    raise EngineClientError(f"Unexpected Engine Core stream message: {kind}")
-        except queue.Empty as exc:
-            raise TimeoutError(f"Engine Core stream request exceeded {self.request_timeout_seconds:g} seconds.") from exc
-        finally:
-            self._unregister(request_id)
-            if not completed:
-                self._send({"kind": "cancel", "request_id": request_id})
+    def stream_chat(self, request_body: dict[str, Any]) -> EngineClientStream:
+        return EngineClientStream(self, request_body)
 
     def understand_video(self, upload_stream: Any, filename: str | None, request_body: dict[str, Any]) -> Any:
         with tempfile.TemporaryDirectory(prefix="api-inference-video-") as temp_dir:

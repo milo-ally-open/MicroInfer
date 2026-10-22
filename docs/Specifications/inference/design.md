@@ -30,7 +30,7 @@ models/mage_vl_4b/
     └── component_registry.py       # 固定 revision module slots 與本地替換 factory 登記
 ```
 
-上述模型類別由固定 revision 上游程式拆分而來，保留原始 module attribute 與預期 state-dict 路徑；來源 revision 寫入每個模型檔案，載入器在載入權重前確認 YAML revision 相符。上游程式檔及設定為 Apache-2.0，授權文本隨模型包保存。模型類別及設定直接從模型包載入，只有 Processor 繼續使用 `AutoProcessor` 和快照中的模型專屬程式。Qwen3 語言骨幹仍由 Transformers `AutoModel.from_config()` 建立。此做法將模型架構程式放回模型包，方便在局部檔案中演進，不改共用 Engine。權重能否與拆分後類別完全相容仍須後續在 CPU／GPU 整合環境驗收。
+上述 Mage-VL 模型類別由固定 revision 上游程式拆分而來，保留原始 module attribute 與預期 state-dict 路徑；來源 revision 寫入每個模型檔案，載入器在載入權重前確認 YAML revision 相符。上游程式檔及設定為 Apache-2.0，授權文本隨模型包保存。Mage-VL 模型類別及設定直接從模型包載入，只有 Processor 繼續使用 `AutoProcessor` 和快照中的模型專屬程式；Mage-VL 內嵌的 Qwen3 語言骨幹仍由 Transformers `AutoModel.from_config()` 建立。這是 Mage-VL 現況，不是本次 Qwen3-0.6B 的目標實作方式。
 
 Registry 以已檢視的 `named_modules()` 路徑登記 vision／language 元件群，並在載入後比對實際模組樹。`inference.yml` 僅選取已由模型包 Python 程式登記的 slot／implementation，不允許 YAML 動態匯入任意程式碼。空的 `model.components.replacements` 是預設值，表示不做替換；本地上游模型定義不等於已實作最佳化。
 
@@ -179,6 +179,84 @@ Worker 已是獨立程序，因此 GPU tensor、cache tensor 及實體 KV page �
 5. 已透過 `EngineClient` 分離 API Server 與 Engine Core，並保留獨立 GPU Worker 子程序；多程序 fake 測試驗證 PID 隔離、逐 token event 順序、取消、錯誤回傳及優雅關閉。下一次模型環境驗收仍需量測 mixed chat、影片及 Live 的吞吐、SSE 首 token 延遲、後續 token 間隔、取消回收和顯存峰值。
 
 Prefix cache 應延後評估。多模態快取鍵至少須涵蓋模型與 Processor revision、文字 token、影像／影格內容及預處理設定；只用文字 prompt hash 可能錯誤重用視覺特徵或 KV 狀態。這些是後續驗證項目，不是目前功能或已排定實作承諾。
+
+## Qwen3-0.6B 三層架構與實作
+
+### 調研依據
+
+nano-vLLM README 將其定位為從頭實作的輕量 vLLM；其 `ModelRunner` 建立自有 `Qwen3ForCausalLM`、Sampler、KV tensor 與 block table，`models/qwen3.py` 定義模型層，`utils/loader.py` 載入 checkpoint。它仍在 `config.py` 使用 Transformers `AutoConfig` 取得模型配置。因此本專案把 Transformers 保留在生態接口，把模型執行與 Cache 所有權移入自有性能層；參考其責任邊界，不複製程式碼。參考：[nano-vLLM README](https://github.com/GeeeekExplorer/nano-vllm)、[ModelRunner](https://github.com/GeeeekExplorer/nano-vllm/blob/main/nanovllm/engine/model_runner.py)、[Qwen3 model](https://github.com/GeeeekExplorer/nano-vllm/blob/main/nanovllm/models/qwen3.py)、[checkpoint loader](https://github.com/GeeeekExplorer/nano-vllm/blob/main/nanovllm/utils/loader.py)、[Config](https://github.com/GeeeekExplorer/nano-vllm/blob/main/nanovllm/config.py)。
+
+本機 Qwen snapshot 的 `config.json` 顯示 `model_type=qwen3`、28 decoder layers、hidden size 1024、intermediate size 3072、16 query heads、8 KV heads、head dimension 128、RoPE theta 1,000,000、Q/K RMSNorm、SiLU gated MLP、tied embeddings；Safetensors 含 311 個 tensor。實際載入已核對全部 311 個 key／shape；Hugging Face `local_dir` metadata 的完整 commit hash 必須符合 YAML revision，且設定、Tokenizer、權重檔均須有該 revision 的 metadata。RTX 4060 BF16 logits 對照的 max／mean 絕對誤差為 0.28125／0.05796，greedy token 相同；完整驗收證據見 [tasks.md](tasks.md)。
+
+### 三層職責與呼叫方向
+
+```text
+對外接口層
+  api/app.py、api/routes/chat_completions.py、api/serializers.py
+  OpenAI schema、HTTP errors、逐 token SSE、EngineClient
+                 │ serialized domain request / ordered events
+                 ▼
+性能優化層
+  engine/Engine Core + Token Scheduler + common KV lease + GPU Worker
+  models/qwen3_0_6b/model_runner.py + model/ + paged_kv_cache.py + sampler.py
+  batched prefill/decode、model forward、GPU tensors、physical KV pages
+                 │ ModelConfig / tokenizer / weight tensors
+                 ▼
+生態兼容層
+  models/qwen3_0_6b/compatibility/
+  AutoConfig、AutoTokenizer/chat template、Safetensors checkpoint reader
+```
+
+對外接口層透過 `EngineClient` 只交換可序列化 request、事件及錯誤。Engine Core／Scheduler 不接觸 FastAPI schema；Worker 和 Qwen model 不建立 HTTP response。生態層提供已驗證的模型設定、tokenizer 及本地權重；它不把 Transformers 的 `PreTrainedModel`／`generate()` 當作性能層的執行控制器。依賴單向流向模型資料與計算，模型層不得反向依賴 API。
+
+### 程式位置與模組責任
+
+```text
+src/inference/
+├── api/                                  # 對外接口層（共用，保留現有 schema/SSE）
+├── engine/                               # 性能優化層的共用排程與 Worker 控制面
+└── models/qwen3_0_6b/
+    ├── compatibility/
+    │   ├── hf_config.py                  # AutoConfig 讀取與固定模型能力驗證
+    │   ├── hf_tokenizer.py               # AutoTokenizer/chat template 邊界
+    │   └── safetensors_loader.py         # 固定 snapshot tensor key/shape 載入
+    ├── model/
+    │   ├── qwen3_model.py                # embedding、decoder stack、final norm、logits
+    │   ├── qwen3_layers.py                # RMSNorm、MLP、decoder residual 組裝
+    │   ├── qwen3_attention.py             # GQA、Q/K norm、RoPE、SDPA 及 cache slots
+    │   ├── rotary_embedding.py            # Qwen3 RoPE 頻率與位置計算
+    │   └── paged_kv_cache.py              # Worker GPU K/V block pool 與 slot mapping
+    ├── adapter.py                        # API domain request 與 tokenizer/model input 轉換
+    ├── model_runner.py                   # batched prefill/decode orchestration 與 Cache state
+    ├── sampler.py                        # 每 request sampling、stop 與 token decode
+    └── configs/inference.yml             # block、batch、chunk、dtype、生成等參數
+```
+
+`api/` 是對外接口層；共享 `engine/` 與模型專屬 `model/`、`model_runner.py`、`paged_kv_cache.py` 合組性能優化層；`compatibility/` 僅保留上游生態接口。三層是責任分組，不要求建立多餘的 Python package root；`src/`、`inference/`、`models/` 仍不是 package。任務會在實作中以此最小目錄為準，避免另加 `runtime`、`backend` 等泛化層造成重疊。
+
+### 模型與權重兼容決策
+
+固定 snapshot 只在 Worker 中讀取。`AutoConfig` 必須確認 `model_type`、架構參數及 revision；啟動前讀取 Hugging Face `local_dir` metadata，要求所有必要模型資產標記同一個完整 commit hash，並比對 YAML 的 revision。`AutoTokenizer` 只負責 token IDs、special token 和 Qwen chat template。Safetensors loader 將已知 key 載入本地 `torch.nn.Module`，並檢查必要鍵與 shape；config 的 tied word embeddings 必須映射到同一份權重，不允許缺鍵後默默使用隨機初始化。禁用 `trust_remote_code`，不呼叫 `AutoModelForCausalLM.from_pretrained()` 或 Transformers `generate()`。
+
+模型 forward 首版使用 PyTorch `nn.Linear`／RMSNorm 計算和 `torch.nn.functional.scaled_dot_product_attention`；Attention／RoPE／MLP 分檔，後續可替換成 Triton 或其他 kernel 而不改 tokenizer、HTTP API 或 Scheduler contract。GPU 驗收以固定 snapshot 的參考 logits／greedy token 比對建立正確性證據；此為實作等價檢查，不是資料集精度測試。
+
+### 批次執行與 KV 所有權
+
+Engine `KVCacheManager` 為 request 分配 block ID；同一模型 `inference.yml` 同時指定 block size 和 block 數，Engine logical allocator 與 GPU Worker physical pool 必須從相同設定建構。Qwen Runner 把 request block table 傳給模型 Attention，由它在生成的 token position 寫入 K/V page，並依有效長度讀回。物理 pool 只由 GPU Worker 建立及釋放，Engine Core 不持有 tensor。
+
+相容的同階段 request 由 Runner 組成批次，依 request IDs 還原各自 logits／sampling 狀態。不同 prompt/cache 長度使用 position 與 attention mask；混合 phase 可在單一 Worker RPC 中按 prefill/decode 分組執行。首版以物理 paged storage 加 PyTorch SDPA；若為 SDPA 將 block table K/V gather 成連續張量，這仍不是直接消費 block table 的 PagedAttention kernel，gather 時間與暫存記憶體要在性能報告中量測。首版不做 prefix sharing、eviction 或 offload。
+
+取消、逾時、模型錯誤、SSE disconnect 及 shutdown 仍沿用 Engine 共用 cleanup；Engine lease 歸還後 Worker 收到相應結束命令並清除 request→block table 關係。Worker 必須先確定沒有活動 forward 再允許 block 重用，避免尚未完成的 CUDA 工作寫入新 request 的 page。
+
+### 對外文字 SSE 相容
+
+API route／serializer 不更改。Qwen Worker 在 prefill 未完成時不發布內容；完成 prefill 後取樣首 token，Runner 將每個生成 token 的文字增量帶 request ID 回送 Engine，再由 API 產生既有 OpenAI SSE `delta.content` chunk。finish chunk 附 usage，正常終止保留 `[DONE]`；ASGI response 在串流期間監聽 `http.disconnect`，斷線後透過 `EngineClient` 發出取消，並以 shielded cleanup 等待 IPC／Worker 收尾。實測首個文字 chunk 後斷線，2 個 Scheduler rounds 內停止並釋放全部 page；錯誤事件、API timeout 和 shutdown 沿用共用 IPC cleanup。不得為了批次 forward 等到整句生成完才發 SSE。
+
+### 設定、資源與回復
+
+Qwen `inference.yml` 統一控制 `engine.max_num_seqs`、`max_num_scheduled_tokens`、`prefill_chunk_size_tokens`、`kv_cache.block_size_tokens`、`kv_cache.num_blocks`、模型 dtype/device 及 sampling defaults。現行設定為 1024 pages × 16 tokens，BF16 pool 約 1.75 GiB；啟動時由同一設定建立 Engine allocator 與 Worker pool，並核對 block 數和 block size。Worker 在 ready 前配置 K/V tensor，失敗則握手失敗，不接受請求。首版 Attention 固定使用 PyTorch SDPA，未設定尚未支援的動態 kernel 選項。
+
+Qwen 原 Transformers Runner 未保留為可執行 fallback；若本地 Runner 回歸，應以版本控制回復本次 Qwen 專屬程式修改，不做 YAML 靜默切換至 `generate()`。API chat schema、路由和 SSE serializer 不需要回退。性能比較記錄 TTFT、inter-token latency、request/token throughput、prompt/output tokens、併發數及 peak allocated/reserved VRAM；不先設 SLA。`/health` 的額外 page／peak memory 欄位供本機驗收與觀測，不改 Chat Completions response。
 
 ## 追蹤
 

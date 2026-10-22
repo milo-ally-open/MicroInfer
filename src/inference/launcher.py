@@ -68,7 +68,7 @@ def _list_models(registry: dict[str, Any]) -> None:
             print(f"{alias}\t\tinvalid-registry-entry")
             continue
         display_name = model.get("display_name", alias)
-        backend = registry.get("default_backend", "")
+        backend = model.get("backend", registry.get("default_backend", ""))
         status = "implemented"
         paths = [
             model.get("inference_config", ""),
@@ -104,7 +104,7 @@ def _resolve_selection(
     model_spec = models[model_alias]
     if not isinstance(model_spec, dict):
         raise ValueError(f"Model registry entry '{model_alias}' must be a mapping.")
-    backend = str(registry.get("default_backend", ""))
+    backend = str(model_spec.get("backend", registry.get("default_backend", "")))
     if not backend:
         raise ValueError("Set default_backend in model_registry.yaml.")
 

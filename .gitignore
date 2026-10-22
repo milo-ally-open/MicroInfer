@@ -9,6 +9,7 @@ __pycache__/
 !/checkpoints/val.xlsx
 **/.cache/
 **/models/
+!src/inference/models/
 *.safetensors
 *.bin
 *.pt

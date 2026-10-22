@@ -1,7 +1,7 @@
 # 實施與驗證任務：推論服務分層與最小遷移
 
 > 規格：[spec.md](spec.md)｜設計：[design.md](design.md)｜提案：[proposal.md](proposal.md)
-> 五元件最新實作由 T-23 至 T-27 追蹤；T-19 至 T-22 是前一輪 Engine 主鏈路任務，保留作為歷史驗收紀錄。T-35 已部分完成：本機權重載入及 Gateway→Inference 圖片聊天已驗收，影片輸入仍待驗證。
+> 共用 Engine／Mage-VL 既有工作追蹤至 T-41；Qwen3-0.6B 三層重構由 T-42 至 T-48 追蹤。T-35 的 Mage-VL 影片驗收仍依原紀錄管理；本次不擴大 Mage-VL 範圍。
 
 前一版 `REQ-17` 至 `REQ-27` 中的通用 Protocol、component registry、capability validator 與多層空目錄設計已由本版收斂取代。為保留追蹤連續性，本版重新定義必要 REQ／AC，任務沿用 `T-09` 起的編號，不宣稱前一版已完成的工作可以直接驗收本版條件。
 
@@ -41,7 +41,28 @@
 - [x] **T-40 將 KV Cache Manager 連結至 Worker 實際 Cache 生命週期** — 範圍：`models/mage_vl_4b/components/cache_manager.py`、Stepwise Runner、Adapter health、`tests/inference/test_cache_manager.py`；交付：Worker 端每 request 持有實際 Cache object、追蹤實際長度與 Engine lease block IDs，長度不符時拒絕替換，finish／cancel／Worker close 釋放參照；Engine `KVCacheManager` 仍只管理邏輯容量；覆蓋：REQ-40 / AC-40.1、AC-40.2、AC-40.3；依賴：T-38；狀態：假 Cache 單元測試驗證長度、request 隔離與釋放，source contract 驗證 Runner 收尾掛接；未測 CUDA 配置、PagedAttention 或實際多模態 cache。
 - [x] **T-41 透過 EngineClient 分離 API Server 與 Engine Core 程序** — 範圍：`api/`、`engine/client.py`、模型 `engine_core.py`、Inference YAML、`tests/inference/`；交付：API Server、Engine Core、GPU Worker 三程序；支援 request ID 多工 IPC、逐 token 事件、取消、錯誤、影片同機路徑轉交及優雅關閉；Live session／媒體擷取留在 API 程序，模型分析透過 EngineClient；覆蓋：REQ-18 / AC-18.1、AC-18.2；REQ-30 / AC-30.1、AC-30.2；REQ-41 / AC-41.1、AC-41.2、AC-41.3、AC-41.4；依賴：T-37、T-40；狀態：完成。三程序 fake Worker 測試驗證 PID 隔離、逐 token 事件順序、錯誤回傳、關閉 stream 後資源回收及優雅退出；Engine 測試另驗證 context 建立前取消會在排程前停止。來源契約確認既有 OpenAI SSE chunk、finish usage 和 `[DONE]` 路由未改。未啟動 FastAPI runtime、真模型、GPU 或 MediaMTX。
 
+- [x] **T-42 定義 Qwen3 三層架構及驗收邊界** — 範圍：Inference Spec 四文件及 `src/inference/README.md`；交付：分清生態兼容層、性能優化層、對外接口層；記錄 nano-vLLM 調研、固定 revision、Qwen/Mage 現況差異、SSE 契約、回復路徑和驗收標準；覆蓋：REQ-42 / AC-42.1、AC-42.2、AC-42.3、AC-42.4；REQ-47 / AC-47.1、AC-47.4；依賴：T-41；狀態：2026-10-22 完成；四文件與 README 已更新，Spec validator 通過 32 項需求、120 項驗收條件、40 項任務，追蹤關係無缺漏。
+- [x] **T-43 建立 Qwen 生態兼容層與安全權重載入** — 範圍：`models/qwen3_0_6b/compatibility/`、Qwen YAML、無權重測試；交付：固定 revision `AutoConfig`、`AutoTokenizer`/chat template、Safetensors key/shape 驗證及本地權重載入；禁止遠端程式碼、`AutoModelForCausalLM` 與 `generate()`；覆蓋：REQ-43 / AC-43.1、AC-43.2、AC-43.3、AC-43.4；REQ-42 / AC-42.2；依賴：T-42；狀態：2026-10-22 完成；固定 snapshot 的 311 個 tensor key／shape 全數嚴格載入，tied embedding 對齊；Hugging Face local-dir metadata commit hash 與 YAML revision 一致，並加入錯誤 revision 的合成拒絕測試；配置與 tokenizer 離線讀取，Qwen Runner 不使用 Transformers 模型類別或 `generate()`。
+- [x] **T-44 實作 Qwen3-0.6B 本地模型計算圖** — 範圍：`models/qwen3_0_6b/model/`、`model_runner.py`；交付：固定架構的 embedding、decoder、QK RMSNorm、RoPE、GQA、MLP、final norm/tied logits；拆分 Attention/MLP/RoPE 邊界，並提供小 config 合成權重測試；覆蓋：REQ-44 / AC-44.1、AC-44.2、AC-44.4；依賴：T-43；狀態：2026-10-22 完成；兩層合成模型 CPU 測試通過；RTX 4060 BF16 固定 snapshot、22-token prompt 對照 Transformers，vocab 151936，greedy token 相同，max／mean 絕對 logit 誤差為 0.28125／0.05796（驗收容差 atol=0.5、rtol=0.02）。
+- [x] **T-45 將 Engine block ID 映射到 Qwen Worker 實體 KV pool** — 範圍：共用 `engine/kv_cache.py` contract、Qwen `model/paged_kv_cache.py`、YAML、cache 測試；交付：固定 K/V page allocation、block table/slot mapping、長度核對、容量一致及所有終止路徑回收；覆蓋：REQ-45 / AC-45.1、AC-45.2、AC-45.3、AC-45.4、AC-45.5；REQ-42 / AC-42.3；依賴：T-44；狀態：2026-10-22 完成；YAML 1024 × 16-token BF16 pool 實配 1,879,048,192 bytes；Engine／Worker 容量一致，取消後 `/health` 顯示 Engine lease 及 Worker page 均歸零。
+- [x] **T-46 讓 Qwen Runner 執行批次 prefill/decode** — 範圍：Qwen `model_runner.py`、model forward、Scheduler／Worker 整合及批次測試；交付：同 phase 多 request 批次模型呼叫、變長 mask/position、獨立 sampling/cache state、mixed-phase phase grouping；覆蓋：REQ-46 / AC-46.1、AC-46.2、AC-46.3、AC-46.4；依賴：T-44、T-45；狀態：2026-10-22 完成；CPU 合成權重測試確認變長 batch prefill/decode logits 與逐 request forward 相符；RTX 4060 Worker 測試驗證雙 request prefill、decode 及 phase grouping。
+- [x] **T-47 保留 OpenAI Chat 與逐 token SSE 行為** — 範圍：Qwen Adapter、EngineClient stream、共用 chat route/serializer、SSE 及取消測試；交付：不改 API schema，逐 token `delta.content`、finish usage、`[DONE]` 和取消後 page 回收；覆蓋：REQ-47 / AC-47.1、AC-47.2、AC-47.3、AC-47.4；依賴：T-43、T-46；狀態：2026-10-22 完成；非串流 Chat、兩個併發 SSE（finish usage／`[DONE]`）通過；原始 HTTP 客戶端在首個內容 chunk 後斷線，0.275 秒／2 個排程輪次內停止，Engine 與 Worker page 均歸零。
+- [x] **T-48 驗收 Qwen 重構並建立 RTX 4060 性能基線** — 範圍：`tests/inference/`、`tests/end2end/`、`scripts/qwen3_0_6b/`、Spec 驗收紀錄；交付：無權重 contract/unit、固定 snapshot logits/token parity、啟動與 HTTP/SSE/取消 smoke、Cache 回收、併發和記憶體測量；覆蓋：REQ-44 / AC-44.3；REQ-48 / AC-48.1、AC-48.2、AC-48.3、AC-48.4；依賴：T-42 至 T-47；狀態：2026-10-22 完成首輪驗收；性能採樣為 4 requests／併發 2／每請求最多 32 tokens，4.753 秒、0.842 requests/s、26.93 tokens/s、TTFT p50/p95 260/451 ms、inter-token p50/p95 67.6/72.5 ms、request latency p50/p95 2372/2584 ms、peak allocated/reserved 3,081,505,280／3,097,493,504 bytes；不是 SLA。
+
 ## 驗收紀錄
+
+### Qwen3 三層重構與 RTX 4060 首輪驗收（T-42 至 T-48）
+
+| 檢查 | 結果 | 證據／限制 |
+|---|---|---|
+| Spec 結構及追蹤 | 通過 | `validate_spec_group.py docs/Specifications/inference`；32 項 REQ、120 項 AC、40 項 T，四文件互相追蹤。 |
+| Qwen 原生計算圖與權重相容 | 通過 | 固定 revision 的 311 個 tensor 嚴格載入；RTX 4060 Laptop GPU BF16，22-token prompt 的 Transformers 對照 greedy token 相同，max／mean 絕對 logit 誤差 0.28125／0.05796；比對容差 `atol=0.5`、`rtol=0.02`。 |
+| 合成權重與變長批次測試 | 通過 | `test_qwen3_native_runtime.py` 5 項 CPU 測試涵蓋 revision metadata 固定／錯版拒絕、Safetensors key/shape 載入、tied embedding、變長 prefill/decode 與逐 request forward 相等、page owner 隔離及釋放；不下載權重、不使用 GPU。 |
+| OpenAI Chat／正常文字 SSE | 通過 | 實際 Qwen API 非串流及兩路併發 stream 成功；每路都有非空 token chunk、finish usage 和 `[DONE]`。 |
+| HTTP 客戶端斷流回收 | 通過 | 首個文字 chunk 後立即 reset socket；約 0.275 秒、2 個 Scheduler rounds 後 running request 為 0，Engine `used_blocks=0`，Worker `used_blocks=0`、`free_blocks=1024`。取消清理使用 shield，避免 ASGI task cancellation 中止 IPC cleanup。 |
+| 端到端 SSE 短期性能基線 | 已記錄 | RTX 4060 Laptop GPU、Python 3.12.15、PyTorch 2.14.1+cu126、Transformers 5.19.0；4 requests、併發 2、32 tokens，wall 4.753 s、0.842 requests/s、26.93 tokens/s、TTFT p50/p95 260/451 ms、ITL p50/p95 67.6/72.5 ms、request latency p50/p95 2372/2584 ms；peak allocated/reserved 3.082/3.097 GB。單輪短測，不設 SLA。 |
+| Inference／end2end 自動測試 | 部分通過 | `tests/end2end/` 7 項通過；Inference discovery 64 項中 63 項通過。唯一失敗是工作樹原有未追蹤 `test_capability_probe.py` 的字面字串檢查（期待 `local_files_only=True`，而現有工具以 kwargs dict 設定同一旗標）；此檔與 Qwen 改造無關，本次保留未改。 |
+| compileall／差異格式 | 通過 | `compileall -q src/inference tests/inference scripts/qwen3_0_6b` 成功；最終 `git diff --check` 結果列於本輪驗收。 |
 
 | 檢查 | 結果 | 證據／限制 |
 |---|---|---|

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class KVCacheLease:
-    """單一請求持有的邏輯 KV block 對照與記憶體估算。"""
+    """單一請求持有的 block table 與 KV 記憶體估算。"""
 
     request_id: str
     block_ids: tuple[int, ...]
@@ -27,10 +27,10 @@ class KVCacheRequest:
 
 
 class KVCacheManager:
-    """預留固定容量的 KV token blocks，並在請求結束後回收供後續請求使用。
+    """分配固定 block ID；Qwen Worker 將同一 ID 對應至預先配置的實體 GPU pages。
 
-    此管理器負責 Engine 端容量核算；底層 Transformers Cache 張量仍由 Model Runner 配置，
-    不代表已使用 PagedAttention 或支援跨請求 prefix cache。
+    Manager 負責容量准入與租約生命週期，實體 tensor pool 由 GPU Worker 持有；
+    attention 會收集 page 至 PyTorch SDPA batch，不代表使用 PagedAttention kernel。
     """
 
     def __init__(self, *, block_size_tokens: int, capacity_tokens: int, bytes_per_token: int = 0) -> None:

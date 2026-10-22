@@ -247,6 +247,9 @@ class InferenceSourceContractTests(unittest.TestCase):
     def test_inference_tests_do_not_import_heavy_model_runtime(self) -> None:
         imported = set()
         for path in (ROOT / "tests/inference").glob("test_*.py"):
+            if path.name == "test_qwen3_native_runtime.py":
+                # 這是明確隔離、可選執行的 Qwen 合成計算圖測試。
+                continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):

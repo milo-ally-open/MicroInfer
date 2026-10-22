@@ -8,8 +8,8 @@
 ## 當前實作與目標
 
 - 當前程式位置／行為：src/gateway/ 已有 Go module、HTTP handler、設定 YAML、認證／設定／限流／觀測套件及 server lifecycle；實際檔案見 src/gateway/README.md。
-- 現有推論服務：src/inference/mage_vl_4b/main.py 實作 /health、/v1/models、/v1/chat/completions、/v1/videos/understand，並掛載即時工作階段路由。
-- 現有模型路由：src/inference/model_registry.yaml 的專案別名是 mage-vl-4b；src/inference/mage_vl_4b/configs/inference.yml 的上游識別碼是 microsoft/Mage-VL。
+- 現有推論服務：src/inference/models/mage_vl_4b/app.py 組裝 /health、/v1/models、/v1/chat/completions、/v1/videos/understand 及即時工作階段路由。
+- 現有模型路由：src/inference/model_registry.yaml 的專案別名是 mage-vl-4b；src/inference/models/mage_vl_4b/configs/inference.yml 的上游識別碼是 microsoft/Mage-VL。
 - 目標邊界：Gateway 處理外部 HTTP/API Key/租戶政策/限流/路由/轉送/可觀測性；推論服務處理模型與推論；MediaMTX 處理 RTSP／RTMP 媒體流。
 
 ## Gateway 程式模組
