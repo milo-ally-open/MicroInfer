@@ -18,6 +18,7 @@ class InferenceSourceContractTests(unittest.TestCase):
         registry = (INFERENCE / "model_registry.yaml").read_text(encoding="utf-8")
         inference_config = (INFERENCE / "models/mage_vl_4b/configs/inference.yml").read_text(encoding="utf-8")
         self.assertIn('commands.add_parser("list"', launcher)
+        self.assertIn('commands.add_parser("validate"', launcher)
         self.assertIn('commands.add_parser("start"', launcher)
         for option in ('"--model"', '"--inference-config"', '"--network-config"', '"--media-config"', '"--host"', '"--port"', '"--cuda-visible-devices"'):
             with self.subTest(option=option):
@@ -27,7 +28,7 @@ class InferenceSourceContractTests(unittest.TestCase):
         self.assertIn("inference_config: src/inference/models/mage_vl_4b/configs/inference.yml", registry)
         self.assertIn("network_config: src/inference/models/mage_vl_4b/configs/network.yml", registry)
         self.assertIn("media_config: src/inference/models/mage_vl_4b/configs/mediamtx.yml", registry)
-        self.assertIn("service_entrypoint: src/inference/models/mage_vl_4b/app.py", registry)
+        self.assertIn("runner: models.mage_vl_4b.model_runner:MageVLModelRunner", registry)
         self.assertFalse((INFERENCE / "mage_vl_4b").exists())
         self.assertRegex(inference_config, r"(?m)^\s+id:\s*microsoft/Mage-VL\s*$")
         self.assertIn("revision: d88b153285f1633a61b2f693c59c8576693af185", inference_config)
@@ -71,7 +72,7 @@ class InferenceSourceContractTests(unittest.TestCase):
         self.assertIn("MageVLForConditionalGeneration.from_pretrained", loader)
         self.assertIn("AutoProcessor.from_pretrained", loader)
         self.assertIn("MAGE_VL_SOURCE_REVISION", loader)
-        self.assertIn("self.model.generate", runner)
+        self.assertNotIn("TextIteratorStreamer", runner)
         self.assertIn("MageVLStepwiseGeneration", runner)
         engine = (INFERENCE / "engine/engine.py").read_text(encoding="utf-8")
         scheduler = (INFERENCE / "engine/scheduler.py").read_text(encoding="utf-8")
@@ -84,7 +85,7 @@ class InferenceSourceContractTests(unittest.TestCase):
         self.assertIn("def _dispatch_batches(", engine)
         self.assertIn("TokenScheduler", engine)
         self.assertIn("schedule_batch", scheduler)
-        self.assertIn("decode_generation_step", adapter)
+        self.assertIn("def execute_batch(", adapter)
         self.assertIn("class ModelWorker(Protocol)", worker)
         self.assertIn("class InProcessModelWorker", worker)
         self.assertIn("class LocalProcessExecutor", executor)
@@ -96,12 +97,12 @@ class InferenceSourceContractTests(unittest.TestCase):
             self.assertNotIn("StreamingResponse", source)
 
     def test_api_engine_core_and_worker_use_three_process_boundary(self) -> None:
-        app = (INFERENCE / "models/mage_vl_4b/app.py").read_text(encoding="utf-8")
-        core_factory = (INFERENCE / "models/mage_vl_4b/engine_core.py").read_text(encoding="utf-8")
+        app = (INFERENCE / "api/service_app.py").read_text(encoding="utf-8")
+        core_factory = (INFERENCE / "engine/model_bootstrap.py").read_text(encoding="utf-8")
         client = (INFERENCE / "engine/client.py").read_text(encoding="utf-8")
         chat_route = (INFERENCE / "api/routes/chat_completions.py").read_text(encoding="utf-8")
         self.assertIn("EngineClient(", app)
-        self.assertIn("models.mage_vl_4b.engine_core:create_engine_core", app)
+        self.assertIn("engine.model_bootstrap:create_engine_core", app)
         self.assertNotIn("InferenceEngine(", app)
         self.assertIn("InferenceEngine(", core_factory)
         self.assertIn("LocalProcessExecutor(", core_factory)
@@ -139,19 +140,23 @@ class InferenceSourceContractTests(unittest.TestCase):
         self.assertIn("class InProcessModelWorker", worker)
         self.assertIn("class LocalProcessExecutor", executor)
         self.assertIn("multiprocessing.get_context(\"spawn\")", executor)
-        self.assertIn("def _step(", stepwise)
+        self.assertIn("def _decode_one(", stepwise)
         self.assertIn("past_key_values", stepwise)
 
     def test_model_package_owns_its_configs_and_dependency_manifest(self) -> None:
         model_package = INFERENCE / "models/mage_vl_4b"
-        self.assertTrue((model_package / "app.py").is_file())
         self.assertTrue((model_package / "configs/inference.yml").is_file())
         self.assertTrue((model_package / "requirements/requirements.txt").is_file())
+        self.assertFalse((model_package / "app.py").exists())
+        self.assertFalse((model_package / "engine_core.py").exists())
+        qwen_package = INFERENCE / "models/qwen3_0_6b"
+        self.assertFalse((qwen_package / "app.py").exists())
+        self.assertFalse((qwen_package / "engine_core.py").exists())
 
     def test_new_model_onboarding_reuses_shared_launcher_api_and_engine(self) -> None:
         launcher = (INFERENCE / "launcher.py").read_text(encoding="utf-8")
-        app = (INFERENCE / "models/mage_vl_4b/app.py").read_text(encoding="utf-8")
-        engine_core = (INFERENCE / "models/mage_vl_4b/engine_core.py").read_text(encoding="utf-8")
+        app = (INFERENCE / "api/service_app.py").read_text(encoding="utf-8")
+        engine_core = (INFERENCE / "engine/model_bootstrap.py").read_text(encoding="utf-8")
         adapter = (INFERENCE / "models/mage_vl_4b/adapter.py").read_text(encoding="utf-8")
         readme = (INFERENCE / "README.md").read_text(encoding="utf-8")
         self.assertIn("sys.path.insert(0, str(INFERENCE_ROOT))", launcher)
@@ -176,7 +181,7 @@ class InferenceSourceContractTests(unittest.TestCase):
                 self.assertIn(f"def {method}(", adapter)
         self.assertFalse((INFERENCE / "models/mage_vl_4b/service.py").exists())
         self.assertFalse((INFERENCE / "models/mage_vl_4b/state.py").exists())
-        self.assertIn("新模型可沿用共用 route／Scheduler／KV Manager", readme)
+        self.assertIn("新模型不需要建立專屬 `app.py` 或 `engine_core.py`", readme)
 
     def test_batch_runner_entry_preserves_incremental_sse_text(self) -> None:
         engine = (INFERENCE / "engine/engine.py").read_text(encoding="utf-8")
@@ -200,10 +205,11 @@ class InferenceSourceContractTests(unittest.TestCase):
         self.assertIn('if offset == 0:', stepwise)
         self.assertIn("def _batch_forward(", stepwise)
         self.assertIn("past_key_values = self._combine_caches(", stepwise)
-        self.assertIn("torch.cat(padded_ids, dim=0)", stepwise)
+        self.assertIn("def execute_work_batch(", stepwise)
+        self.assertIn("def _execute_decode_batch(", stepwise)
         self.assertIn("self.model(**prepared, return_dict=True)", stepwise)
         self.assertIn("self._split_cache(output_cache", stepwise)
-        self.assertIn("request_id, split_caches[index], expected_length=expected_length", stepwise)
+        self.assertIn("request_id, split_caches[index], expected_length=expected_cache_length", stepwise)
         self.assertIn("self.cache_manager.release(request_id)", stepwise)
         self.assertIn("self.cache_manager.clear()", stepwise)
         self.assertIn("expected_length=expected_cache_length", stepwise)
@@ -262,8 +268,14 @@ class InferenceSourceContractTests(unittest.TestCase):
     def test_inference_tests_do_not_import_heavy_model_runtime(self) -> None:
         imported = set()
         for path in (ROOT / "tests/inference").glob("test_*.py"):
-            if path.name == "test_qwen3_native_runtime.py":
-                # 這是明確隔離、可選執行的 Qwen 合成計算圖測試。
+            if path.name in {
+                "test_qwen3_native_runtime.py",
+                "test_mage_vl_stepwise_batch.py",
+                "test_standard_text_runtime.py",
+                "test_standard_text_snapshot.py",
+                "test_utils_probe.py",
+            }:
+                # 這些是明確隔離的 CPU 合成 Runner／Cache／探測測試，不載入權重或 Transformers。
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):

@@ -22,12 +22,14 @@ scripts/qwen3_0_6b/                      # Qwen3-0.6B 專屬探索與診斷工�
 scripts/README.md                    # Scripts 工具使用說明
 src/gateway/                         # Go API 閘道與 route/stream/upstream/videoproxy 模組
 src/inference/api/                   # 共用 FastAPI app、schemas 與 routes
+src/inference/api/service_app.py     # 依模型登錄建立共用 API app
 src/inference/engine/                # Engine Core、Token Scheduler、KV Cache Manager、Worker IPC
+src/inference/engine/model_bootstrap.py # 依模型登錄建立共用 Engine Core／Worker
 src/inference/media/                 # 通用影片及即時工作階段元件
 src/inference/models/<model>/        # 模型專屬程式、configs/ 與 requirements/
 src/inference/models/mage_vl_4b/     # Mage-VL Model Runner、前處理、設定及依賴
 src/inference/launcher.py            # 推論啟動器
-src/inference/model_registry.yaml    # 模型別名與設定檔登錄
+src/inference/model_registry.yaml    # 模型別名、設定檔及 Runner／Adapter 工廠登錄
 tests/                               # 測試目錄
 ```
 
@@ -47,7 +49,7 @@ Inference 參考 vLLM／nano-vLLM 的 API Server、Engine Core、Scheduler、KV 
 
 ## 設定與權重
 
-- 模型及服務設定優先從 YAML 載入。`model_registry.yaml` 登錄模型別名、推論／網路／媒體設定路徑及服務入口；每個模型的程式、設定和依賴清單集中在 `src/inference/models/<model>/`。Engine 排程和邏輯 cache 參數放對應模型 `configs/inference.yml` 的 `engine` 區段。
+- 模型及服務設定優先從 YAML 載入。`model_registry.yaml` 登錄模型別名、推論／網路／媒體設定路徑、Runner／Adapter 工廠及選用 API 元件；所有模型共用 `api/service_app.py` 和 `engine/model_bootstrap.py`，新模型不需建立專屬 `app.py` 或 `engine_core.py`。模型程式、設定和依賴清單集中在 `src/inference/models/<model>/`。Engine 排程和邏輯 cache 參數放對應模型 `configs/inference.yml` 的 `engine` 區段。
 - 模型推論參數放在模型包的 `configs/inference.yml`；API 綁定位址及串流端點放在 `configs/network.yml`；MediaMTX 設定放在 `configs/mediamtx.yml`。新增或調整可調參數時，優先加入合適的 YAML，不要把實驗超參數散落在 Python 或 shell 腳本。
 - API 啟動時會依固定 Hugging Face revision 載入模型；缺少權重時可自動下載至根目錄 `checkpoints/`。通用下載工具則使用 `scripts/download.py`，並要求明確指定 `--repo-id`、`--revision` 和 `--local-dir`。
 - `checkpoints/` 內的大型權重及快取由 `.gitignore` 忽略；`checkpoints/val.md` 和 `checkpoints/val.xlsx` 必須保留為可追蹤文件。不要刪除、搬移或覆蓋這兩個工作流文件。

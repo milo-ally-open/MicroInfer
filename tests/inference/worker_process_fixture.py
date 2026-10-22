@@ -8,10 +8,6 @@ class EchoWorker:
     def invoke(self, operation: str, *args, **kwargs):
         return {"operation": operation, "args": args, "kwargs": kwargs}
 
-    def stream(self, operation: str, *args, **kwargs):
-        yield {"operation": operation, "index": 1}
-        yield {"operation": operation, "index": 2}
-
     def health_info(self):
         return {"backend": "process-test"}
 

@@ -10,7 +10,7 @@ from engine.contracts import PreparedChatInput
 from engine.errors import InferenceError
 
 from . import config
-from .compatibility.hf_tokenizer import load_tokenizer
+from .utils.hf_tokenizer import load_tokenizer
 
 
 class Qwen3InputProcessor(ChatInputProcessor):

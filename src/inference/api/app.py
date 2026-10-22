@@ -61,6 +61,8 @@ def create_app(
     model_id: str,
     request_limits: dict[str, tuple[str, int]],
     input_processor: Any | None = None,
+    chat_input_modalities: frozenset[str] | None = None,
+    enable_streaming: bool = True,
     title: str | None = None,
     enable_video: bool = True,
     enable_live_sessions: bool = True,
@@ -87,6 +89,8 @@ def create_app(
     app.state.model_id = model_id
     app.state.request_limits = request_limits
     app.state.input_processor = input_processor
+    app.state.chat_input_modalities = chat_input_modalities
+    app.state.streaming_enabled = enable_streaming
 
     @app.get("/health", response_model=HealthResponse)
     def health(request: Request) -> dict[str, Any]:

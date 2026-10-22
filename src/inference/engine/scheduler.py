@@ -98,24 +98,6 @@ class TokenScheduler:
                 self._ready.append(request_id)
             self._condition.notify_all()
 
-    def add_atomic_request(self, request_id: str, *, token_budget: int) -> None:
-        """登記尚未拆分為逐 token 呼叫的 Live 工作。"""
-        if token_budget < 1 or token_budget > self.max_num_scheduled_tokens:
-            raise ValueError("Atomic request token_budget must fit the per-turn scheduler budget.")
-        with self._condition:
-            if request_id in self._requests:
-                raise ValueError(f"Duplicate scheduler request id: {request_id}")
-            running_count = self._running_count()
-            if running_count >= self.max_num_seqs and self._waiting_count() >= self.max_waiting_requests:
-                raise SchedulerFullError("The inference scheduler is full.")
-            phase = "atomic" if running_count < self.max_num_seqs else "waiting_atomic"
-            self._requests[request_id] = _RequestState(phase, token_budget, token_budget, 1)
-            if phase == "atomic":
-                if not self._ready:
-                    self._ready_since = time.monotonic()
-                self._ready.append(request_id)
-            self._condition.notify_all()
-
     def schedule_batch(self) -> ScheduledBatch | None:
         """以一輪 token 預算建立可同時包含 prefill 與 decode 的批次。"""
         with self._condition:
@@ -127,11 +109,7 @@ class TokenScheduler:
                     self._condition.wait(timeout=remaining)
                     if self._running or not self._ready:
                         return None
-            eligible = [
-                request_id for request_id in self._ready
-                if request_id in self._requests
-                and self._requests[request_id].phase in {"prefill", "decode"}
-            ]
+            eligible = [request_id for request_id in self._ready if request_id in self._requests]
             if not eligible:
                 return None
             progress = [
@@ -271,7 +249,7 @@ class TokenScheduler:
             if slots <= 0:
                 break
             if state.phase.startswith("waiting_"):
-                state.phase = "atomic" if state.phase == "waiting_atomic" else "prefill"
+                state.phase = "prefill"
                 if not self._ready:
                     self._ready_since = time.monotonic()
                 self._ready.append(request_id)

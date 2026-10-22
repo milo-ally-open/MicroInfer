@@ -13,9 +13,9 @@ QWEN = INFERENCE / "models/qwen3_0_6b"
 
 class Qwen3NativeContractTests(unittest.TestCase):
     def test_ecosystem_compatibility_is_separate_from_native_forward(self) -> None:
-        config = (QWEN / "compatibility/hf_config.py").read_text(encoding="utf-8")
-        tokenizer = (QWEN / "compatibility/hf_tokenizer.py").read_text(encoding="utf-8")
-        loader = (QWEN / "compatibility/safetensors_loader.py").read_text(encoding="utf-8")
+        config = (QWEN / "utils/hf_config.py").read_text(encoding="utf-8")
+        tokenizer = (QWEN / "utils/hf_tokenizer.py").read_text(encoding="utf-8")
+        loader = (QWEN / "utils/safetensors_loader.py").read_text(encoding="utf-8")
         runner = (QWEN / "model_runner.py").read_text(encoding="utf-8")
         self.assertIn("AutoConfig.from_pretrained", config)
         self.assertIn('trust_remote_code=False', config)

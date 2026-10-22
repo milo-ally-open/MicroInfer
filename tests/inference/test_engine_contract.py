@@ -73,6 +73,29 @@ class FakeAdapter:
     def bind_generation_cache(self, request_id: str, block_ids: tuple[int, ...]) -> None:
         self._tasks[request_id]["block_ids"] = block_ids
 
+    def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> tuple[WorkerResult, ...]:
+        results = []
+        for request in requests:
+            if request.phase is ExecutionPhase.PREFILL:
+                step = self.prefill_generation(request.request_id, request.token_budget)
+                results.append(WorkerResult(
+                    request_id=request.request_id,
+                    text_delta=str(step["text"]),
+                    generated_tokens=int(step["generated_tokens"]),
+                    finished=bool(step["done"]),
+                    prompt_tokens_processed=request.prompt_offset + request.token_budget,
+                ))
+            else:
+                step = self.decode_generation_step(request.request_id, request.token_budget)
+                results.append(WorkerResult(
+                    request_id=request.request_id,
+                    text_delta=str(step["text"]),
+                    generated_tokens=int(step["generated_tokens"]),
+                    finished=bool(step["done"]),
+                    finish_reason="stop" if bool(step["done"]) else None,
+                ))
+        return tuple(results)
+
     def prefill_generation(self, request_id: str, token_budget: int) -> dict[str, object]:
         with self._lock:
             task = self._tasks[request_id]
@@ -119,10 +142,6 @@ class FakeAdapter:
     def finish_live_generation(self, request_id: str) -> InferenceResult:
         self._tasks.pop(request_id)
         return InferenceResult("live", 2, 2, "stop", {"generation_seconds": 0.01})
-
-    def analyze_live_frames(self, question: str, frames: list[object], options: dict[str, object]) -> dict[str, object]:
-        return {"answer": "legacy"}
-
 
 class ChunkedFakeAdapter(FakeAdapter):
     def prepare_chat_generation(self, request_id: str, body: dict[str, object]) -> dict[str, int]:

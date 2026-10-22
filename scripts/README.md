@@ -96,7 +96,7 @@ python scripts/mage_vl_4b/test.py `
   --output artifacts/mage-vl-video-probe.json
 ```
 
-`--config` 必須指向相同結構且使用 `video_backend: frames` 的 Mage-VL YAML，`--model-path` 必須指向已存在的本機快照目錄。若從其他目錄啟動，請傳入相對於該目前工作目錄的路徑或絕對路徑。輸出 JSON 不包含媒體 bytes 或模型生成文字，但包含模型路徑、tensor metadata、計時和錯誤 traceback；請將報告留在本機 `artifacts/`，不要納入 Git。該工具用於檢查執行介面和 cache 行為，不是模型精度評估或正式性能基線；目前尚未以真實 Mage-VL 權重和 GPU 執行。
+`scripts/mage_vl_4b/test.yaml` 預設依目前 RTX 4060 8 GiB 顯卡採用 int8 CPU offload、GPU 5 GiB／CPU 6 GiB 放置上限、448 px 輸入與最多 8 個輸出 token；這是探索工具的低負載設定，不等於正式服務預設。`--config` 必須指向相同結構且使用 `video_backend: frames` 的 Mage-VL YAML，`--model-path` 必須指向已存在的本機快照目錄。若從其他目錄啟動，請傳入相對於該目前工作目錄的路徑或絕對路徑。輸出 JSON 不包含媒體 bytes 或模型生成文字，但包含模型路徑、tensor metadata、計時和錯誤 traceback；請將報告留在本機 `artifacts/`，不要納入 Git。生成使用模型原生 `generate()`，並以 forward hook 記錄 prefill／decode 的耗時及 cache 長度。已在 RTX 4060、固定 Mage-VL revision 和本機圖片上完成一次低負載 GPU 探測；這項探測用於檢查模型執行介面和 cache 行為，不是模型精度評估或正式性能基線。
 
 ## 擷取 Qwen3-0.6B 能力資訊
 

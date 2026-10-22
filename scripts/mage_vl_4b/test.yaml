@@ -1,6 +1,6 @@
 # Mage-VL 探索設定；沿用正式 inference.yml 結構，輸出 token 數預設為 8。
 hardware:
-  expected_gpu: NVIDIA GeForce RTX 4090
+  expected_gpu: NVIDIA GeForce RTX 4060 Laptop GPU
 
 model:
   id: microsoft/Mage-VL
@@ -17,17 +17,13 @@ model:
   disable_mmap: null
   offload_folder: null
   quantization:
-    method: none
-    quant_type: nf4
-    double_quant: true
-    compute_dtype: bfloat16
-    quant_storage: null
-    llm_int8_enable_fp32_cpu_offload: false
+    method: int8
+    llm_int8_enable_fp32_cpu_offload: true
     llm_int8_threshold: 6.0
     llm_int8_has_fp16_weight: false
     llm_int8_skip_modules: null
-    gpu_max_memory: 22GiB
-    cpu_max_memory: null
+    gpu_max_memory: 5GiB
+    cpu_max_memory: 6GiB
 
 processor:
   use_fast: null
@@ -41,15 +37,15 @@ runtime:
 
 api:
   image_resampling: lanczos
-  max_image_side: 896
+  max_image_side: 448
   max_image_bytes: 10485760
-  max_image_pixels: 16777216
+  max_image_pixels: 1000000
   max_video_bytes: 209715200
   max_video_duration_seconds: 120
-  video_max_frames: 16
-  video_max_frame_side: 896
+  video_max_frames: 2
+  video_max_frame_side: 448
   video_backend: frames
-  max_new_tokens: 512
+  max_new_tokens: 8
 
 generation:
   max_tokens_default: 8

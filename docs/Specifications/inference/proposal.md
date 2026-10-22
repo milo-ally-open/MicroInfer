@@ -32,6 +32,8 @@
 - L3 先提供 `Executor`、`Platform` 契約及目前實際使用的 `LocalProcessExecutor`、`TorchCudaPlatform`。Ray、多 GPU、其他硬體平台不宣稱已實作。
 - L4 `InputBatch` 明確承載本輪 token 張量、長度、位置偏移和每 request block table；目前每輪建立，不宣稱已採用固定緩衝區或 CUDA Graph。
 - L5 Qwen3 自有 PyTorch 模型計算圖；Transformers 僅提供 config／tokenizer 等生態相容能力，Safetensors loader 負責權重映射。
+- 新模型只需實作模型 Runner／Adapter 並登記工廠；API app、Engine Core、Executor 和 Worker 建立流程由共用入口負責，不再要求每個模型複製 `app.py`／`engine_core.py`。
+- 模型對外 ID、輸入處理器和選用的影片／Live 入口由 Registry 登記；上游 repo ID 保持在模型 YAML，兩者分開維護。
 
 ## 範圍
 
@@ -39,6 +41,8 @@
 - 將 Qwen3 tokenization／增量 detokenization 放到 API 輸入輸出邊界，保持 OpenAI Chat、逐步文字 SSE、finish usage、`[DONE]` 和取消收尾。
 - 將 Engine Core 的 Worker RPC 改由 Executor 介面承接，並以 Platform 介面處理 Qwen CUDA 裝置與記憶體觀測。
 - 將 Qwen 每輪批次張量組裝抽成 `InputBatch`，保留目前 prefill/decode 批次和每 request cache 隔離。
+- 建立共用模型工廠與設定載入流程，移除 Mage-VL／Qwen 重複的服務裝配；提供逐步生成模型 Adapter／Runner 接入契約與操作指南。
+- 為符合單裝置 causal LM、Tokenizer chat template 與逐步 `past_key_values` 契約的文字模型提供預設 InputProcessor／Runner／Adapter；多模態或不同 Cache／計算圖仍由模型包持有。
 - 透過合成／契約測試及固定 Qwen3-0.6B 本機 snapshot 驗證；不把舊版本 GPU 結果當作新架構的驗收結果。
 
 ## 非目標
@@ -64,3 +68,9 @@ KV block 所有權仍分成 Engine 的邏輯 reservation 和 Qwen Worker 的 GPU
 - Engine 依賴 `Executor` 契約；線上實作由 `LocalProcessExecutor` 執行 Worker 子程序。Qwen Runner 透過 YAML 選用 `torch_cuda` 平台並使用 `InputBatch`。
 - 所有新增／更新任務均以唯一 `REQ`、`AC`、`T` ID 互相追蹤；只將實際執行的檢查記為通過。
 - 固定 snapshot 的 API／SSE／取消及性能驗收完成前，不宣稱本次改造已通過真實模型整合。
+
+## 新模型接入工作流補強
+
+為縮短後續模型接入並避免能力描述漂移，Registry 增加 `standard`／`custom` 整合 profile 和明確 API capability；共用 API 啟動時驗證其可提供的路由，Launcher 提供不載入權重或 GPU 的 `validate` 預檢。`tests/inference/model_contract.py` 驗證 Runner／Adapter 方法結構，`tests/end2end/` 驗證 Gateway 與 Inference 的別名、上游 ID、能力及網路設定一致。
+
+`standard` 使用共用文字預設元件，限定於單裝置 causal LM、具有固定 revision 的 Tokenizer chat template、可逐步重用的 `past_key_values` 和 token ID 輸出；每個 Scheduler work item 仍獨立 forward，首版不宣稱批次 forward。`custom` 用於需要模型包持有計算圖、Cache、Tokenizer 或媒體流程的模型。Mage-VL 和 Qwen3-0.6B 保持目前的 `custom` 實作；Qwen snapshot 可用來實際驗證標準預設執行路徑，但不因此改變其 Registry profile 或原生 PyTorch 服務方式。預檢與合成測試仍不能取代目標部署環境的實際模型／硬體驗收。

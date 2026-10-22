@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 
 
 MODEL_ALIAS = "mage-vl-4b"
+TEXT_MODEL_ALIAS = "qwen3-0.6b"
 MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 
 
@@ -30,8 +31,23 @@ class GatewayClient:
         self.timeout = timeout
         self.last_video_upload_seconds: float | None = None
 
-    def stream_chat_with_image(self, image_path: Path, question: str) -> dict[str, float | int | None]:
-        payload = self._image_chat_payload(image_path, question)
+    def stream_chat_with_image(
+        self, image_path: Path, question: str, model: str = MODEL_ALIAS
+    ) -> dict[str, float | int | None]:
+        payload = self._image_chat_payload(image_path, question, model)
+        return self._stream_chat(payload)
+
+    def stream_chat_with_text(
+        self, question: str, model: str = TEXT_MODEL_ALIAS
+    ) -> dict[str, float | int | None]:
+        payload = {
+            "model": model,
+            "stream": True,
+            "messages": [{"role": "user", "content": question}],
+        }
+        return self._stream_chat(payload)
+
+    def _stream_chat(self, payload: dict) -> dict[str, float | int | None]:
         request = Request(
             self.base_url + "/v1/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -58,6 +74,10 @@ class GatewayClient:
                         chunk = json.loads(data)
                     except json.JSONDecodeError:
                         continue
+                    if isinstance(chunk, dict) and isinstance(chunk.get("error"), dict):
+                        error = chunk["error"]
+                        message = error.get("message", "Gateway SSE returned an error.")
+                        raise GatewayAPIError(str(message))
                     for choice in chunk.get("choices", []):
                         content = choice.get("delta", {}).get("content")
                         if isinstance(content, str) and content:
@@ -76,11 +96,11 @@ class GatewayClient:
             raise GatewayAPIError(f"無法連線至 Gateway：{error.reason}") from error
 
     @staticmethod
-    def _image_chat_payload(image_path: Path, question: str) -> dict:
+    def _image_chat_payload(image_path: Path, question: str, model: str = MODEL_ALIAS) -> dict:
         encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
         mime_type = "image/png" if image_path.suffix.lower() == ".png" else "image/jpeg"
         return {
-            "model": MODEL_ALIAS,
+            "model": model,
             "stream": True,
             "messages": [
                 {

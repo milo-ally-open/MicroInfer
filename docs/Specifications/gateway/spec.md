@@ -3,15 +3,15 @@
 > 關聯提案：[proposal.md](proposal.md)  
 > 技術設計：[design.md](design.md)  
 > 實施追蹤：[tasks.md](tasks.md)  
-> 狀態：Go Gateway v1 已實作；各驗收條件的 mock／靜態／真實服務狀態見 tasks.md。
+> 狀態：Go Gateway v1 基本路由已實作；本次以 REQ-13 補充雙模型能力路由與 Gateway／Inference 設定一致性，驗收證據見 tasks.md。
 > 來源：使用者確認的 Go 閘道目標、根目錄 AGENTS.md、README.md、src/gateway/README.md 與 src/inference/README.md。
 
 ## 範圍和術語
 
 本規格涵蓋外部客戶端至 Go Gateway、Gateway 至推論 API 的 HTTP 請求，以及即時工作階段對 MediaMTX 的媒體資料流。Gateway 與推論服務是分離元件。媒體資料流由客戶端直接連接 MediaMTX。
 
-- 專案別名：mage-vl-4b，供客戶端使用。
-- 上游模型識別碼：microsoft/Mage-VL，僅用於目前推論服務路由。
+- 專案別名：`mage-vl-4b` 和 `qwen3-0.6b`，供客戶端使用。
+- 上游模型識別碼：`microsoft/Mage-VL` 與 `qwen3-0.6b`，分別用於各模型推論服務路由。
 - 租戶：由已驗證 API Key 對應的客戶或呼叫方。
 - 工作階段句柄：Gateway 簽發、綁定租戶與上游工作階段的 URL 安全識別碼。
 - OpenAI 風格錯誤：JSON 本文包含 error 物件，至少含 message、type、code；param 可為 null。
@@ -20,11 +20,11 @@
 
 ### REQ-01：公開模型別名與上游路由
 
-**需求**：Gateway 應以 YAML 登錄公開模型別名及其上游服務映射，首版只公開已登錄的 mage-vl-4b。
+**需求**：Gateway 應以 YAML 登錄公開模型別名及其上游服務映射，只公開已登錄的模型別名。
 
 **驗收條件**
 
-- **AC-01.1** Given API Key 有效，When 客戶端呼叫 GET /v1/models，Then 回應清單包含 mage-vl-4b，且不向客戶端暴露 microsoft/Mage-VL。
+- **AC-01.1** Given API Key 有效，When 客戶端呼叫 GET /v1/models，Then 回應清單包含目前登錄的 mage-vl-4b 和 qwen3-0.6b，且不暴露上游識別碼。
 - **AC-01.2** Given 客戶端請求指定 model 為 mage-vl-4b，When Gateway 轉送聊天請求，Then 上游請求使用 microsoft/Mage-VL，非串流回應及每個 SSE JSON 分塊的 model 欄位均使用 mage-vl-4b。
 - **AC-01.3** Given 請求未指定 model 或指定未登錄的名稱，When Gateway 驗證聊天請求，Then 回應 HTTP 400 與 OpenAI 風格錯誤，且不呼叫上游。
 
@@ -44,7 +44,7 @@
 
 ### REQ-03：一般聊天請求
 
-**需求**：Gateway 應將符合目前推論 API 契約的圖片／圖文聊天請求轉送至已設定的推論服務，並保留現有客戶端可使用的聊天請求與非串流回應欄位。目前推論服務要求至少一個 image_url；純文字請求會被推論端拒絕，Gateway 不改寫該契約。
+**需求**：Gateway 應依選定模型已登記的輸入能力，將文字或圖片／圖文聊天請求轉送至正確的推論服務，並保留相容的聊天欄位。Mage-VL 要求圖片輸入；Qwen3-0.6B 接受純文字，兩者都不接受對方未宣告的輸入模態。
 
 **驗收條件**
 
@@ -60,7 +60,7 @@
 **驗收條件**
 
 - **AC-04.1** Given 聊天請求指定 stream 為 true，When 上游產生 SSE，Then Gateway 逐事件轉送，刷新回應而不等待完整生成，並保留 data: [DONE] 結尾。
-- **AC-04.2** Given 上游 SSE JSON 分塊包含 model 欄位，When Gateway 對外轉送該分塊，Then 將欄位改寫為公開別名 mage-vl-4b；SSE 註解、keep-alive、非 JSON 控制資料及 [DONE] 不被誤解析為完成分塊。
+- **AC-04.2** Given 上游 SSE JSON 分塊包含 model 欄位，When Gateway 對外轉送該分塊，Then 將欄位改寫為請求選定的公開別名；SSE 註解、keep-alive、非 JSON 控制資料及 [DONE] 不被誤解析為完成分塊。
 - **AC-04.3** Given 客戶端在串流中斷線或取消，When Gateway 收到取消訊號，Then 取消上游請求並釋放相關連線與工作資源。
 
 **驗證方式**：串流測試，檢查首事件延遲、事件順序、反向壓力及客戶端取消。
@@ -84,7 +84,7 @@
 **驗收條件**
 
 - **AC-06.1** Given 有效租戶建立工作階段，When Gateway 呼叫推論服務 POST /v1/live/sessions，Then 對外回應使用該租戶綁定的 URL 安全簽名句柄，events_url 與 stop_url 指向 Gateway，publish RTSP／RTMP URL 仍直連 MediaMTX。
-- **AC-06.2** Given 同租戶使用有效 API Key 與簽名句柄呼叫事件或停止路由，When Gateway 驗證句柄簽章、租戶及有效期，Then 以句柄內的上游識別碼代理 GET /v1/live/sessions/{session_id}/events 或 DELETE /v1/live/sessions/{session_id}。
+- **AC-06.2** Given 同租戶使用有效 API Key 與簽名句柄呼叫事件或停止路由，When Gateway 驗證句柄簽章、租戶及有效期，Then 以句柄內的模型別名和上游識別碼代理 GET /v1/live/sessions/{session_id}/events 或 DELETE /v1/live/sessions/{session_id}。
 - **AC-06.3** Given 句柄無效、過期或屬於其他租戶，When 客戶端呼叫事件或停止路由，Then 回應一致的 HTTP 404 OpenAI 風格錯誤，不揭露工作階段是否存在。
 - **AC-06.4** Given 客戶端透過 publish URL 連接 MediaMTX，When MediaMTX 授權回呼檢查路徑，Then 僅作用中的工作階段可發布或讀取；媒體 URL 視同能力憑證，客戶端應保密，且工作階段終止後失效。
 
@@ -121,7 +121,7 @@
 **驗收條件**
 
 - **AC-09.1** Given Gateway 程序運行，When 呼叫 GET /healthz，Then 回應成功且不要求 API Key；此端點只表示 Gateway 程序仍存活。
-- **AC-09.2** Given Gateway 設定有效且推論服務 GET /health 回報模型狀態為 ok，When 呼叫 GET /readyz，Then 回應成功且不要求 API Key。
+- **AC-09.2** Given Gateway 設定有效且每個不同推論 URL 的 GET /health 均回報模型狀態為 ok，When 呼叫 GET /readyz，Then 回應成功且不要求 API Key。
 - **AC-09.3** Given 設定未載入或推論上游不可用／未就緒，When 呼叫 GET /readyz，Then 回應 HTTP 503，不宣稱模型 API 可服務。
 
 **驗證方式**：健康端點測試及上游健康狀態模擬測試。
@@ -164,6 +164,21 @@
 
 **驗證方式**：套件／責任邊界檢視、分層測試、回復演練及性能基線報告。
 
+### REQ-13：依模型能力選擇推論上游並拒絕不支援功能
+
+**需求**：Gateway 必須依公開模型別名、每模型上游 URL 及能力設定路由請求；Gateway 設定需與 Inference Registry 的已登錄 alias、上游識別碼和能力保持一致。
+
+**驗收條件**
+
+- **AC-13.1** Given `mage-vl-4b` 或 `qwen3-0.6b` 聊天請求，When Gateway 解析 JSON `model`，Then 轉送至該模型 YAML 上游 URL，改寫成相應上游模型識別碼，並將 JSON／SSE 回應模型欄位改回該專案別名。
+- **AC-13.2** Given 聊天本文含有不受所選模型支援的輸入模態或串流模式，When Gateway 執行 capability policy，Then 回應 HTTP 400 `unsupported_model_capability`，且不呼叫上游。
+- **AC-13.3** Given影片 multipart 請求以選用 query `model` 指定別名，When Gateway 驗證 `video_upload`，Then 以所選模型上游轉送；省略時使用 YAML `defaults.video_model`；unsupported capability 在讀取或轉送本文前拒絕；轉送保留原 multipart body、boundary 及 `Content-Length`。
+- **AC-13.4** Given Live 建立 JSON 本文含選用 `model`，When Gateway 驗證 `live_video`，Then 使用該模型上游並在句柄簽章中綁定其 alias；省略時使用 `defaults.live_model`；events SSE 與停止請求必須使用句柄綁定的同一上游。句柄仍須驗證簽章、有效期及 API Key tenant。
+- **AC-13.5** Given Gateway 配置多個不同推論 URL，When 客戶端呼叫 `/readyz`，Then 每個不同上游都回報 ready 才返回成功。
+- **AC-13.6** Given Gateway 與 Inference 各自保存路由設定，When 執行 `tests/end2end/test_config_compatibility.py`，Then 驗證 alias 集合、`upstream_model`／`api.model_id`、文字／圖片／stream／video／live 能力及 network URL 一致。
+
+**驗證方式**：Gateway `httptest` 覆蓋兩個模型文字／圖片／SSE、上傳與 Live capability 正負案例、模型上游隔離及 readiness；跨設定檔檢查由 `tests/end2end/` 執行。
+
 ## 不變項與相容要求
 
 - 專案別名 mage-vl-4b 與上游 repo_id microsoft/Mage-VL 是不同識別碼，不可混用。
@@ -190,18 +205,19 @@
 
 | 上游條款／決定 | REQ | 模組／服務 | 任務 ID | AC | 驗收證據／狀態 |
 |---|---|---|---|---|---|
-| 對外別名 mage-vl-4b；上游識別碼 microsoft/Mage-VL | REQ-01 | internal/route/、internal/upstream/、gateway.go | T-03、T-12 | AC-01.1、AC-01.2、AC-01.3 | 已實作；mock 測試，未連真實推論 |
+| 已登錄模型別名與上游路由 | REQ-01 | internal/route/、internal/upstream/、gateway.go | T-03、T-12、T-13 | AC-01.1、AC-01.2、AC-01.3、AC-13.1 | Mage／Qwen mock 路由已測；真實 Gateway smoke 已覆蓋 Qwen 文字 JSON／SSE、Mage 圖片 JSON／SSE／視訊上傳及 Live／MediaMTX 合成 RTSP |
 | API Key 與租戶識別 | REQ-02 | internal/auth/、gateway.go | T-02 | AC-02.1、AC-02.2、AC-02.3 | 已實作；mock 測試 |
 | 既有聊天 JSON API | REQ-03 | gateway.go、internal/upstream/ | T-03、T-12 | AC-03.1、AC-03.2 | 已實作；mock 測試 |
 | 既有聊天 SSE | REQ-04 | internal/stream/、internal/upstream/、gateway.go | T-04、T-12 | AC-04.1、AC-04.2、AC-04.3 | 已實作；取消專項測試待補 |
 | 視訊 multipart 與 Content-Length 限制 | REQ-05 | internal/videoproxy/、internal/upstream/、YAML | T-05、T-12 | AC-05.1、AC-05.2、AC-05.3 | 已實作；mock／靜態相容測試 |
-| 即時 API、媒體直連與租戶綁定句柄 | REQ-06 | gateway.go、internal/auth/ | T-06 | AC-06.1、AC-06.2、AC-06.3、AC-06.4 | 控制 API 已實作；MediaMTX 真實驗證未執行 |
+| 即時 API、媒體直連與租戶綁定句柄 | REQ-06 | gateway.go、internal/auth/ | T-06 | AC-06.1、AC-06.2、AC-06.3、AC-06.4 | 控制 API mock 測試通過；已完成一次 Gateway／MediaMTX 合成 RTSP 端到端 smoke，過期／未授權媒體存取仍待驗證 |
 | 單實例、每租戶限流及本文上限 | REQ-07 | internal/middleware/、internal/config/ | T-07 | AC-07.1、AC-07.2、AC-07.3 | 已實作；mock 測試 |
 | OpenAI 風格錯誤及上游逾時 | REQ-08 | gateway.go、internal/upstream/、internal/stream/ | T-08、T-12 | AC-08.1、AC-08.2、AC-08.3 | 已實作；502 已測，504／中斷 case 未完整測 |
 | 健康與就緒語義 | REQ-09 | gateway.go、internal/upstream/ | T-09、T-12 | AC-09.1、AC-09.2、AC-09.3 | 已實作；mock 上游測試 |
 | 日誌、指標與敏感資料保護 | REQ-10 | internal/observability/、gateway.go | T-10 | AC-10.1、AC-10.2、AC-10.3 | 已實作；mock 指標／遮蔽測試，真實性能未執行 |
 | YAML 設定及安全密鑰注入 | REQ-11 | internal/config/、internal/auth/ | T-01、T-02 | AC-11.1、AC-11.2、AC-11.3、AC-11.4 | 已實作；checked-in YAML 與 mock 密鑰測試 |
 | 元件邊界、測試分層、性能基線與回復 | REQ-12 | Gateway 套件、tests/ | T-11、T-12 | AC-12.1、AC-12.2、AC-12.3、AC-12.4 | 套件責任與測試分層已檢視；實際性能與回復演練未執行 |
+| 模型能力政策、雙模型路由與設定一致性 | REQ-13 | internal/config/、gateway.go、internal/auth/、tests/gateway/、tests/end2end/ | T-13 | AC-13.1、AC-13.2、AC-13.3、AC-13.4、AC-13.5、AC-13.6 | Gateway mock、Inference／End2End 設定一致性測試通過；真實 Gateway smoke 已覆蓋 Qwen 文字 JSON／SSE、Mage 圖片 JSON／SSE／視訊上傳及 Live／MediaMTX 合成 RTSP |
 
 ## 假設與未決問題
 

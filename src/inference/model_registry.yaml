@@ -1,17 +1,41 @@
-# 模型別名及其推論、網路、媒體設定與服務入口集中登錄於此。
+# 模型差異、設定路徑與工廠集中登錄；API／Engine 裝配由共用入口負責。
 default_model: mage-vl-4b
 default_backend: transformers
 models:
   mage-vl-4b:
     display_name: Mage-VL-4B
+    integration_profile: custom
     inference_config: src/inference/models/mage_vl_4b/configs/inference.yml
     network_config: src/inference/models/mage_vl_4b/configs/network.yml
     media_config: src/inference/models/mage_vl_4b/configs/mediamtx.yml
-    service_entrypoint: src/inference/models/mage_vl_4b/app.py
+    api:
+      model_id: microsoft/Mage-VL
+      capabilities:
+        chat_inputs: [image]
+        streaming: true
+        output_mode: text_delta
+        video_upload: true
+        live_video: true
+      live_session_manager: models.mage_vl_4b.live:create_live_session_manager
+    components:
+      runner: models.mage_vl_4b.model_runner:MageVLModelRunner
+      adapter: models.mage_vl_4b.adapter:MageVLModelAdapter
   qwen3-0.6b:
     display_name: Qwen3-0.6B
+    integration_profile: custom
     backend: qwen3_native_torch
     inference_config: src/inference/models/qwen3_0_6b/configs/inference.yml
     network_config: src/inference/models/qwen3_0_6b/configs/network.yml
     media_config: src/inference/models/qwen3_0_6b/configs/mediamtx.yml
-    service_entrypoint: src/inference/models/qwen3_0_6b/app.py
+    api:
+      model_id: qwen3-0.6b
+      input_processor: models.qwen3_0_6b.input_processor:Qwen3InputProcessor
+      capabilities:
+        chat_inputs: [text]
+        streaming: true
+        output_mode: token_ids
+        video_upload: false
+        live_video: false
+    components:
+      runner: models.qwen3_0_6b.model_runner:Qwen3ModelRunner
+      adapter: models.qwen3_0_6b.adapter:Qwen3ModelAdapter

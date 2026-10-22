@@ -17,7 +17,11 @@ type Config struct {
 		Port int    `yaml:"port"`
 	} `yaml:"listener"`
 	PublicBaseURL string `yaml:"public_base_url"`
-	Upstream      struct {
+	Defaults      struct {
+		VideoModel string `yaml:"video_model"`
+		LiveModel  string `yaml:"live_model"`
+	} `yaml:"defaults"`
+	Upstream struct {
 		BaseURL                   string `yaml:"base_url"`
 		MaxIdleConnections        int    `yaml:"max_idle_connections"`
 		MaxIdleConnectionsPerHost int    `yaml:"max_idle_connections_per_host"`
@@ -65,8 +69,50 @@ type Config struct {
 }
 
 type ModelRoute struct {
-	UpstreamModel string `yaml:"upstream_model"`
-	BaseURL       string `yaml:"base_url,omitempty"`
+	UpstreamModel string            `yaml:"upstream_model"`
+	BaseURL       string            `yaml:"base_url,omitempty"`
+	Capabilities  ModelCapabilities `yaml:"capabilities"`
+}
+
+type ModelCapabilities struct {
+	TextChat    bool `yaml:"text_chat"`
+	ImageChat   bool `yaml:"image_chat"`
+	Streaming   bool `yaml:"streaming"`
+	VideoUpload bool `yaml:"video_upload"`
+	LiveVideo   bool `yaml:"live_video"`
+}
+
+// UnmarshalYAML 要求每個路由明確列出全部支援與不支援的 API 能力。
+func (capabilities *ModelCapabilities) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("model capabilities must be a mapping")
+	}
+	known := map[string]struct{}{
+		"text_chat": {}, "image_chat": {}, "streaming": {}, "video_upload": {}, "live_video": {},
+	}
+	seen := make(map[string]struct{}, len(known))
+	for index := 0; index < len(node.Content); index += 2 {
+		name := node.Content[index].Value
+		if _, exists := known[name]; !exists {
+			return fmt.Errorf("unknown model capability %q", name)
+		}
+		if _, exists := seen[name]; exists {
+			return fmt.Errorf("model capability %q is set more than once", name)
+		}
+		seen[name] = struct{}{}
+	}
+	for name := range known {
+		if _, exists := seen[name]; !exists {
+			return fmt.Errorf("model capability %q must be explicitly set", name)
+		}
+	}
+	type plain ModelCapabilities
+	var decoded plain
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*capabilities = ModelCapabilities(decoded)
+	return nil
 }
 
 var envName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
@@ -135,6 +181,19 @@ func (cfg Config) Validate() error {
 				return err
 			}
 		}
+		capabilities := route.Capabilities
+		if !capabilities.TextChat && !capabilities.ImageChat && !capabilities.VideoUpload && !capabilities.LiveVideo {
+			return fmt.Errorf("models.%s must declare at least one capability", alias)
+		}
+		if capabilities.Streaming && !capabilities.TextChat && !capabilities.ImageChat {
+			return fmt.Errorf("models.%s.streaming requires text_chat or image_chat", alias)
+		}
+	}
+	if cfg.Defaults.VideoModel == "" || !cfg.Models[cfg.Defaults.VideoModel].Capabilities.VideoUpload {
+		return fmt.Errorf("defaults.video_model must name a model with video_upload capability")
+	}
+	if cfg.Defaults.LiveModel == "" || !cfg.Models[cfg.Defaults.LiveModel].Capabilities.LiveVideo {
+		return fmt.Errorf("defaults.live_model must name a model with live_video capability")
 	}
 	for name, value := range map[string]int64{
 		"limits.chat_request_bytes":  cfg.Limits.ChatRequestBytes,

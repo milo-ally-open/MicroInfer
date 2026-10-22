@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from api.schemas import ChatCompletionRequest, ChatCompletionResponse
+from api.schemas import ChatCompletionRequest, ChatCompletionResponse, ImageContentPart
 from api.serializers import chat_completion, chat_completion_chunk
 from engine.errors import InferenceError
 
@@ -58,6 +58,20 @@ def _next_stream_event(stream: Any) -> Any:
 async def chat_completions(body: ChatCompletionRequest, request: Request) -> Any:
     if body.model not in {None, request.app.state.model_id}:
         raise HTTPException(status_code=404, detail=f"Unknown model: {body.model}")
+    modalities = request.app.state.chat_input_modalities
+    if modalities is not None:
+        image_input = any(
+            isinstance(part, ImageContentPart)
+            for message in body.messages
+            if isinstance(message.content, list)
+            for part in message.content
+        )
+        modality = "image" if image_input else "text"
+        if modality not in modalities:
+            kind = "image input" if image_input else "text-only chat input"
+            raise HTTPException(status_code=400, detail=f"This model does not accept {kind}.")
+    if body.stream and not request.app.state.streaming_enabled:
+        raise HTTPException(status_code=400, detail="This model does not support streaming output.")
     request_body = body.model_dump(exclude_none=True)
     input_processor = request.app.state.input_processor
     prepared_input = input_processor.prepare_chat(request_body) if input_processor is not None else None

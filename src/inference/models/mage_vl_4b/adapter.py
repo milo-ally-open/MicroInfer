@@ -197,18 +197,6 @@ class MageVLModelAdapter:
     def bind_generation_cache(self, request_id: str, block_ids: tuple[int, ...]) -> None:
         self.model_runner.bind_generation_cache(request_id, block_ids)
 
-    def prefill_generation(self, request_id: str, token_budget: int) -> dict[str, Any]:
-        task = self._task(request_id)
-        if not 1 <= token_budget <= task["prompt_tokens"]:
-            raise RuntimeError("Scheduler prefill token budget is outside the prepared prompt.")
-        task["generation_started"] = time.perf_counter()
-        return self.model_runner.prefill_generation(request_id)
-
-    def decode_generation_step(self, request_id: str, token_budget: int) -> dict[str, Any]:
-        if token_budget != 1:
-            raise RuntimeError("Decode scheduling must assign exactly one token per turn.")
-        return self.model_runner.decode_generation_step(request_id)
-
     def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> tuple[WorkerResult, ...]:
         """將同輪混合 work items 交給模型 Runner，逐請求回傳生成結果。"""
         for request in requests:
@@ -284,30 +272,6 @@ class MageVLModelAdapter:
     def cancel_generation(self, request_id: str) -> None:
         self.model_runner.cancel_generation(request_id)
         self._tasks.pop(request_id, None)
-
-    def analyze_live_frames(self, question: str, frames: list[Any], generation_args: dict[str, Any]) -> dict[str, Any]:
-        return processor._analyze_live_frames(question, frames, generation_args, self.model_runner)
-
-    def analyze_live_video(
-        self,
-        question: str,
-        video_path: Path,
-        generation_args: dict[str, Any],
-        codec_engine: str | None,
-        target_canvas: int,
-        max_pixels: int,
-        codec_cache_root: Path | None,
-    ) -> dict[str, Any]:
-        return processor._analyze_live_video(
-            question,
-            video_path,
-            generation_args,
-            codec_engine,
-            target_canvas,
-            max_pixels,
-            codec_cache_root,
-            self.model_runner,
-        )
 
     def _task(self, request_id: str) -> dict[str, Any]:
         try:

@@ -120,9 +120,9 @@ class HealthResponse(APIModel):
     backend: str = "transformers"
     model: str
     revision: str
-    quantization: str
+    quantization: str = "none"
     live_sessions: int
-    live_video_enabled: bool = True
+    live_video_enabled: bool = False
     api_pid: int | None = None
     engine_core_pid: int | None = None
     worker_pid: int | None = None

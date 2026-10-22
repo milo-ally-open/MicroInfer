@@ -119,14 +119,19 @@ type sessionPayload struct {
 	Version  string `json:"v"`
 	TenantID string `json:"tenant"`
 	Session  string `json:"session"`
+	Model    string `json:"model,omitempty"`
 	Expires  int64  `json:"exp"`
 }
 
 func SignSession(tenantID, upstreamID string, expires time.Time, keys [][]byte) (string, error) {
+	return SignModelSession(tenantID, "", upstreamID, expires, keys)
+}
+
+func SignModelSession(tenantID, modelAlias, upstreamID string, expires time.Time, keys [][]byte) (string, error) {
 	if tenantID == "" || upstreamID == "" || len(keys) == 0 || len(keys[0]) < 32 {
 		return "", fmt.Errorf("session handle signing inputs are invalid")
 	}
-	payload, err := json.Marshal(sessionPayload{Version: "v1", TenantID: tenantID, Session: upstreamID, Expires: expires.Unix()})
+	payload, err := json.Marshal(sessionPayload{Version: "v1", TenantID: tenantID, Session: upstreamID, Model: modelAlias, Expires: expires.Unix()})
 	if err != nil {
 		return "", err
 	}
@@ -138,13 +143,23 @@ func SignSession(tenantID, upstreamID string, expires time.Time, keys [][]byte) 
 }
 
 func VerifySession(handle, tenantID string, keys [][]byte, now time.Time) (string, bool) {
+	session, valid := VerifyModelSession(handle, tenantID, keys, now)
+	return session.UpstreamID, valid
+}
+
+type Session struct {
+	UpstreamID string
+	ModelAlias string
+}
+
+func VerifyModelSession(handle, tenantID string, keys [][]byte, now time.Time) (Session, bool) {
 	parts := strings.Split(handle, ".")
 	if len(parts) != 2 || len(keys) == 0 {
-		return "", false
+		return Session{}, false
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", false
+		return Session{}, false
 	}
 	valid := 0
 	for _, key := range keys {
@@ -153,17 +168,17 @@ func VerifySession(handle, tenantID string, keys [][]byte, now time.Time) (strin
 		valid |= boolInt(hmac.Equal(signature, mac.Sum(nil)))
 	}
 	if valid != 1 {
-		return "", false
+		return Session{}, false
 	}
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return "", false
+		return Session{}, false
 	}
 	var payload sessionPayload
 	if json.Unmarshal(payloadBytes, &payload) != nil || payload.Version != "v1" || payload.TenantID != tenantID || payload.Session == "" || payload.Expires <= now.Unix() {
-		return "", false
+		return Session{}, false
 	}
-	return payload.Session, true
+	return Session{UpstreamID: payload.Session, ModelAlias: payload.Model}, true
 }
 
 func boolInt(value bool) int {

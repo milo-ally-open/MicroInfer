@@ -10,9 +10,9 @@ import torch
 from engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
 from engine.platform import Platform, create_platform
 from . import config
-from .compatibility.hf_config import load_model_config
-from .compatibility.hf_tokenizer import load_tokenizer
-from .compatibility.safetensors_loader import load_safetensors
+from .utils.hf_config import load_model_config
+from .utils.hf_tokenizer import load_tokenizer
+from .utils.safetensors_loader import load_safetensors
 from .model.input_batch import InputBatch
 from .model.paged_kv_cache import PagedKVCache
 from .model.qwen3_model import Qwen3ForCausalLM
@@ -77,6 +77,8 @@ class Qwen3ModelRunner:
         raw_input_ids = inputs["input_ids"]
         input_ids = torch.as_tensor(raw_input_ids, dtype=torch.long, device="cpu")
         attention_mask = inputs.get("attention_mask")
+        if input_ids.ndim == 1:
+            input_ids = input_ids.unsqueeze(0)
         if input_ids.ndim != 2 or input_ids.shape[0] != 1:
             raise ValueError("Qwen3 chat generation requires one unpadded prompt per request.")
         if attention_mask is not None and not bool(torch.all(attention_mask == 1)):

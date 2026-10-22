@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "test": "live-video-gateway-smoke",
+  "timestamp_utc": "2026-10-22T07:17:29.257766+00:00",
+  "model": "mage-vl-4b",
+  "input": "FFmpeg lavfi testsrc 320x240 at 2 fps, H.264 over RTSP/TCP",
+  "settings": {
+    "video_backend": "frames",
+    "sample_interval_seconds": 1.0,
+    "window_seconds": 2.0,
+    "max_tokens": 8
+  },
+  "outcome": "passed",
+  "events": [
+    "status",
+    "status",
+    "status",
+    "analysis"
+  ],
+  "first_analysis_seconds": 36.428,
+  "analysis_frame_count": 1,
+  "cleanup_completed": true,
+  "secret_fields_excluded": true,
+  "models_http_status": 200,
+  "create_http_status": 200,
+  "events_http_status": 200,
+  "stop_http_status": 200,
+  "publisher_exit_code": 255,
+  "duration_seconds": 38.051
+}

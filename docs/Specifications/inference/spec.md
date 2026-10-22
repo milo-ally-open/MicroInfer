@@ -64,3 +64,32 @@
 - **AC-08.3** 固定 Qwen3-0.6B snapshot 驗收記錄模型 revision、硬體／軟體版本、非串流回答、文字 SSE 完整內容、finish usage、`[DONE]`、併發隔離和取消後 page 回收；CPU mock 不替代實機證據。
 - **AC-08.4** Qwen 性能報告記錄 request／token throughput、TTFT、inter-token latency、request latency 分位數、錯誤率和 peak allocated／reserved VRAM；此階段建立基線，不設硬 SLA。
 - **AC-08.5** 本專案不因本規格增加模型精度資料集或 Video-MME 評測。
+
+### REQ-09：新模型沿用共用服務裝配
+
+- **AC-09.1** 新模型透過 `model_registry.yaml` 登記設定路徑、Runner／Adapter 工廠及 API 識別碼；Launcher 使用同一個 `api/service_app.py`，Engine 使用同一組 Engine Core／Worker bootstrap，不要求模型包提供 `app.py` 或 `engine_core.py`。
+- **AC-09.2** GPU Worker 呼叫 Runner 的 `load()`、`gpu_status()`、`close()`；Adapter 依既有 Engine 操作契約完成準備、Cache 綁定、批次執行、finish 和 cancel，並按 request ID 回傳獨立結果。
+- **AC-09.3** Tokenizer／Chat Template、視訊與 Live 整合以可選工廠及登錄欄位加入；未登記的路由不出現在 API。`api.model_id` 與 YAML 中的上游 repo ID 分開設定。
+- **AC-09.4** Mage-VL 與 Qwen3 經共用服務入口啟動；Mage-VL 的影片／Live 路由與文字增量、Qwen 的文字 API 與逐 token SSE、finish usage 和 `[DONE]` 行為維持現有契約。
+- **AC-09.5** 新模型接入操作指南列出必需程式介面、選用元件、Registry／YAML 範例及啟動檢查；新模型流程不需在共用 API route、Launcher 或 Engine 加入模型 alias 分支。
+
+### REQ-10：模型接入宣告能力並提供無權重預檢
+
+- **AC-10.1** 每筆模型登錄明確宣告 `integration_profile`（`standard`／`custom`）及 `api.capabilities`：聊天輸入模態、串流輸出、輸出型態、影片上傳與 Live 能力；目前兩個已登錄模型如實採用 `custom` profile。
+- **AC-10.2** `launcher.py validate` 檢查 profile、能力欄位、設定 YAML、factory 模組路徑與方法、`token_ids` 輸出所需 InputProcessor，以及 Live 所需 manager／media config；此命令只讀 YAML 和 Python AST，不得 import 模型工廠、載入權重、下載 snapshot 或初始化 GPU。
+- **AC-10.3** 共用 Chat route 依已登記模態和輸出能力拒絕不支援的輸入／串流；影片與 Live API 只在相應 capability 為 true 時加入服務，Live manager 缺漏時啟動失敗。
+- **AC-10.4** `tests/inference/model_contract.py` 以 Python AST 檢查 Runner／Adapter 最小方法及已登記影片／Live 方法，不執行模型程式；相同測試骨架須套用於 Registry 中每個模型及標準預設元件。
+- **AC-10.5** 新模型指南區分標準相容路徑與自訂模型路徑，列出標準預設實作的架構、Cache、Tokenizer、裝置和採樣限制；不相容模型必須登記 custom 並由模型包適配。
+- **AC-10.6** Inference registry 與 Gateway model routes 的別名、上游識別碼、推論服務 URL 和 API 能力保持一致，且由 `tests/end2end/` 跨設定契約測試驗證。
+
+### REQ-11：符合契約的文字模型可使用標準預設 Runner
+
+**需求**：符合標準文字生成契約的模型可省略模型專屬 Runner、Adapter 和 InputProcessor 工廠，使用共用預設元件；標準路徑不得把不相容架構或 Cache 行為偽裝為通用支援。
+
+**驗收條件**
+
+- **AC-11.1** Given `integration_profile: standard` 且模型未覆寫元件工廠，When 共用 API／Worker 啟動，Then 分別使用 `api/default_chat_processor.py`、`engine/standard_text.py` 的預設元件；明確登記的工廠可逐項覆寫預設。
+- **AC-11.2** Given 標準文字聊天請求，When API 處理輸入，Then 預設 InputProcessor 使用固定 revision Tokenizer 的 `chat_template` 產生 `PreparedChatInput`，只接受文字內容，並以同一 Tokenizer 提供非串流解碼和增量文字 SSE。
+- **AC-11.3** Given 標準 Runner 收到 Scheduler 的 prefill／decode work item，When 執行 Worker batch，Then 每個 request 使用自己的 `past_key_values`、Cache 長度及採樣狀態，依序執行 work items 並按 ID 回傳 token 結果；Runner 不宣稱此預設實作會合併模型 forward 或使用物理 PagedAttention。
+- **AC-11.4** Given 模型宣告圖片／影片／Live、encoder-decoder、`device_map` 多裝置或無法重用 `past_key_values`，When 執行標準 profile 預檢或 Worker 載入，Then 明確拒絕或要求切換 `custom`；不得退回完整 `generate()` 繞過 Token Scheduler。
+- **AC-11.5** Given 本機固定 revision snapshot，When 使用標準 Runner 做實際模型 smoke，Then 至少驗證 Tokenizer template、prefill、逐 token decode、Cache 延續、finish/cancel 和文字重建；合成 CPU 契約測試不得替代此模型 smoke。

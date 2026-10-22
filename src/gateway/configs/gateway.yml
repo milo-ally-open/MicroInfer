@@ -5,6 +5,10 @@ listener:
 # 設定為外部客戶端可到達的 Gateway URL；TLS 可由前置 Proxy 終止。
 public_base_url: http://127.0.0.1:8000
 
+defaults:
+  video_model: mage-vl-4b
+  live_model: mage-vl-4b
+
 upstream:
   base_url: http://127.0.0.1:8001
   max_idle_connections: 100
@@ -18,6 +22,21 @@ models:
   mage-vl-4b:
     upstream_model: microsoft/Mage-VL
     base_url: http://127.0.0.1:8001
+    capabilities:
+      text_chat: false
+      image_chat: true
+      streaming: true
+      video_upload: true
+      live_video: true
+  qwen3-0.6b:
+    upstream_model: qwen3-0.6b
+    base_url: http://127.0.0.1:8011
+    capabilities:
+      text_chat: true
+      image_chat: false
+      streaming: true
+      video_upload: false
+      live_video: false
 
 limits:
   chat_request_bytes: 15728640

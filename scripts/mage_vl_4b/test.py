@@ -119,7 +119,7 @@ def _sample_video(path: Path, config: dict[str, Any]) -> tuple[list[Any], dict[s
 
     api = config["api"]
     if str(api.get("video_backend", "frames")) != "frames":
-        raise ValueError("Capability probe video input supports only api.video_backend=frames.")
+        raise ValueError("Utils probe video input supports only api.video_backend=frames.")
     if path.stat().st_size > int(api["max_video_bytes"]):
         raise ValueError(f"Video exceeds api.max_video_bytes={api['max_video_bytes']}.")
     capture = cv2.VideoCapture(str(path))
@@ -418,91 +418,70 @@ def _move_inputs(inputs: Any, model: Any, torch: Any) -> dict[str, Any]:
     return moved
 
 
-def _greedy_stepwise(model: Any, processor: Any, inputs: dict[str, Any], max_tokens: int, torch: Any) -> dict[str, Any]:
-    input_ids = inputs.pop("input_ids", None)
+def _generate_with_cache_trace(model: Any, processor: Any, inputs: dict[str, Any], max_tokens: int, torch: Any) -> dict[str, Any]:
+    input_ids = inputs.get("input_ids")
     if input_ids is None or input_ids.ndim != 2 or input_ids.shape[0] != 1:
-        raise ValueError("Capability probe requires exactly one input sequence.")
+        raise ValueError("Utils probe requires exactly one input sequence.")
     if "attention_mask" not in inputs:
         inputs["attention_mask"] = torch.ones_like(input_ids)
-    prepare = getattr(model, "prepare_inputs_for_generation", None)
-    if not callable(prepare):
-        raise RuntimeError("Model does not expose prepare_inputs_for_generation().")
-    try:
-        parameters = inspect.signature(prepare).parameters
-    except (TypeError, ValueError):
-        parameters = {}
-
-    eos = getattr(model.generation_config, "eos_token_id", None)
-    if eos is None:
-        eos = getattr(processor.tokenizer, "eos_token_id", None)
-    eos_ids = set(eos if isinstance(eos, (tuple, list, set)) else ([] if eos is None else [eos]))
-    past = None
-    generated: list[int] = []
     steps: list[dict[str, Any]] = []
+    pending_started: list[float] = []
     cache_after_prefill = None
-    stopped_on_eos = False
-    started_all = time.perf_counter()
-    for index in range(max_tokens):
-        attention_mask = inputs["attention_mask"]
-        if generated:
-            attention_mask = torch.cat(
-                [attention_mask, torch.ones_like(input_ids[:, -len(generated):])], dim=-1
-            )
-        kwargs: dict[str, Any] = {
-            **inputs,
-            "past_key_values": past,
-            "attention_mask": attention_mask,
-            "use_cache": True,
-        }
-        if "cache_position" in parameters:
-            if past is None:
-                cache_length = 0
-            elif callable(getattr(past, "get_seq_length", None)):
-                cache_length = int(past.get_seq_length())
-            else:
-                cache_length = int(past[0][0].shape[-2])
-            kwargs["cache_position"] = torch.arange(cache_length, input_ids.shape[-1], device=input_ids.device)
-        if "is_first_iteration" in parameters:
-            kwargs["is_first_iteration"] = index == 0
+
+    def before_forward(_module: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        del args, kwargs
         _sync_cuda(torch)
-        step_started = time.perf_counter()
-        with torch.inference_mode():
-            prepared = prepare(input_ids, **kwargs)
-            output = model(**prepared, use_cache=True, return_dict=True)
+        pending_started.append(time.perf_counter())
+
+    def after_forward(_module: Any, _args: tuple[Any, ...], _kwargs: dict[str, Any], output: Any) -> None:
+        nonlocal cache_after_prefill
         _sync_cuda(torch)
-        if getattr(output, "past_key_values", None) is None:
+        started = pending_started.pop() if pending_started else time.perf_counter()
+        cache = getattr(output, "past_key_values", None)
+        if cache is None:
             raise RuntimeError("Model forward did not return past_key_values.")
-        past = output.past_key_values
-        token_id = int(output.logits[:, -1, :].argmax(dim=-1).item())
-        generated.append(token_id)
+        snapshot = _cache_snapshot(cache, torch, include_layers=not steps)
         steps.append({
-            "phase": "prefill" if index == 0 else "decode",
-            "seconds": round(time.perf_counter() - step_started, 6),
-            "generated_tokens": len(generated),
-            "done": token_id in eos_ids or len(generated) >= max_tokens,
-            "cache": _cache_snapshot(past, torch, include_layers=False),
+            "phase": "prefill" if not steps else "decode",
+            "seconds": round(time.perf_counter() - started, 6),
+            "generated_tokens": len(steps) + 1,
+            "cache": _cache_snapshot(cache, torch, include_layers=False),
         })
-        if index == 0:
-            cache_after_prefill = _cache_snapshot(past, torch, include_layers=True)
-        input_ids = torch.cat(
-            [input_ids, torch.tensor([[token_id]], dtype=input_ids.dtype, device=input_ids.device)], dim=-1
-        )
-        if token_id in eos_ids:
-            stopped_on_eos = True
-            break
-    ids = torch.tensor(generated, dtype=torch.long, device=input_ids.device)
-    text = processor.batch_decode(ids.unsqueeze(0), skip_special_tokens=True)[0].strip()
+        if len(steps) == 1:
+            cache_after_prefill = snapshot
+
+    started_all = time.perf_counter()
+    pre_hook = model.register_forward_pre_hook(before_forward, with_kwargs=True)
+    post_hook = model.register_forward_hook(after_forward, with_kwargs=True)
+    try:
+        with torch.inference_mode():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                do_sample=False,
+                use_cache=True,
+                return_dict_in_generate=True,
+            )
+    finally:
+        pre_hook.remove()
+        post_hook.remove()
+    completion_ids = output.sequences[:, input_ids.shape[-1]:]
+    text = processor.batch_decode(completion_ids, skip_special_tokens=True)[0].strip()
+    cache_lengths = [step["cache"]["sequence_length"] for step in steps]
     return {
         "prompt_tokens": int(inputs["attention_mask"].shape[-1]),
-        "completion_tokens": len(generated),
-        "finish_reason": "stop" if stopped_on_eos else "length",
+        "completion_tokens": int(completion_ids.shape[-1]),
+        "finish_reason": "length" if completion_ids.shape[-1] >= max_tokens else "stop",
         "answer_characters": len(text),
         "total_seconds": round(time.perf_counter() - started_all, 6),
         "prefill_seconds": steps[0]["seconds"] if steps else None,
         "decode_seconds": [step["seconds"] for step in steps[1:]],
         "steps": steps,
         "cache_after_prefill": cache_after_prefill,
-        "stepwise_compatible": bool(steps and cache_after_prefill and cache_after_prefill["layer_count"] > 0),
+        "cache_grows_one_token_per_decode": (
+            len(cache_lengths) <= 1 or all(right - left == 1 for left, right in zip(cache_lengths, cache_lengths[1:]))
+        ),
+        "cached_generation_observed": bool(steps and cache_after_prefill and cache_after_prefill.get("layer_count", 0) > 0),
     }
 
 
@@ -594,7 +573,7 @@ def main() -> int:
         for index in range(torch.cuda.device_count()):
             torch.cuda.reset_peak_memory_stats(index)
         _sync_cuda(torch)
-        report["generation"] = _greedy_stepwise(model, processor, model_inputs, max_new_tokens, torch)
+        report["generation"] = _generate_with_cache_trace(model, processor, model_inputs, max_new_tokens, torch)
         _sync_cuda(torch)
         report["gpu_after_generation"] = _gpu_snapshot(torch)
     except Exception as exc:
@@ -609,7 +588,7 @@ def main() -> int:
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
-        print(f"Capability report written to {output_path}")
+        print(f"Utils report written to {output_path}")
     return exit_code
 
 

@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +30,7 @@ import (
 
 type Config = config.Config
 type ModelRoute = config.ModelRoute
+type ModelCapabilities = config.ModelCapabilities
 type APIKey = auth.APIKey
 
 type Options struct {
@@ -97,7 +97,7 @@ func NewHandler(cfg Config, options Options) (http.Handler, error) {
 		BufferBytes: cfg.Limits.StreamBufferBytes,
 		IdleTimeout: time.Duration(cfg.Timeouts.StreamIdleSeconds) * time.Second,
 	}, metrics, logger, writeError)
-	app.videoProxy = videoproxy.New(upstreamClient, cfg.Upstream.BaseURL, cfg.Limits.VideoRequestBytes, time.Duration(cfg.Timeouts.VideoRequestSeconds)*time.Second, metrics)
+	app.videoProxy = videoproxy.New(upstreamClient, cfg.Limits.VideoRequestBytes, time.Duration(cfg.Timeouts.VideoRequestSeconds)*time.Second, metrics)
 	app.router = route.New(cfg.Models, route.Handlers{
 		Models:     app.models,
 		Chat:       app.chat,
@@ -240,20 +240,29 @@ func (app *Application) stopLiveSessionRoute(w http.ResponseWriter, r *http.Requ
 }
 
 func (app *Application) readiness(w http.ResponseWriter, r *http.Request) {
-	response, _, cancel, err := app.forward(r, http.MethodGet, "/health", app.cfg.Upstream.BaseURL, nil, 0, "", app.cfg.Timeouts.ReadinessSeconds)
-	if err != nil {
-		app.metrics.AddUpstreamError("readiness")
-		writeError(w, http.StatusServiceUnavailable, "service_unavailable_error", "upstream_not_ready", "The inference service is not ready.")
-		return
-	}
-	defer cancel()
-	defer response.Body.Close()
-	var payload struct {
-		Status string `json:"status"`
-	}
-	if response.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&payload) != nil || payload.Status != "ok" {
-		writeError(w, http.StatusServiceUnavailable, "service_unavailable_error", "upstream_not_ready", "The inference service is not ready.")
-		return
+	checked := make(map[string]struct{})
+	for _, modelRoute := range app.cfg.Models {
+		baseURL := routeBaseURL(app.cfg, modelRoute)
+		if _, exists := checked[baseURL]; exists {
+			continue
+		}
+		checked[baseURL] = struct{}{}
+		response, _, cancel, err := app.forward(r, http.MethodGet, "/health", baseURL, nil, 0, "", app.cfg.Timeouts.ReadinessSeconds)
+		if err != nil {
+			app.metrics.AddUpstreamError("readiness")
+			writeError(w, http.StatusServiceUnavailable, "service_unavailable_error", "upstream_not_ready", "A configured inference service is not ready.")
+			return
+		}
+		var payload struct {
+			Status string `json:"status"`
+		}
+		ready := response.StatusCode == http.StatusOK && json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&payload) == nil && payload.Status == "ok"
+		_ = response.Body.Close()
+		cancel()
+		if !ready {
+			writeError(w, http.StatusServiceUnavailable, "service_unavailable_error", "upstream_not_ready", "A configured inference service is not ready.")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
@@ -277,13 +286,26 @@ func (app *Application) chat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "model_not_found", "The model field must name a configured public model.")
 		return
 	}
+	imageInput := containsImageInput(payload["messages"])
+	if imageInput && !modelRoute.Capabilities.ImageChat {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_model_capability", "The selected model does not accept image input.")
+		return
+	}
+	if !imageInput && !modelRoute.Capabilities.TextChat {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_model_capability", "The selected model does not accept text-only chat input.")
+		return
+	}
+	streamingResponse, _ := payload["stream"].(bool)
+	if streamingResponse && !modelRoute.Capabilities.Streaming {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_model_capability", "The selected model does not support streaming output.")
+		return
+	}
 	payload["model"] = modelRoute.UpstreamModel
 	upstreamBody, err := json.Marshal(payload)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid_json", "The request body could not be processed.")
 		return
 	}
-	streamingResponse, _ := payload["stream"].(bool)
 	baseURL := routeBaseURL(app.cfg, modelRoute)
 	timeout := app.cfg.Timeouts.RequestSeconds
 	if streamingResponse {
@@ -320,7 +342,20 @@ func (app *Application) chat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *Application) video(w http.ResponseWriter, r *http.Request) {
-	response, _, cancel, err := app.videoProxy.Forward(r, requestIDFrom(r))
+	modelName := r.URL.Query().Get("model")
+	if modelName == "" {
+		modelName = app.cfg.Defaults.VideoModel
+	}
+	modelRoute, exists := app.cfg.Models[modelName]
+	if !exists {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "model_not_found", "The model query parameter must name a configured public model.")
+		return
+	}
+	if !modelRoute.Capabilities.VideoUpload {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_model_capability", "The selected model does not support video uploads.")
+		return
+	}
+	response, _, cancel, err := app.videoProxy.Forward(r, requestIDFrom(r), routeBaseURL(app.cfg, modelRoute))
 	if err != nil {
 		var requestError *videoproxy.RequestError
 		if errors.As(err, &requestError) {
@@ -347,7 +382,7 @@ func (app *Application) video(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := result["model"]; ok {
-		result["model"] = firstPublicAlias(app.cfg.Models)
+		result["model"] = modelName
 	}
 	copyResponseHeaders(w, response.Header, false)
 	writeJSON(w, response.StatusCode, result)
@@ -366,7 +401,27 @@ func (app *Application) createLiveSession(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid_json", "The request body must be a JSON object.")
 		return
 	}
-	response, _, cancel, err := app.forward(r, http.MethodPost, "/v1/live/sessions", app.cfg.Upstream.BaseURL, bytes.NewReader(body), int64(len(body)), "application/json", app.cfg.Timeouts.RequestSeconds)
+	modelName := app.cfg.Defaults.LiveModel
+	if requested, provided := input["model"]; provided {
+		var valid bool
+		modelName, valid = requested.(string)
+		if !valid || strings.TrimSpace(modelName) == "" {
+			writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid_model", "The model field must be a configured public model alias.")
+			return
+		}
+		delete(input, "model")
+		body, _ = json.Marshal(input)
+	}
+	modelRoute, exists := app.cfg.Models[modelName]
+	if !exists {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "model_not_found", "The model field must name a configured public model.")
+		return
+	}
+	if !modelRoute.Capabilities.LiveVideo {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_model_capability", "The selected model does not support live video sessions.")
+		return
+	}
+	response, _, cancel, err := app.forward(r, http.MethodPost, "/v1/live/sessions", routeBaseURL(app.cfg, modelRoute), bytes.NewReader(body), int64(len(body)), "application/json", app.cfg.Timeouts.RequestSeconds)
 	if err != nil {
 		app.writeUpstreamFailure(w, r, err)
 		return
@@ -393,14 +448,14 @@ func (app *Application) createLiveSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 	expires := time.Now().Add(time.Duration(app.cfg.Session.HandleTTLSeconds) * time.Second)
-	handle, err := auth.SignSession(tenant, upstreamID, expires, app.hmac)
+	handle, err := auth.SignModelSession(tenant, modelName, upstreamID, expires, app.hmac)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "server_error", "session_handle_failed", "The live session could not be secured.")
 		return
 	}
 	publicURL := strings.TrimRight(app.cfg.PublicBaseURL, "/")
 	result["id"] = handle
-	result["model"] = firstPublicAlias(app.cfg.Models)
+	result["model"] = modelName
 	result["events_url"] = publicURL + "/v1/live/sessions/" + handle + "/events"
 	result["stop_url"] = publicURL + "/v1/live/sessions/" + handle
 	copyResponseHeaders(w, response.Header, false)
@@ -408,13 +463,21 @@ func (app *Application) createLiveSession(w http.ResponseWriter, r *http.Request
 }
 
 func (app *Application) liveEvents(w http.ResponseWriter, r *http.Request, tenant, handle string) {
-	upstreamID, valid := auth.VerifySession(handle, tenant, app.hmac, time.Now())
+	session, valid := auth.VerifyModelSession(handle, tenant, app.hmac, time.Now())
 	if !valid {
 		writeError(w, http.StatusNotFound, "invalid_request_error", "session_not_found", "The live session was not found or has expired.")
 		return
 	}
-	path := "/v1/live/sessions/" + url.PathEscape(upstreamID) + "/events"
-	response, ctx, cancel, err := app.forward(r, http.MethodGet, path, app.cfg.Upstream.BaseURL, nil, 0, "", app.cfg.Timeouts.StreamMaxSeconds)
+	modelRoute, exists := app.cfg.Models[session.ModelAlias]
+	if session.ModelAlias == "" {
+		modelRoute, exists = app.cfg.Models[app.cfg.Defaults.LiveModel]
+	}
+	if !exists || !modelRoute.Capabilities.LiveVideo {
+		writeError(w, http.StatusNotFound, "invalid_request_error", "session_not_found", "The live session was not found or has expired.")
+		return
+	}
+	path := "/v1/live/sessions/" + url.PathEscape(session.UpstreamID) + "/events"
+	response, ctx, cancel, err := app.forward(r, http.MethodGet, path, routeBaseURL(app.cfg, modelRoute), nil, 0, "", app.cfg.Timeouts.StreamMaxSeconds)
 	if err != nil {
 		app.writeUpstreamFailure(w, r, err)
 		return
@@ -434,13 +497,21 @@ func (app *Application) liveEvents(w http.ResponseWriter, r *http.Request, tenan
 }
 
 func (app *Application) stopLiveSession(w http.ResponseWriter, r *http.Request, tenant, handle string) {
-	upstreamID, valid := auth.VerifySession(handle, tenant, app.hmac, time.Now())
+	session, valid := auth.VerifyModelSession(handle, tenant, app.hmac, time.Now())
 	if !valid {
 		writeError(w, http.StatusNotFound, "invalid_request_error", "session_not_found", "The live session was not found or has expired.")
 		return
 	}
-	path := "/v1/live/sessions/" + url.PathEscape(upstreamID)
-	response, _, cancel, err := app.forward(r, http.MethodDelete, path, app.cfg.Upstream.BaseURL, nil, 0, "", app.cfg.Timeouts.RequestSeconds)
+	modelRoute, exists := app.cfg.Models[session.ModelAlias]
+	if session.ModelAlias == "" {
+		modelRoute, exists = app.cfg.Models[app.cfg.Defaults.LiveModel]
+	}
+	if !exists || !modelRoute.Capabilities.LiveVideo {
+		writeError(w, http.StatusNotFound, "invalid_request_error", "session_not_found", "The live session was not found or has expired.")
+		return
+	}
+	path := "/v1/live/sessions/" + url.PathEscape(session.UpstreamID)
+	response, _, cancel, err := app.forward(r, http.MethodDelete, path, routeBaseURL(app.cfg, modelRoute), nil, 0, "", app.cfg.Timeouts.RequestSeconds)
 	if err != nil {
 		app.writeUpstreamFailure(w, r, err)
 		return
@@ -587,16 +658,28 @@ func isTimeout(err error) bool {
 	return errors.As(err, &networkError) && networkError.Timeout()
 }
 
-func firstPublicAlias(routes map[string]config.ModelRoute) string {
-	aliases := make([]string, 0, len(routes))
-	for alias := range routes {
-		aliases = append(aliases, alias)
+func containsImageInput(value any) bool {
+	switch item := value.(type) {
+	case map[string]any:
+		if kind, _ := item["type"].(string); kind == "image_url" {
+			return true
+		}
+		if _, exists := item["image_url"]; exists {
+			return true
+		}
+		for _, child := range item {
+			if containsImageInput(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range item {
+			if containsImageInput(child) {
+				return true
+			}
+		}
 	}
-	sort.Strings(aliases)
-	if len(aliases) == 0 {
-		return ""
-	}
-	return aliases[0]
+	return false
 }
 
 func requestID() string {

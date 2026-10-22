@@ -5,7 +5,7 @@ from __future__ import annotations
 import multiprocessing
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from typing import Any, Protocol
 
 from engine.contracts import ScheduledWorkItem, WorkerResult
@@ -23,8 +23,6 @@ class Executor(Protocol):
     def invoke(self, operation: str, *args: Any, **kwargs: Any) -> Any: ...
 
     def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> Sequence[WorkerResult]: ...
-
-    def stream(self, operation: str, *args: Any, **kwargs: Any) -> Iterator[Any]: ...
 
     def health_info(self) -> dict[str, Any]: ...
 
@@ -88,19 +86,6 @@ class LocalProcessExecutor:
 
     def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> Sequence[WorkerResult]:
         return self.invoke("execute_batch", tuple(requests))
-
-    def stream(self, operation: str, *args: Any, **kwargs: Any) -> Iterator[Any]:
-        with self._rpc_lock:
-            self._ensure_running()
-            self._connection.send({"kind": "stream", "operation": operation, "args": args, "kwargs": kwargs})
-            while True:
-                message = self._receive(self.request_timeout_seconds)
-                if message["kind"] == "event":
-                    yield message["value"]
-                elif message["kind"] == "done":
-                    return
-                else:
-                    self._raise_worker_error(message)
 
     def health_info(self) -> dict[str, Any]:
         if self._process is None:

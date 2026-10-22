@@ -71,15 +71,13 @@ class MageVLStepwiseGeneration:
         self._state(request_id)
         self.cache_manager.bind_blocks(request_id, block_ids)
 
-    def prefill(self, request_id: str) -> dict[str, Any]:
-        return self._step(request_id, first=True)
-
-    def decode(self, request_id: str) -> dict[str, Any]:
-        return self._step(request_id, first=False)
-
     def prefill_min_chunk_tokens(self, request_id: str) -> int:
         """回報首輪必須涵蓋的視覺 token 前綴長度。"""
         state = self._state(request_id)
+        if self._has_visual_inputs(state):
+            # Visual tensors can expand prompt markers into model-specific positions.
+            # Keep the complete prompt in one forward so text offsets never split that expansion.
+            return int(state["input_ids"].shape[-1])
         config = getattr(self.model, "config", None)
         visual_ids = {
             value for value in (
@@ -116,7 +114,7 @@ class MageVLStepwiseGeneration:
                     (item.request_id, item.prompt_offset, item.token_budget) for item in group
                 ))
             else:
-                steps = self.execute_batch(tuple((item.request_id, False) for item in group))
+                steps = self._execute_decode_batch(tuple(item.request_id for item in group))
             results.update((item.request_id, step) for item, step in zip(group, steps))
         return tuple(results[request_id] for request_id in ids)
 
@@ -139,17 +137,6 @@ class MageVLStepwiseGeneration:
                 )
             if token_budget < 1 or offset + token_budget > total:
                 raise ValueError(f"Prefill chunk exceeds prompt length for {request_id}.")
-
-        if all(
-            offset == 0 and token_budget == int(self._state(request_id)["input_ids"].shape[-1])
-            for request_id, offset, token_budget in requests
-        ):
-            steps = self.execute_batch(tuple((request_id, True) for request_id, _, _ in requests))
-            for (request_id, _, _), step in zip(requests, steps):
-                state = self._state(request_id)
-                state["prefill_processed_tokens"] = int(state["prompt_attention_mask"].shape[-1])
-                step["prompt_tokens_processed"] = state["prefill_processed_tokens"]
-            return steps
 
         # Fused chunk forward is safe when all rows have the same prompt length, cache offset,
         # and chunk width. Otherwise, execute each chunk separately rather than pad Cache rows.
@@ -178,7 +165,7 @@ class MageVLStepwiseGeneration:
         model_inputs["attention_mask"] = prompt_mask
         past_key_values = self.cache_manager.get(request_id)
         output = self._batch_forward(
-            state["input_ids"],
+            state["input_ids"][:, offset:end],
             model_inputs,
             past_key_values=past_key_values,
             first=offset == 0,
@@ -188,7 +175,7 @@ class MageVLStepwiseGeneration:
         output_cache = getattr(output, "past_key_values", None)
         if output_cache is None:
             raise RuntimeError("The loaded Mage-VL model did not append a Cache for the prefill chunk.")
-        self.cache_manager.update(request_id, output_cache, expected_length=end)
+        self._update_prefill_cache(request_id, output_cache, end)
         state["prefill_processed_tokens"] = end
         # Visual tensors are only sent with offset zero. The next chunk uses the Cache and text IDs.
         state["model_inputs"] = {"attention_mask": prompt_mask}
@@ -212,7 +199,7 @@ class MageVLStepwiseGeneration:
         end = offset + token_budget
         if any(self.cache_manager.length(item[0]) != offset for item in requests):
             return None
-        input_ids = torch.cat([state["input_ids"] for state in states], dim=0)
+        input_ids = torch.cat([state["input_ids"][:, offset:end] for state in states], dim=0)
         attention_mask = torch.cat([
             state["prompt_attention_mask"][:, :end] for state in states
         ], dim=0)
@@ -256,10 +243,10 @@ class MageVLStepwiseGeneration:
         output_cache = getattr(output, "past_key_values", None)
         if output_cache is None:
             raise RuntimeError("The loaded Mage-VL model did not append a Cache for the prefill chunk.")
-        split_caches = self._split_cache(output_cache, len(states), [0] * len(states))
+        split_caches = self._split_cache(output_cache, len(states))
         results: list[dict[str, Any]] = []
         for index, ((request_id, _, _), state) in enumerate(zip(requests, states)):
-            self.cache_manager.update(request_id, split_caches[index], expected_length=end)
+            self._update_prefill_cache(request_id, split_caches[index], end)
             state["prefill_processed_tokens"] = end
             state["model_inputs"] = {"attention_mask": state["prompt_attention_mask"][:, :end]}
             if end < int(state["prompt_attention_mask"].shape[-1]):
@@ -273,79 +260,54 @@ class MageVLStepwiseGeneration:
                 results.append(step)
         return tuple(results)
 
-    def execute_batch(self, requests: Sequence[tuple[str, bool]]) -> tuple[dict[str, Any], ...]:
-        """以一次模型 forward 執行相容請求，並維持各請求獨立的 cache 與輸出。"""
-        if not requests:
+    def _execute_decode_batch(self, request_ids: Sequence[str]) -> tuple[dict[str, Any], ...]:
+        """批次執行相容的 decode 請求，並維持各請求獨立的 cache 與輸出。"""
+        if not request_ids:
             return ()
-        request_ids = [request_id for request_id, _ in requests]
         if len(request_ids) != len(set(request_ids)):
             raise ValueError("Stepwise batch request IDs must be unique.")
-        phases = {first for _, first in requests}
-        if len(phases) != 1:
-            raise ValueError("Stepwise batch requests must use the same execution phase.")
-        first = requests[0][1]
         states = [self._state(request_id) for request_id in request_ids]
         if any(state["done"] for state in states):
             if len(states) == 1:
                 state = states[0]
                 return ({"text": "", "generated_tokens": 0, "done": True, "finish_reason": state["finish_reason"]},)
-            return tuple(self._step(request_id, first=first) for request_id in request_ids)
+            return tuple(self._decode_one(request_id) for request_id in request_ids)
         if len(states) == 1:
-            return (self._step(request_ids[0], first=first),)
-
-        if first:
-            prepared_batch = self._combine_prefill_inputs(states)
-            if prepared_batch is None:
-                return tuple(self._step(request_id, first=True) for request_id in request_ids)
-            input_ids, model_inputs, attention_masks, pad_offsets = prepared_batch
-            past_key_values = None
-            cache_position_start = 0
-        else:
-            past_key_values = self._combine_caches([self.cache_manager.get(request_id) for request_id in request_ids])
-            if past_key_values is None:
-                return tuple(self._step(request_id, first=False) for request_id in request_ids)
-            cache_lengths = {self.cache_manager.length(request_id) for request_id in request_ids}
-            if len(cache_lengths) != 1:
-                return tuple(self._step(request_id, first=False) for request_id in request_ids)
-            cache_position_start = cache_lengths.pop()
-            input_ids = torch.cat([state["input_ids"][:, -1:] for state in states], dim=0)
-            attention_masks = [
-                torch.cat(
-                    [state["model_inputs"]["attention_mask"], state["model_inputs"]["attention_mask"].new_ones((1, 1))],
-                    dim=-1,
-                )
-                for state in states
-            ]
-            model_inputs = {"attention_mask": torch.cat(attention_masks, dim=0)}
-            pad_offsets = [0] * len(states)
+            return (self._decode_one(request_ids[0]),)
+        past_key_values = self._combine_caches([self.cache_manager.get(request_id) for request_id in request_ids])
+        if past_key_values is None:
+            return tuple(self._decode_one(request_id) for request_id in request_ids)
+        cache_lengths = {self.cache_manager.length(request_id) for request_id in request_ids}
+        if len(cache_lengths) != 1:
+            return tuple(self._decode_one(request_id) for request_id in request_ids)
+        cache_position_start = cache_lengths.pop()
+        input_ids = torch.cat([state["input_ids"][:, -1:] for state in states], dim=0)
+        attention_masks = [
+            torch.cat(
+                [state["model_inputs"]["attention_mask"], state["model_inputs"]["attention_mask"].new_ones((1, 1))],
+                dim=-1,
+            )
+            for state in states
+        ]
+        model_inputs = {"attention_mask": torch.cat(attention_masks, dim=0)}
 
         output = self._batch_forward(
             input_ids,
             model_inputs,
             past_key_values=past_key_values,
-            first=first,
+            first=False,
             cache_position_start=cache_position_start,
         )
         output_cache = getattr(output, "past_key_values", None)
         if output_cache is None:
-            raise RuntimeError("The loaded Mage-VL model did not return past_key_values for batch decoding.")
-        split_caches = self._split_cache(output_cache, len(states), pad_offsets)
-        expected_cache_length = (
-            None if first else cache_position_start + 1
-        )
+            raise RuntimeError("The loaded Mage-VL model did not return a Cache for batched decoding.")
+        split_caches = self._split_cache(output_cache, len(states))
+        expected_cache_length = cache_position_start + 1
         results: list[dict[str, Any]] = []
         for index, (request_id, state) in enumerate(zip(request_ids, states)):
-            if first:
-                # Cache rows have their left-padding positions removed, so each request keeps its true prompt length.
-                request_attention_mask = attention_masks[index][:, pad_offsets[index] :]
-                state["model_inputs"] = {"attention_mask": request_attention_mask}
-                expected_length = int(request_attention_mask.sum().item())
-                state["prefill_processed_tokens"] = expected_length
-            else:
-                state["model_inputs"] = {"attention_mask": attention_masks[index]}
-                expected_length = expected_cache_length
+            state["model_inputs"] = {"attention_mask": attention_masks[index]}
             self.cache_manager.update(
-                request_id, split_caches[index], expected_length=expected_length
+                request_id, split_caches[index], expected_length=expected_cache_length
             )
             results.append(
                 self._record_token(state, output.logits[index : index + 1, -1, :])
@@ -379,25 +341,25 @@ class MageVLStepwiseGeneration:
         except KeyError as exc:
             raise RuntimeError(f"Unknown generation request: {request_id}") from exc
 
-    def _step(self, request_id: str, *, first: bool) -> dict[str, Any]:
+    def _decode_one(self, request_id: str) -> dict[str, Any]:
         state = self._state(request_id)
         options = state["options"]
         if state["done"]:
             return {"text": "", "generated_tokens": 0, "done": True, "finish_reason": state["finish_reason"]}
 
         input_ids = state["input_ids"]
+        decode_input_ids = input_ids[:, -1:]
         past_key_values = self.cache_manager.get(request_id)
         model_inputs = dict(state["model_inputs"])
-        if not first:
-            target_mask_length = self._cache_length(past_key_values) + 1
-            attention_mask = model_inputs["attention_mask"]
-            missing_tokens = target_mask_length - attention_mask.shape[-1]
-            if missing_tokens < 0:
-                raise RuntimeError("The request attention mask is longer than its actual Cache.")
-            if missing_tokens:
-                model_inputs["attention_mask"] = torch.cat(
-                    [attention_mask, attention_mask.new_ones((1, missing_tokens))], dim=-1
-                )
+        target_mask_length = self._cache_length(past_key_values) + 1
+        attention_mask = model_inputs["attention_mask"]
+        missing_tokens = target_mask_length - attention_mask.shape[-1]
+        if missing_tokens < 0:
+            raise RuntimeError("The request attention mask is longer than its actual Cache.")
+        if missing_tokens:
+            model_inputs["attention_mask"] = torch.cat(
+                [attention_mask, attention_mask.new_ones((1, missing_tokens))], dim=-1
+            )
         prepare = getattr(self.model, "prepare_inputs_for_generation", None)
         if prepare is None:
             raise RuntimeError("The loaded Mage-VL model does not expose prepare_inputs_for_generation().")
@@ -413,26 +375,22 @@ class MageVLStepwiseGeneration:
         }
         if "cache_position" in parameters:
             cache_length = self._cache_length(past_key_values)
-            kwargs["cache_position"] = torch.arange(cache_length, input_ids.shape[-1], device=input_ids.device)
+            kwargs["cache_position"] = torch.arange(
+                cache_length, cache_length + 1, device=decode_input_ids.device
+            )
         if "is_first_iteration" in parameters:
-            kwargs["is_first_iteration"] = first
-        prepared = prepare(input_ids, **kwargs)
+            kwargs["is_first_iteration"] = False
+        prepared = prepare(decode_input_ids, **kwargs)
         prepared["use_cache"] = bool(options.get("use_cache", True))
         with torch.inference_mode():
             output = self.model(**prepared, return_dict=True)
         if getattr(output, "past_key_values", None) is None:
             raise RuntimeError("The loaded Mage-VL model did not return past_key_values for stepwise decoding.")
-        expected_cache_length = (
-            int(model_inputs["attention_mask"].sum().item())
-            if first
-            else self.cache_manager.length(request_id) + 1
-        )
+        expected_cache_length = self.cache_manager.length(request_id) + 1
         self.cache_manager.update(
             request_id, output.past_key_values, expected_length=expected_cache_length
         )
         state["model_inputs"] = {"attention_mask": model_inputs["attention_mask"]}
-        if first:
-            state["prefill_processed_tokens"] = expected_cache_length
         return self._record_token(state, output.logits[:, -1, :])
 
     def _record_token(self, state: dict[str, Any], logits: Any) -> dict[str, Any]:
@@ -495,65 +453,6 @@ class MageVLStepwiseGeneration:
         with torch.inference_mode():
             return self.model(**prepared, return_dict=True)
 
-    def _combine_prefill_inputs(
-        self, states: Sequence[dict[str, Any]]
-    ) -> tuple[Any, dict[str, Any], list[Any], list[int]] | None:
-        input_ids = [state["input_ids"] for state in states]
-        if any(ids.ndim != 2 or ids.shape[0] != 1 for ids in input_ids):
-            return None
-        max_length = max(ids.shape[-1] for ids in input_ids)
-        pad_id = getattr(self.processor.tokenizer, "pad_token_id", None)
-        if pad_id is None:
-            pad_id = getattr(self.processor.tokenizer, "eos_token_id", 0)
-        padded_ids: list[Any] = []
-        attention_masks: list[Any] = []
-        pad_offsets: list[int] = []
-        for state, ids in zip(states, input_ids):
-            offset = max_length - ids.shape[-1]
-            pad_offsets.append(offset)
-            padded_ids.append(torch.nn.functional.pad(ids, (offset, 0), value=int(pad_id)))
-            attention = state["model_inputs"].get("attention_mask", torch.ones_like(ids))
-            attention_masks.append(torch.nn.functional.pad(attention, (offset, 0), value=0))
-
-        model_inputs: dict[str, Any] = {"attention_mask": torch.cat(attention_masks, dim=0)}
-        visual_keys = {
-            "pixel_values", "image_grid_thw", "pixel_values_videos", "video_grid_thw",
-            "second_per_grid_ts", "patch_positions",
-        }
-        all_keys = set().union(*(state["model_inputs"].keys() for state in states)) - {"attention_mask"}
-        for key in all_keys:
-            values = [state["model_inputs"].get(key) for state in states]
-            present = [value for value in values if value is not None]
-            if not present:
-                continue
-            if key in visual_keys:
-                if not all(value is None or isinstance(value, torch.Tensor) for value in values):
-                    return None
-                merged = self._concat_visual_values(key, present)
-                if merged is None:
-                    return None
-                model_inputs[key] = merged
-                continue
-            if len(present) != len(values):
-                return None
-            if all(isinstance(value, torch.Tensor) for value in values):
-                if all(value.ndim == 2 and value.shape[0] == 1 and value.shape[-1] == ids.shape[-1]
-                       for value, ids in zip(values, input_ids)):
-                    model_inputs[key] = torch.cat([
-                        torch.nn.functional.pad(value, (offset, 0), value=0)
-                        for value, offset in zip(values, pad_offsets)
-                    ], dim=0)
-                else:
-                    merged = self._concat_visual_values(key, values)
-                    if merged is None:
-                        return None
-                    model_inputs[key] = merged
-            elif all(value == values[0] for value in values):
-                model_inputs[key] = values[0]
-            else:
-                return None
-        return torch.cat(padded_ids, dim=0), model_inputs, attention_masks, pad_offsets
-
     @staticmethod
     def _concat_visual_values(key: str, values: Sequence[Any]) -> Any | None:
         if not values or any(not isinstance(value, torch.Tensor) for value in values):
@@ -589,25 +488,21 @@ class MageVLStepwiseGeneration:
             merged_pairs.append((torch.cat(keys, dim=0), torch.cat(values, dim=0)))
         return self._new_cache(caches[0], merged_pairs)
 
-    def _split_cache(self, cache: Any, batch_size: int, pad_offsets: Sequence[int]) -> list[Any]:
+    def _split_cache(self, cache: Any, batch_size: int) -> list[Any]:
         layer_pairs = self._cache_layer_pairs(cache)
         if layer_pairs is not None:
             split: list[Any] = []
-            for row, offset in enumerate(pad_offsets):
+            for row in range(batch_size):
                 row_pairs = []
                 for key, value in layer_pairs:
-                    key_length = key.shape[-2]
-                    value_length = value.shape[-2]
-                    if offset > key_length or offset > value_length:
-                        raise RuntimeError("Cannot remove prefill padding from the returned cache.")
                     row_pairs.append((
-                        key[row : row + 1, ..., offset:, :].clone(),
-                        value[row : row + 1, ..., offset:, :].clone(),
+                        key[row : row + 1].clone(),
+                        value[row : row + 1].clone(),
                     ))
                 split.append(self._new_cache(cache, row_pairs))
             return split
         batch_split = getattr(cache, "batch_split", None)
-        if callable(batch_split) and not any(pad_offsets):
+        if callable(batch_split):
             return list(batch_split(full_batch_size=batch_size, split_size=1))
         raise RuntimeError("The loaded Mage-VL cache type cannot be split into per-request caches.")
 
@@ -670,6 +565,27 @@ class MageVLStepwiseGeneration:
         if callable(getter):
             return int(getter())
         return int(cache[0][0].shape[-2])
+
+    @staticmethod
+    def _has_visual_inputs(state: dict[str, Any]) -> bool:
+        model_inputs = state.get("model_inputs", {})
+        return any(
+            model_inputs.get(key) is not None
+            for key in (
+                "pixel_values", "pixel_values_videos", "image_grid_thw", "video_grid_thw",
+                "second_per_grid_ts", "patch_positions",
+            )
+        )
+
+    def _update_prefill_cache(self, request_id: str, cache: Any, minimum_length: int) -> None:
+        """允許視覺模型展開 Cache 位置，但不接受少於已處理 token 的 Cache。"""
+        actual_length = self.cache_manager.sequence_length(cache)
+        if actual_length < minimum_length:
+            raise RuntimeError(
+                f"Model Cache is shorter than completed prefill for {request_id}: "
+                f"expected at least {minimum_length}, received {actual_length}."
+            )
+        self.cache_manager.update(request_id, cache)
 
     @staticmethod
     def _sample_next_token(logits: Any, input_ids: list[int], options: dict[str, Any]) -> int:

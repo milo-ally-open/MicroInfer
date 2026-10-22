@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
-from gateway_client import GatewayClient  # noqa: E402
+from gateway_client import GatewayClient, MODEL_ALIAS, TEXT_MODEL_ALIAS  # noqa: E402
 
 
 def percentile(values: list[float], percent: float) -> float | None:
@@ -39,14 +39,36 @@ def distribution(values: list[float]) -> dict[str, float | None]:
     }
 
 
-def run_case(index: int, mode: str, client_args: tuple[str, str, float], image: Path, video: Path) -> dict:
+def run_case(
+    index: int,
+    mode: str,
+    client_args: tuple[str, str, float],
+    model: str,
+    image: Path,
+    video: Path,
+) -> dict:
     base_url, api_key, timeout = client_args
     client = GatewayClient(base_url, api_key, timeout=timeout)
-    kind = "chat_sse" if mode == "chat-sse" or (mode == "mixed" and index % 2 == 0) else "video_upload"
+    if mode == "text-sse":
+        kind = "text_sse"
+    elif mode == "chat-sse" or (mode == "mixed" and index % 2 == 0):
+        kind = "chat_sse"
+    else:
+        kind = "video_upload"
     started = time.perf_counter()
     try:
+        if kind == "text_sse":
+            result = client.stream_chat_with_text("請用一句話說明推理引擎。", model=model)
+            return {
+                "kind": kind,
+                "success": True,
+                "latency_seconds": time.perf_counter() - started,
+                "sse_ttft_seconds": result["first_token_seconds"],
+            }
         if kind == "chat_sse":
-            result = client.stream_chat_with_image(image, "請描述圖片中的主要內容。")
+            result = client.stream_chat_with_image(
+                image, "請描述圖片中的主要內容。", model=model
+            )
             return {
                 "kind": kind,
                 "success": True,
@@ -69,7 +91,9 @@ def run_case(index: int, mode: str, client_args: tuple[str, str, float], image: 
         }
 
 
-def build_report(results: list[dict], elapsed: float, mode: str, concurrency: int) -> dict:
+def build_report(
+    results: list[dict], elapsed: float, mode: str, concurrency: int, model_alias: str
+) -> dict:
     successes = [item for item in results if item["success"]]
     errors = [item for item in results if not item["success"]]
     latencies = [float(item["latency_seconds"]) for item in results]
@@ -79,6 +103,7 @@ def build_report(results: list[dict], elapsed: float, mode: str, concurrency: in
     return {
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
+        "model_alias": model_alias,
         "concurrency": concurrency,
         "request_count": len(results),
         "success_count": len(successes),
@@ -100,7 +125,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--api-key", default=os.environ.get("VIDEO_API_KEY", ""))
     parser.add_argument("--image", type=Path, default=Path(__file__).resolve().parents[2] / "test.jpg")
     parser.add_argument("--video", type=Path, default=Path(__file__).resolve().parents[2] / "test.mp4")
-    parser.add_argument("--mode", choices=("chat-sse", "video", "mixed"), default="mixed")
+    parser.add_argument("--mode", choices=("text-sse", "chat-sse", "video", "mixed"), default="mixed")
+    parser.add_argument("--model", help="聊天請求使用的公開模型別名；text-sse 預設 Qwen3。")
     parser.add_argument("--requests", type=int, default=10)
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--timeout-seconds", type=float, default=900.0)
@@ -114,15 +140,25 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"圖片不存在：{args.image}")
     if args.mode in {"video", "mixed"} and not args.video.is_file():
         parser.error(f"影片不存在：{args.video}")
+    if args.mode in {"video", "mixed"} and args.model:
+        parser.error("--model 僅適用於 text-sse 或 chat-sse；mixed/video 固定使用 Mage-VL。")
+    model = args.model or (TEXT_MODEL_ALIAS if args.mode == "text-sse" else MODEL_ALIAS)
 
     client_args = (args.gateway_url, args.api_key, args.timeout_seconds)
     started = time.perf_counter()
     results: list[dict] = []
     with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
-        futures = [executor.submit(run_case, index, args.mode, client_args, args.image, args.video) for index in range(args.requests)]
+        futures = [
+            executor.submit(
+                run_case, index, args.mode, client_args, model, args.image, args.video
+            )
+            for index in range(args.requests)
+        ]
         for future in as_completed(futures):
             results.append(future.result())
-    report = build_report(results, time.perf_counter() - started, args.mode, args.concurrency)
+    report = build_report(
+        results, time.perf_counter() - started, args.mode, args.concurrency, model
+    )
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

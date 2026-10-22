@@ -1,6 +1,6 @@
 # 提案：Go API 閘道
 
-> 狀態：首版設計決策已記錄；Go Gateway v1 已實作，驗收進度見 tasks.md。  
+> 狀態：Go Gateway v1 已實作；本次補充兩個已登錄模型的能力路由，實際驗收進度見 tasks.md。
 > 路徑：跨邊界高風險  
 > 負責人：專案維護者  
 > 上游依據：[專案規範](../../../AGENTS.md)、[專案 README](../../../README.md)、[閘道目錄說明](../../../src/gateway/README.md)、[推論服務說明](../../../src/inference/README.md)
@@ -15,7 +15,7 @@
 
 - 提供以 Go 實作、可由 YAML 設定的外部 API 閘道，統一處理客戶端驗證、租戶政策、模型路由、請求限制及可觀測性。
 - 在不承擔模型生命週期或 GPU 工作的前提下，轉送文字／圖片聊天、SSE 文字輸出、視訊上傳及即時工作階段控制 API。
-- 讓對外模型名稱使用專案別名 mage-vl-4b，並將它映射到推論服務使用的上游識別碼 microsoft/Mage-VL。
+- 依模型能力將 `mage-vl-4b`（`microsoft/Mage-VL`）與 `qwen3-0.6b`（`qwen3-0.6b`）路由至各自推論服務；拒絕未宣告的輸入模態或 API。
 - 建立 REQ、AC、T 任務及驗收證據之間可追蹤的規格流程。
 
 ## 範圍
@@ -30,7 +30,7 @@
 ### 本次不包含／保持不變
 
 - 原始規格階段只建立文件，不實作 Go 服務；後續實作任務依本規格建立 Go Gateway，並只為將 live 本文限制移入 YAML 而調整推論設定／middleware。此提案不代表 SGLang、vLLM 或第二個模型已實作。
-- 不將 SGLang、vLLM 或其他模型描述為已實作功能；目前沒有選定第二個模型。
+- SGLang 與 vLLM Gateway／Inference backend 未實作；本次不增加第三個模型，也不改寫已登錄模型的推論計算圖。
 - 不把模型權重、模型載入、生成、視訊解析、GPU 管理或 MediaMTX 媒體封包轉送移入 Gateway。
 - 不進行模型精度或資料集基準測試。端到端性能測試待 Gateway 完成後進行。
 - 不修改 checkpoints/val.md、checkpoints/val.xlsx，也不移動或清理既有工作樹內容。
@@ -39,9 +39,9 @@
 
 ### 程式與文件現況
 
-- src/gateway/README.md 描述已實作的 Go Gateway v1 及各套件職責；真實推論服務與 MediaMTX 整合仍未驗證。
-- src/inference/model_registry.yaml 將專案別名 mage-vl-4b 登錄到 src/inference/models/mage_vl_4b/ 模型包。
-- 推論設定 src/inference/models/mage_vl_4b/configs/inference.yml 中的模型識別碼是 microsoft/Mage-VL；這是 Hugging Face 上游 repo_id，不是專案別名。
+- src/gateway/README.md 描述已實作的 Go Gateway v1 及各套件職責；2026-10-22 已透過真實服務完成 Qwen 文字 JSON／SSE、Mage 圖片 JSON／SSE／視訊上傳，以及 Mage Live／MediaMTX 合成 RTSP 功能 smoke。Live 單次報告見 [`tests/end2end/results/mage-vl-4b-live-smoke-position-fix-2026-10-22.json`](../../../tests/end2end/results/mage-vl-4b-live-smoke-position-fix-2026-10-22.json)；正式容量、授權失敗與部署回復仍待驗收。
+- src/inference/model_registry.yaml 目前登錄 Mage-VL-4B 與 Qwen3-0.6B；前者位於 Mage 模型包，後者位於 Qwen 模型包。
+- Mage 推論設定中的模型識別碼是 microsoft/Mage-VL；Qwen 的 API model ID 是 qwen3-0.6b。兩者皆以專案別名作 Gateway 路由鍵，識別碼不可混淆。
 - 推論服務目前提供 GET /health、GET /v1/models、POST /v1/chat/completions、POST /v1/videos/understand，以及 /v1/live/* 工作階段 API。
 - POST 聊天、視訊上傳及即時工作階段建立目前要求 Content-Length。當前推論設定的聊天本文上限為 15,728,640 bytes、視訊請求本文上限為 210,763,776 bytes、單一視訊檔上限為 209,715,200 bytes；即時工作階段建立上限目前為 65,536 bytes。
 - 即時工作階段回應包含 RTSP／RTMP 發布 URL、事件 URL、停止 URL 及上游工作階段識別碼。MediaMTX 授權回呼目前直接呼叫推論服務，且只允許作用中的工作階段路徑。
@@ -49,7 +49,7 @@
 ### 已確認決策
 
 - 首版涵蓋聊天／SSE、視訊上傳與即時工作階段控制；RTSP／RTMP 媒體資料流直接連接 MediaMTX。
-- Gateway 對外使用 mage-vl-4b；上游請求使用 microsoft/Mage-VL，對外模型清單和聊天回應維持專案別名。
+- Gateway 依模型別名及明確 capability 路由兩個已登錄的 Inference URL；回應只公開專案別名，不暴露上游 repo ID。
 - 首版以單一 Gateway 實例為目標，租戶限流狀態可保存在程序記憶體中。
 - 客戶端 API Key 與租戶對應由環境變數或掛載的安全檔案提供；密鑰不得提交至 Git。
 - Gateway 錯誤使用 OpenAI 風格 JSON。

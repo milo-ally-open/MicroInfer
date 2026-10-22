@@ -27,8 +27,10 @@ class PerformanceReportTests(unittest.TestCase):
             elapsed=7.0,
             mode="mixed",
             concurrency=2,
+            model_alias="mage-vl-4b",
         )
         self.assertEqual(report["request_count"], 3)
+        self.assertEqual(report["model_alias"], "mage-vl-4b")
         self.assertEqual(report["error_rate"], 1 / 3)
         self.assertEqual(report["sse_time_to_first_token_seconds"]["p50"], 0.4)
         self.assertEqual(report["video_upload_completion_seconds"]["p50"], 1.2)

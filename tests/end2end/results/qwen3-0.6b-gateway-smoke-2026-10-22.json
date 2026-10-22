@@ -1,0 +1,35 @@
+{
+  "started_at_utc": "2026-10-22T06:04:34.969241+00:00",
+  "mode": "text-sse",
+  "model_alias": "qwen3-0.6b",
+  "concurrency": 1,
+  "request_count": 3,
+  "success_count": 3,
+  "error_count": 0,
+  "error_rate": 0.0,
+  "throughput_requests_per_second": 0.07687195954959124,
+  "elapsed_seconds": 39.025933741999324,
+  "latency_seconds": {
+    "count": 3,
+    "mean": 13.008355549672464,
+    "p50": 1.1311537840083474,
+    "p95": 36.961920333997114,
+    "p99": 36.961920333997114
+  },
+  "sse_time_to_first_token_seconds": {
+    "count": 3,
+    "mean": 12.13976946399877,
+    "p50": 0.26774478500010446,
+    "p95": 36.08830921599292,
+    "p99": 36.08830921599292
+  },
+  "video_upload_completion_seconds": {
+    "count": 0,
+    "mean": null,
+    "p50": null,
+    "p95": null,
+    "p99": null
+  },
+  "error_classes": {},
+  "sla": null
+}

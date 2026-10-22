@@ -31,6 +31,18 @@ from .configuration_mage_vl import MageVLConfig, MageVLVisionConfig
 from .model_outputs import MageVLModelOutputWithPast
 from .vision_tower import MageVLPreTrainedModel, MageVLVisionPretrainedModel
 
+
+def build_position_ids(inputs_embeds: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
+    """依完整 attention mask 產生位置，並只回傳目前 query 對應的位置。"""
+    batch_size, query_length, _ = inputs_embeds.shape
+    if attention_mask is None:
+        return torch.arange(query_length, device=inputs_embeds.device).unsqueeze(0).expand(batch_size, -1)
+
+    position_ids = attention_mask.long().cumsum(-1) - 1
+    position_ids.masked_fill_(attention_mask == 0, 1)
+    return position_ids[:, -query_length:]
+
+
 @auto_docstring
 class MageVLModel(MageVLPreTrainedModel):
     base_model_prefix = ""
@@ -347,18 +359,7 @@ class MageVLModel(MageVLPreTrainedModel):
 
         # Use simple 1D position_ids
         if position_ids is None:
-            batch_size, seq_length, _ = inputs_embeds.shape
-            if attention_mask is not None:
-                position_ids = attention_mask.long().cumsum(-1) - 1
-                position_ids.masked_fill_(attention_mask == 0, 1)
-            else:
-                position_ids = (
-                    torch.arange(seq_length, device=inputs_embeds.device).unsqueeze(0).expand(batch_size, -1)
-                )
-
-            # Handle cache_position for generation
-            if cache_position is not None and cache_position[0] != 0:
-                position_ids = position_ids + cache_position[0]
+            position_ids = build_position_ids(inputs_embeds, attention_mask)
 
         outputs = self.language_model(
             input_ids=None,

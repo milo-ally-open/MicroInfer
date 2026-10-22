@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import torch
-from transformers import TextIteratorStreamer
 
 from engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
 from . import config
@@ -51,12 +49,6 @@ class MageVLModelRunner:
             self.close()
             raise
 
-    def generate(self, inputs: dict[str, Any], generation_options: dict[str, Any]) -> Any:
-        if self.model is None:
-            raise RuntimeError("Mage-VL model is not loaded.")
-        with torch.inference_mode():
-            return self.model.generate(**inputs, **generation_options)
-
     def begin_generation(self, request_id: str, inputs: dict[str, Any], generation_options: dict[str, Any]) -> None:
         self._stepwise.begin(request_id, inputs, generation_options)
 
@@ -66,12 +58,6 @@ class MageVLModelRunner:
 
     def prefill_min_chunk_tokens(self, request_id: str) -> int:
         return self._stepwise.prefill_min_chunk_tokens(request_id)
-
-    def prefill_generation(self, request_id: str) -> dict[str, Any]:
-        return self._stepwise.prefill(request_id)
-
-    def decode_generation_step(self, request_id: str) -> dict[str, Any]:
-        return self._stepwise.decode(request_id)
 
     def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> tuple[WorkerResult, ...]:
         """將同輪混合 work items 交給 Stepwise Runner 執行。"""
@@ -130,41 +116,10 @@ class MageVLModelRunner:
         """回報 Worker 端實際持有的 Cache 物件、序列長度及關聯邏輯 block 數。"""
         return self._stepwise.cache_snapshot()
 
-    def stream(self, inputs: dict[str, Any], generation_options: dict[str, Any], timeout: float) -> Iterator[str]:
-        """在背景執行模型生成，並依序輸出 Processor streamer 的文字片段。"""
-        if self.model is None or self.processor is None:
-            raise RuntimeError("Mage-VL model is not loaded.")
-        streamer = TextIteratorStreamer(self.processor.tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=timeout)
-        worker_error: list[BaseException] = []
-
-        def run_generation() -> None:
-            try:
-                with torch.inference_mode():
-                    self.model.generate(**inputs, streamer=streamer, **generation_options)
-            except BaseException as exc:
-                worker_error.append(exc)
-                streamer.end()
-
-        worker = threading.Thread(target=run_generation, daemon=True)
-        worker.start()
-        try:
-            yield from streamer
-            worker.join()
-            if worker_error:
-                raise worker_error[0]
-        finally:
-            if worker.is_alive():
-                worker.join()
-
     def decode(self, generated_ids: Any) -> str:
         if self.processor is None:
             raise RuntimeError("Mage-VL processor is not loaded.")
         return self.processor.batch_decode(generated_ids.unsqueeze(0), skip_special_tokens=True)[0].strip()
-
-    def token_count(self, text: str) -> int:
-        if self.processor is None:
-            raise RuntimeError("Mage-VL processor is not loaded.")
-        return len(self.processor.tokenizer.encode(text, add_special_tokens=False))
 
     def gpu_status(self) -> dict[str, Any]:
         if self.model is None or not torch.cuda.is_available():

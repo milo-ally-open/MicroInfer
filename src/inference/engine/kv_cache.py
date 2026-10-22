@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 import threading
 from dataclasses import dataclass
 
@@ -15,15 +14,6 @@ class KVCacheLease:
     block_ids: tuple[int, ...]
     reserved_tokens: int
     estimated_bytes: int
-
-
-@dataclass(frozen=True)
-class KVCacheRequest:
-    """一次排程批次中單一序列所需的 cache 容量。"""
-
-    request_id: str
-    prompt_tokens: int
-    max_output_tokens: int
 
 
 class KVCacheManager:
@@ -48,50 +38,27 @@ class KVCacheManager:
         self._lock = threading.Lock()
 
     def reserve(self, request_id: str, *, prompt_tokens: int, max_output_tokens: int) -> KVCacheLease | None:
-        batch = self.reserve_batch([
-            KVCacheRequest(request_id, prompt_tokens, max_output_tokens)
-        ])
-        return None if batch is None else batch[request_id]
-
-    def reserve_batch(
-        self, requests: Iterable[KVCacheRequest]
-    ) -> dict[str, KVCacheLease] | None:
-        """以全有或全無方式預留一個 Scheduler batch 的 block table。"""
-        items = list(requests)
-        if not items:
-            return {}
-        request_ids = [item.request_id for item in items]
-        if any(not request_id for request_id in request_ids) or len(set(request_ids)) != len(request_ids):
-            raise ValueError("KV cache batch request ids must be unique and non-empty.")
-        blocks_by_request: list[tuple[KVCacheRequest, int, int]] = []
-        total_blocks = 0
-        for item in items:
-            if item.prompt_tokens < 1 or item.max_output_tokens < 1:
-                raise ValueError("Prompt and output token counts must be positive.")
-            token_count = item.prompt_tokens + item.max_output_tokens
-            block_count = (token_count + self.block_size_tokens - 1) // self.block_size_tokens
-            blocks_by_request.append((item, token_count, block_count))
-            total_blocks += block_count
+        if not request_id:
+            raise ValueError("Cache request id must not be empty.")
+        if prompt_tokens < 1 or max_output_tokens < 1:
+            raise ValueError("Prompt and output token counts must be positive.")
+        token_count = prompt_tokens + max_output_tokens
+        block_count = (token_count + self.block_size_tokens - 1) // self.block_size_tokens
         with self._lock:
-            existing = set(request_ids).intersection(self._leases)
-            if existing:
-                raise ValueError(f"KV cache request already exists: {sorted(existing)[0]}")
-            if total_blocks > len(self._free):
+            if request_id in self._leases:
+                raise ValueError(f"KV cache request already exists: {request_id}")
+            if block_count > len(self._free):
                 return None
-            allocated = iter(self._free[:total_blocks])
-            del self._free[:total_blocks]
-            leases: dict[str, KVCacheLease] = {}
-            for item, token_count, block_count in blocks_by_request:
-                block_ids = tuple(next(allocated) for _ in range(block_count))
-                lease = KVCacheLease(
-                    request_id=item.request_id,
-                    block_ids=block_ids,
-                    reserved_tokens=block_count * self.block_size_tokens,
-                    estimated_bytes=token_count * self.bytes_per_token,
-                )
-                leases[item.request_id] = lease
-                self._leases[item.request_id] = lease
-            return leases
+            block_ids = tuple(self._free[:block_count])
+            del self._free[:block_count]
+            lease = KVCacheLease(
+                request_id=request_id,
+                block_ids=block_ids,
+                reserved_tokens=block_count * self.block_size_tokens,
+                estimated_bytes=token_count * self.bytes_per_token,
+            )
+            self._leases[request_id] = lease
+            return lease
 
     def release(self, request_id: str) -> None:
         with self._lock:

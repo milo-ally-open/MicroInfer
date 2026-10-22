@@ -1,4 +1,4 @@
-"""驗證 Model Worker 子程序啟動、RPC、串流及關閉。"""
+"""驗證 Model Worker 子程序啟動、RPC 及關閉。"""
 
 from __future__ import annotations
 
@@ -27,8 +27,6 @@ class MultiprocessWorkerTests(unittest.TestCase):
             self.assertEqual(worker.invoke("echo", 1, value="two"), {
                 "operation": "echo", "args": (1,), "kwargs": {"value": "two"}
             })
-            events = list(worker.stream("events"))
-            self.assertEqual([event["index"] for event in events], [1, 2])
             self.assertEqual(worker.gpu_status()["gpu"], "child")
         finally:
             worker.close()

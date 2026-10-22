@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import tempfile
+import os
 import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 INFERENCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "inference"
 sys.path.insert(0, str(INFERENCE_ROOT))
 
-from models.qwen3_0_6b.compatibility.hf_config import verify_snapshot_revision
+from models.qwen3_0_6b.utils.hf_config import verify_snapshot_revision
 from engine.contracts import ExecutionPhase, ScheduledWorkItem
 
 try:
@@ -23,10 +25,22 @@ except ImportError:  # pragma: no cover - 依賴精簡的開發環境略過此�
 
 
 if torch is not None and save_file is not None:
-    from models.qwen3_0_6b.compatibility.safetensors_loader import load_safetensors
+    from models.qwen3_0_6b.utils.safetensors_loader import load_safetensors
     from models.qwen3_0_6b.model.input_batch import InputBatch
     from models.qwen3_0_6b.model.paged_kv_cache import PagedKVCache
     from models.qwen3_0_6b.model.qwen3_model import Qwen3ForCausalLM
+    with patch.dict(
+        os.environ,
+        {
+            "INFERENCE_CONFIG": str(
+                INFERENCE_ROOT / "models" / "qwen3_0_6b" / "configs" / "inference.yml"
+            ),
+            "INFERENCE_NETWORK_CONFIG": str(
+                INFERENCE_ROOT / "models" / "qwen3_0_6b" / "configs" / "network.yml"
+            ),
+        },
+    ):
+        from models.qwen3_0_6b.model_runner import Qwen3ModelRunner
 
 
 class Qwen3SnapshotMetadataTests(unittest.TestCase):
@@ -92,6 +106,24 @@ class Qwen3NativeRuntimeTests(unittest.TestCase):
             device=torch.device("cpu"),
             dtype=torch.float32,
         )
+
+    def test_begin_generation_accepts_unbatched_prepared_token_ids(self) -> None:
+        runner = Qwen3ModelRunner.__new__(Qwen3ModelRunner)
+        runner.model = object()
+        runner.tokenizer = SimpleNamespace(
+            eos_token_id=2,
+            convert_tokens_to_ids=lambda _token: 3,
+        )
+        runner.model_config = SimpleNamespace(eos_token_id=2)
+        runner._states = {}
+
+        runner.begin_generation(
+            "single",
+            {"input_ids": (11, 12, 13)},
+            {"max_new_tokens": 4},
+        )
+
+        self.assertEqual(runner._states["single"]["input_ids"].tolist(), [[11, 12, 13]])
 
     def test_input_batch_pads_and_validates_scheduled_metadata(self) -> None:
         items = (

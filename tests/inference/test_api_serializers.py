@@ -10,10 +10,23 @@ INFERENCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "inference"
 sys.path.insert(0, str(INFERENCE_ROOT))
 
 from api.serializers import chat_completion, chat_completion_chunk
+from api.schemas import HealthResponse
 from engine.contracts import InferenceResult
 
 
 class APISerializerTests(unittest.TestCase):
+    def test_health_defaults_support_standard_text_profile(self) -> None:
+        response = HealthResponse(
+            status="ok",
+            backend="standard_text",
+            model="Qwen/Qwen3-0.6B",
+            revision="c1899de289a04d12100db370d81485cdf75e47ca",
+            live_sessions=0,
+        )
+
+        self.assertEqual(response.quantization, "none")
+        self.assertFalse(response.live_video_enabled)
+
     def test_chat_response_keeps_openai_compatible_shape(self) -> None:
         response = chat_completion(InferenceResult("hello", 5, 2, "stop"), "mage-vl-4b")
         self.assertRegex(response["id"], r"^chatcmpl-[0-9a-f]+$")

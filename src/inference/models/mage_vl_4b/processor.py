@@ -11,7 +11,6 @@ import io
 import os
 import shutil
 import subprocess
-import time
 import warnings
 from pathlib import Path
 from typing import Any
@@ -375,62 +374,3 @@ def _generation_args(request_body: dict[str, Any]) -> dict[str, Any]:
 def _check_context(prompt_tokens: int, generation_args: dict[str, Any]) -> None:
     if prompt_tokens + generation_args["max_new_tokens"] > MAX_CONTEXT_TOKENS:
         raise InferenceError(status_code=413, detail=f"Prompt plus requested output exceeds {MAX_CONTEXT_TOKENS} tokens.")
-
-
-def _analyze_live_frames(
-    question: str,
-    frames: list[Image.Image],
-    generation_args: dict[str, Any],
-    model_runner: Any,
-) -> dict[str, Any]:
-    """將連續影格結果轉換為共用的即時工作階段格式。"""
-    started = time.perf_counter()
-    inputs, prompt_tokens, _ = _video_inputs(question, frames, backend="frames", model_runner=model_runner)
-    _check_context(prompt_tokens, generation_args)
-    output = model_runner.generate(inputs, generation_args)
-    generated_ids = output[0, inputs["input_ids"].shape[-1] :]
-    answer = model_runner.decode(generated_ids)
-    return {
-        "answer": answer,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": int(generated_ids.numel()),
-        "generation_seconds": round(time.perf_counter() - started, 3),
-    }
-
-
-def _analyze_live_video(
-    question: str,
-    video_path: Path,
-    generation_args: dict[str, Any],
-    codec_engine: str | None,
-    target_canvas: int,
-    max_pixels: int,
-    codec_cache_root: Path | None,
-    model_runner: Any,
-) -> dict[str, Any]:
-    """對一段已封裝完成的即時視訊執行編碼前處理與文字生成。"""
-    started = time.perf_counter()
-    inputs, prompt_tokens, canvas_count = _video_inputs(
-        question,
-        video_path,
-        backend="codec",
-        codec_engine=codec_engine,
-        target_canvas=target_canvas,
-        max_pixels=max_pixels,
-        codec_cache_root=codec_cache_root,
-        model_runner=model_runner,
-    )
-    _check_context(prompt_tokens, generation_args)
-    processor_finished = time.perf_counter()
-    output = model_runner.generate(inputs, generation_args)
-    generated_ids = output[0, inputs["input_ids"].shape[-1] :]
-    answer = model_runner.decode(generated_ids)
-    generated_at = time.perf_counter()
-    return {
-        "answer": answer,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": int(generated_ids.numel()),
-        "processor_seconds": round(processor_finished - started, 3),
-        "generation_seconds": round(generated_at - processor_finished, 3),
-        "codec_canvas_count": canvas_count,
-    }

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Iterator, Sequence
+import logging
+from collections.abc import Sequence
 from typing import Any, Protocol
 
 from engine.contracts import ScheduledWorkItem, WorkerResult
@@ -17,8 +18,6 @@ class ModelWorker(Protocol):
     def invoke(self, operation: str, *args: Any, **kwargs: Any) -> Any: ...
 
     def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> Sequence[WorkerResult]: ...
-
-    def stream(self, operation: str, *args: Any, **kwargs: Any) -> Iterator[Any]: ...
 
     def health_info(self) -> dict[str, Any]: ...
 
@@ -42,39 +41,7 @@ class InProcessModelWorker:
         return method(*args, **kwargs)
 
     def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> Sequence[WorkerResult]:
-        method = getattr(self.model_adapter, "execute_batch", None)
-        if callable(method):
-            return method(requests)
-
-        # 舊版 fake Adapter 可逐項執行；正式模型 Adapter 使用明確的批次契約。
-        results: list[WorkerResult] = []
-        for request in requests:
-            operation = {
-                "prefill": "prefill_generation",
-                "decode": "decode_generation_step",
-            }.get(request.phase.value)
-            if operation is None:
-                raise ValueError(f"Unsupported model execution phase: {request.phase.value}")
-            method = getattr(self.model_adapter, operation)
-            step = method(request.request_id, request.token_budget)
-            results.append(
-                WorkerResult(
-                    request_id=request.request_id,
-                    text_delta=str(step.get("text", "")),
-                    generated_tokens=int(step.get("generated_tokens", 0)),
-                    finished=bool(step.get("done", False)),
-                    finish_reason=step.get("finish_reason"),
-                    prompt_tokens_processed=(
-                        request.prompt_offset + request.token_budget
-                        if request.phase.value == "prefill" else None
-                    ),
-                )
-            )
-        return results
-
-    def stream(self, operation: str, *args: Any, **kwargs: Any) -> Iterator[Any]:
-        method = getattr(self.model_adapter, operation)
-        yield from method(*args, **kwargs)
+        return self.model_adapter.execute_batch(requests)
 
     def health_info(self) -> dict[str, Any]:
         return self.model_adapter.health_info()
@@ -136,15 +103,10 @@ def _worker_process_main(connection: Any, factory_path: str) -> None:
                 else:
                     result = worker.invoke(operation, *message.get("args", ()), **message.get("kwargs", {}))
                 connection.send({"kind": "result", "value": result})
-            elif kind == "stream":
-                for event in worker.stream(
-                    message["operation"], *message.get("args", ()), **message.get("kwargs", {})
-                ):
-                    connection.send({"kind": "event", "value": event})
-                connection.send({"kind": "done"})
             else:
                 raise ValueError(f"Unsupported Worker message kind: {kind}")
         except BaseException as exc:
+            logging.getLogger(__name__).exception("Model Worker operation failed")
             connection.send({"kind": "error", "error_type": type(exc).__name__, "message": str(exc)})
     try:
         if worker is not None and not worker_closed:

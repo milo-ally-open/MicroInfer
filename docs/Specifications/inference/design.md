@@ -18,7 +18,7 @@ vLLM V1 官方架構將 API Server、Engine Core 和 GPU Worker 分成不同程�
 | L2 編排與調度 | Engine Core 請求狀態、准入、Scheduler、邏輯 Cache reservation、Worker 結果事件化 | `engine/engine.py`、`scheduler.py`、`kv_cache.py`、`output_processor.py` | HTTP/SSE schema、實體 GPU tensor、模型拓撲 |
 | L3 執行抽象與 Worker | Executor 管理本機程序和 RPC；Platform 解析裝置與資源觀測；Worker 程序載入 Runner | `engine/executor.py`、`platform.py`、`worker.py` | request policy、模型輸入格式、HTTP |
 | L4 模型運行時 | Qwen Runner 組裝輸入批次、forward、Cache 存取和 Sampling | `models/qwen3_0_6b/model_runner.py`、`model/input_batch.py`、`sampler.py` | OpenAI request／response、模型別名路由 |
-| L5 模型與算子 | Qwen 模型計算圖、層、Attention、RoPE、權重映射和上游相容 | `models/qwen3_0_6b/model/`、`compatibility/` | 共用 HTTP API、Engine 佇列和租戶政策 |
+| L5 模型與算子 | Qwen 模型計算圖、層、Attention、RoPE、權重映射和上游相容 | `models/qwen3_0_6b/model/`、`models/qwen3_0_6b/utils/` | 共用 HTTP API、Engine 佇列和租戶政策 |
 
 模型生態相容是跨層責任：API 端的 Chat Template／Tokenizer 在 L1 依模型建立輸入；模型 config、Safetensors 權重映射和計算圖在 L5。通用影片讀取與 Live session 仍由既有 `media/` 持有；Mage-VL 的影片採樣和 Processor 留在 Mage 模型包。五層以程式職責劃界，不代表五個新 package 或五個 OS process。
 
@@ -78,9 +78,31 @@ InputBatch 暫時每輪動態分配 GPU tensor。後續若性能樣本確認 CPU
 
 ## L5 Qwen 模型與生態相容
 
-Qwen 模型拓撲及 Attention 等算子留在模型包；`compatibility/` 只提供上游 config／tokenizer／固定 revision 權重格式適配。Safetensors loader 在 Worker ready 前驗證 metadata、revision、必要 tensor 和 shape。模型 Registry 仍由 `model_registry.yaml` 登記 alias、設定路徑和 `app.py` 入口；不以 `mage-vl-4b` 或 `qwen3-0.6b` 字串在共用 route 分支。
+Qwen 模型拓撲及 Attention 等算子留在模型包；模型專屬 `utils/` 提供上游 config／tokenizer／固定 revision 權重格式適配等輔助功能。Safetensors loader 在 Worker ready 前驗證 metadata、revision、必要 tensor 和 shape。模型 Registry 由 `model_registry.yaml` 登記 alias、設定路徑、對外 API ID、Runner／Adapter 工廠和選用 API 擴充；共用 route 不以模型 alias 分支。
 
-新增模型時，建立其模型包與設定、實作輸入處理、Worker Adapter／Model Runner、模型定義及相容性載入，並登記入口。共用 Engine 僅復用已通過該模型能力驗證的 Scheduler／Cache／Executor 契約。模型若無法使用相同 Cache 或 batch semantics，需在模型包明確適配或提出新契約；不預設每個模型都支援 Qwen 的 paged KV。
+## 新模型接入與共用裝配
+
+`api/service_app.py` 讀取 Launcher 設定的模型 alias，建立共用 `EngineClient`、API request limits、輸入處理器和選用 Live manager。`engine/model_bootstrap.py` 從 Registry 載入模型 Runner／Adapter 工廠，建立 `InferenceEngine`、`LocalProcessExecutor` 和 `InProcessModelWorker`。Runner／Adapter 工廠使用 `module:attribute` 字串；工廠僅在相應程序中載入，因此 API process 不會匯入模型 Runner 或 GPU Runtime。
+
+Registry 的 `api.model_id` 是推論 API 接受及回傳的識別碼；上游 model repo ID 留在 `inference.yml` 的 `model.id`。`api.capabilities` 明確列出聊天輸入模態、文字串流、`text_delta`／`token_ids` 輸出、影片上傳及 Live 能力；API app 依此掛載路由並拒絕不支援的輸入。`input_processor` 與 `live_session_manager` 是依能力需要登記的工廠。特殊前處理、Tokenizer、權重載入、模型拓撲和 cache 邏輯仍由模型包負責。
+
+新模型最少實作 Runner／Adapter 並登記工廠和 YAML；不需寫模型專屬 `app.py` 或 `engine_core.py`。逐步生成 Adapter 維持 Engine 的 prepare／prefill／decode／finish／cancel 契約，Runner 持有模型 cache state 並依 request ID 回傳批次結果。共用 KV Manager 的租約不替模型宣稱支援相同的物理 cache 或 batch 語義。完整操作步驟及工廠簽章見[新模型接入操作指南](model-integration.md)。
+
+Mage-VL 與 Qwen 均由共用入口裝配；模型目錄不保留未使用的 `app.py`／`engine_core.py` 包裝檔。
+
+### 標準文字模型預設元件
+
+`integration_profile: standard` 可省略 `components.runner`、`components.adapter` 和 `api.input_processor`。API Server 使用 `api/default_chat_processor.py`；Worker 使用 `engine/standard_text.py` 中的 `StandardTextModelRunner`／`StandardTextModelAdapter`。Registry 仍保留逐項覆寫入口，不要求標準模型先複製一組包裝類別。
+
+預設 Runner 以 `AutoModelForCausalLM` 載入固定 revision，僅支援單一已登記 `torch_cuda` 裝置、decoder-only causal LM、模型提供可重用的 `past_key_values`、文字 `chat_template` 和 token ID 輸出。API 處理器只接收文字，不接受圖片、影片或 Live。Scheduler 提交的 `execute_batch()` 仍按 request 逐項呼叫 forward，各 request 的 Cache／生成狀態分開持有；這是可用的標準接入路徑，不代表連續批次 forward、實體 block cache 或 PagedAttention。
+
+預檢以 YAML 與 AST 確認 capability／方法合同，不 import 工廠或權重。Worker 在模型載入前再次檢查實例方法；如架構使用 encoder-decoder、`device_map` 多裝置、不可重用 Cache，或需要自訂採樣／影音流程，應改登記 `custom` 並提供模型 Runner／Adapter。即使預檢通過，將模型標成標準相容前仍需以固定 revision snapshot 實際驗證 Cache 延續和 token 輸出。
+
+## 模型接入 profile 與能力預檢
+
+`integration_profile` 分成 `standard` 與 `custom`。`standard` 使用共用的受限文字 Runner，適用於符合本設計中 decoder-only、單裝置、文字 Chat Template 與可延續 `past_key_values` 契約的模型；它不代表任意 `AutoModel` 都相容。`custom` 代表模型包需擁有專屬計算圖、權重轉換、影音前處理、Tokenizer 或 Cache 行為。Profile 是接入方式標記，不代表套件或模型名稱保證相容。目前 Mage-VL 和 Qwen3-0.6B 都是 `custom`；專案已有標準文字預設 Runner，但尚無任意模型通用相容層。
+
+`launcher.py validate` 為無權重預檢：載入登錄與 YAML，檢查 profile、API capability、Runner／Adapter／選用工廠模組、`token_ids` 解碼依賴及 Live 設定路徑；它不匯入工廠、不下載或載入 snapshot、不建立 CUDA context。`tests/inference/model_contract.py` 使用 AST 檢查方法存在性；這是結構合同，不取代固定 revision 的模型／裝置整合驗收。跨服務設定另由 `tests/end2end/test_config_compatibility.py` 比對 Gateway 與 Inference 的 alias、upstream model ID、能力及 network endpoint。
 
 ## 設定與營運
 

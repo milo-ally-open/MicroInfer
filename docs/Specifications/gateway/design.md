@@ -3,13 +3,13 @@
 > 關聯規格：[spec.md](spec.md)  
 > 關聯提案：[proposal.md](proposal.md)  
 > 任務追蹤：[tasks.md](tasks.md)  
-> 狀態：Go Gateway v1 已依本設計實作；驗收證據與尚未執行項目見 tasks.md。
+> 狀態：Go Gateway v1 已依本設計實作；雙模型能力路由依 REQ-13 增補，驗收證據與尚未執行項目見 tasks.md。
 
 ## 當前實作與目標
 
 - 當前程式位置／行為：src/gateway/ 已有 Go module、HTTP handler、設定 YAML、認證／設定／限流／觀測套件及 server lifecycle；實際檔案見 src/gateway/README.md。
-- 現有推論服務：src/inference/models/mage_vl_4b/app.py 組裝 /health、/v1/models、/v1/chat/completions、/v1/videos/understand 及即時工作階段路由。
-- 現有模型路由：src/inference/model_registry.yaml 的專案別名是 mage-vl-4b；src/inference/models/mage_vl_4b/configs/inference.yml 的上游識別碼是 microsoft/Mage-VL。
+- 現有推論服務：src/inference/api/service_app.py 依模型登錄組裝 /health、/v1/models、/v1/chat/completions，以及模型已啟用的影片／Live 路由。
+- 現有模型路由：`mage-vl-4b` → `microsoft/Mage-VL`（port 8001），`qwen3-0.6b` → `qwen3-0.6b`（port 8011）；各模型能力在 Inference Registry 與 Gateway YAML 對應登錄。
 - 目標邊界：Gateway 處理外部 HTTP/API Key/租戶政策/限流/路由/轉送/可觀測性；推論服務處理模型與推論；MediaMTX 處理 RTSP／RTMP 媒體流。
 
 ## Gateway 程式模組
@@ -40,16 +40,16 @@
 | 方法與路徑 | 認證 | 行為 |
 |---|---|---|
 | GET /healthz | 不需要 | Gateway 程序存活；不檢查模型是否就緒 |
-| GET /readyz | 不需要 | 設定有效且推論 GET /health 回報模型狀態 ok 時成功；否則回 503 |
+| GET /readyz | 不需要 | 每個不同的已配置推論 URL 之 GET /health 都回報 `status=ok` 才成功；否則回 503 |
 
 ### 客戶端 API
 
 | 方法與路徑 | 認證 | 上游路徑 | 設計要點 |
 |---|---|---|---|
 | GET /v1/models | Bearer API Key | GET /v1/models | 對外只列出設定的專案別名 |
-| POST /v1/chat/completions | Bearer API Key | POST /v1/chat/completions | 要求公開 model 別名；上游使用 microsoft/Mage-VL |
-| POST /v1/videos/understand | Bearer API Key | POST /v1/videos/understand | 保留 multipart 欄位並串流本文 |
-| POST /v1/live/sessions | Bearer API Key | POST /v1/live/sessions | 改寫工作階段控制識別碼及 URL；publish URL 仍指向 MediaMTX |
+| POST /v1/chat/completions | Bearer API Key | POST /v1/chat/completions | 以公開 model alias 路由；按 text/image/stream capability 驗證後改寫 upstream model ID |
+| POST /v1/videos/understand?model=`{model_alias}` | Bearer API Key | POST /v1/videos/understand | 選用 query 選模型，省略則使用 YAML 預設；保留 multipart 原文串流 |
+| POST /v1/live/sessions | Bearer API Key | POST /v1/live/sessions | JSON 選用 `model`；改寫工作階段控制識別碼及 URL；publish URL 仍指向 MediaMTX |
 | GET /v1/live/sessions/{session_id}/events | Bearer API Key | GET /v1/live/sessions/{upstream_session_id}/events | 驗證租戶句柄；保留 Last-Event-ID 與 SSE 語義 |
 | DELETE /v1/live/sessions/{session_id} | Bearer API Key | DELETE /v1/live/sessions/{upstream_session_id} | 驗證租戶句柄後停止上游工作階段 |
 
@@ -62,8 +62,9 @@ Gateway 非敏感設定位於 src/gateway/configs/gateway.yml。設定至少涵�
 | 類別 | 設定責任 |
 |---|---|
 | listener | host、port；預設 127.0.0.1:8000 |
-| upstream | 推論服務 base URL；本機預設值 http://127.0.0.1:8001 |
-| model routes | 公開別名、上游模型識別碼及上游服務；首版只登錄 mage-vl-4b → microsoft/Mage-VL |
+| upstream | 共用推論服務 fallback URL；本機預設值 http://127.0.0.1:8001 |
+| defaults | 視訊及 Live 的預設模型別名 |
+| model routes | 每模型公開別名、上游模型識別碼、上游 URL 和 text/image/stream/video/live 能力；目前登錄 Mage-VL 與 Qwen3-0.6B |
 | request limits | 聊天、視訊 multipart、即時工作階段本文上限 |
 | timeouts | 上游連線、一般回應、SSE 閒置及整體逾時 |
 | tenant policies | 每租戶請求速率、突發容量及必要的並行限制 |
@@ -83,11 +84,12 @@ Gateway 非敏感設定位於 src/gateway/configs/gateway.yml。設定至少涵�
 
 ## 模型路由與回應改寫
 
-- Gateway 啟動時載入模型路由表。首版只接受公開別名 mage-vl-4b；不存在或未指定 model 的聊天請求在呼叫上游前以 HTTP 400 拒絕。
-- 傳送至目前推論 API 時，請求 model 改為 microsoft/Mage-VL。
+- Gateway 啟動時載入每模型路由。聊天請求以 `model` 選公開別名，未設定或未知 alias 在呼叫上游前以 HTTP 400 拒絕；依 capability 拒絕純文字 Mage 請求及含圖片的 Qwen 請求，兩者都支援文字 SSE。
+- 聊天上游依路由使用 `microsoft/Mage-VL` 或 `qwen3-0.6b`，回應 JSON／SSE 的 model 欄位改回該請求的專案 alias。
 - GET /v1/models 僅回傳公開別名，不暴露上游 repo_id。
-- 非串流聊天 JSON 回應及聊天 SSE JSON 分塊的 model 欄位改寫為 mage-vl-4b。
 - SSE parser 以事件為單位處理 data 欄位，只改寫合法 JSON 的 model 欄位；註解、keep-alive、[DONE] 及非 JSON 控制資料保持不變。每個事件即時刷新，不聚合整條串流。
+
+影片路由使用可選 query `model`，以便不讀取或重建 multipart 本文也能選擇上游；預設模型由 `defaults.video_model` 設定。Live 建立 JSON 使用可選 `model`（預設 `defaults.live_model`）。Gateway 在轉送前檢查 `video_upload`／`live_video`，不支援時拒絕。Inference route capability 不在 Gateway 內推導；`tests/end2end/` 比對兩份 YAML，避免部署配置漂移。
 
 ## 視訊本文與 Content-Length
 
@@ -107,7 +109,7 @@ Gateway 非敏感設定位於 src/gateway/configs/gateway.yml。設定至少涵�
 
 ## 即時工作階段句柄
 
-句柄採 URL 安全編碼，簽章涵蓋版本、tenant_id、上游 session_id 與到期時間。Gateway 不需要資料庫或程序內的租戶工作階段表即可驗證句柄。
+句柄採 URL 安全編碼，簽章涵蓋版本、tenant_id、上游 session_id、建立時的模型 alias 與到期時間。Gateway 不需要資料庫或程序內的租戶工作階段表即可驗證句柄並還原上游路由；舊版未含 alias 的 v1 句柄使用 `defaults.live_model` 相容處理。
 
 - 建立工作階段後，Gateway 將對外 id 改寫為簽名句柄；events_url 與 stop_url 使用 Gateway 主機及公開句柄。
 - Gateway 驗證 Bearer Key、句柄簽章、到期時間及 tenant_id 相符後，才將句柄中的上游 session_id 轉為推論服務路徑。

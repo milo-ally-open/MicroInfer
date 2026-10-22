@@ -1,0 +1,48 @@
+{
+  "started_at_utc": "2026-10-22T06:11:12.0870278Z",
+  "model_alias": "qwen3-0.6b",
+  "mode": "gateway-lifecycle-smoke",
+  "environment": "WSL Ubuntu-24.04 / magevl-transformers / RTX 4060 Laptop GPU",
+  "inference_config_override": {
+    "max_context_tokens": 512,
+    "max_new_tokens": 16,
+    "max_num_seqs": 1,
+    "max_waiting_requests": 2,
+    "max_num_scheduled_tokens": 512,
+    "kv_cache_block_size_tokens": 16,
+    "kv_cache_num_blocks": 128
+  },
+  "concurrent_requests": {
+    "request_count": 2,
+    "client_concurrency": 2,
+    "each_max_tokens": 8,
+    "success_count": 2,
+    "results": [
+      {
+        "finish_reason": "length",
+        "latency_seconds": 1.708849646995077
+      },
+      {
+        "finish_reason": "length",
+        "latency_seconds": 2.2009448610042455
+      }
+    ]
+  },
+  "disconnect_request": {
+    "stream": true,
+    "max_tokens": 16,
+    "client_closed_after_first_text_delta": true
+  },
+  "post_disconnect_state": {
+    "scheduler_running": 0,
+    "scheduler_waiting": 0,
+    "engine_kv_used_blocks": 0,
+    "worker_active_requests": 0,
+    "worker_physical_used_blocks": 0,
+    "worker_free_blocks": 128
+  },
+  "limitations": [
+    "單次小負載 smoke，不代表容量或 SLA。",
+    "未驗證 Mage-VL、影片上傳、Live 或高併發。"
+  ]
+}

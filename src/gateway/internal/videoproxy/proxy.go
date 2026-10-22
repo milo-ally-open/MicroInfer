@@ -23,22 +23,21 @@ func (requestError *RequestError) Error() string { return requestError.Message }
 
 type Proxy struct {
 	upstream        *upstream.Client
-	baseURL         string
 	maxRequestSize  int64
 	responseTimeout time.Duration
 	metrics         Metrics
 }
 
-func New(upstreamClient *upstream.Client, baseURL string, maxRequestSize int64, responseTimeout time.Duration, metrics Metrics) *Proxy {
-	return &Proxy{upstream: upstreamClient, baseURL: baseURL, maxRequestSize: maxRequestSize, responseTimeout: responseTimeout, metrics: metrics}
+func New(upstreamClient *upstream.Client, maxRequestSize int64, responseTimeout time.Duration, metrics Metrics) *Proxy {
+	return &Proxy{upstream: upstreamClient, maxRequestSize: maxRequestSize, responseTimeout: responseTimeout, metrics: metrics}
 }
 
-func (proxy *Proxy) Forward(r *http.Request, requestID string) (*http.Response, context.Context, context.CancelFunc, error) {
+func (proxy *Proxy) Forward(r *http.Request, requestID, baseURL string) (*http.Response, context.Context, context.CancelFunc, error) {
 	if err := ValidateContentLength(r.ContentLength, proxy.maxRequestSize); err != nil {
 		return nil, nil, nil, err
 	}
 	body := &trackedBody{ReadCloser: r.Body, expected: r.ContentLength, started: time.Now(), metrics: proxy.metrics}
-	response, ctx, cancel, _, err := proxy.upstream.Forward(r, requestID, http.MethodPost, "/v1/videos/understand", proxy.baseURL, body, r.ContentLength, r.Header.Get("Content-Type"), proxy.responseTimeout)
+	response, ctx, cancel, _, err := proxy.upstream.Forward(r, requestID, http.MethodPost, "/v1/videos/understand", baseURL, body, r.ContentLength, r.Header.Get("Content-Type"), proxy.responseTimeout)
 	return response, ctx, cancel, err
 }
 
