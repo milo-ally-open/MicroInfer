@@ -120,6 +120,14 @@ IMAGE_URL_TIMEOUT = float(API_CONFIG["image_url_timeout_seconds"])
 STREAM_TIMEOUT = float(API_CONFIG["stream_timeout_seconds"])
 WORKER_STARTUP_TIMEOUT = float(CONFIG.get("runtime", {}).get("worker_startup_timeout_seconds", 2400))
 WORKER_REQUEST_TIMEOUT = float(CONFIG.get("runtime", {}).get("worker_request_timeout_seconds", 1800))
+ENGINE_CORE_STARTUP_TIMEOUT = float(
+    CONFIG.get("runtime", {}).get("engine_core_startup_timeout_seconds", WORKER_STARTUP_TIMEOUT + 30)
+)
+ENGINE_CORE_REQUEST_TIMEOUT = float(
+    CONFIG.get("runtime", {}).get("engine_core_request_timeout_seconds", WORKER_REQUEST_TIMEOUT + 30)
+)
+if ENGINE_CORE_STARTUP_TIMEOUT <= 0 or ENGINE_CORE_REQUEST_TIMEOUT <= 0:
+    raise RuntimeError("Engine Core startup and request timeouts must be positive.")
 LIVE_CONFIG = API_CONFIG.get("live_stream", {})
 if not isinstance(LIVE_CONFIG, dict):
     raise RuntimeError("api.live_stream must be a mapping in the API YAML.")

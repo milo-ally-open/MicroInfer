@@ -1,7 +1,7 @@
 # 技術設計：五元件最小 Inference Engine
 
 > 提案：[proposal.md](proposal.md)｜行為規格：[spec.md](spec.md)｜任務／驗收：[tasks.md](tasks.md)
-> 本機可驗收範圍：Python 契約測試、子程序 IPC、Scheduler、cache reservation、模型元件 registry mock 和語法；固定 revision 程式、設定及權重快照已在本機，模型定義已拆入模型包；未載入權重或驗證 CUDA 行為。
+> 本輪程序隔離的本機驗收範圍：EngineClient 多程序 IPC、逐 token event、取消、錯誤、close 與 API SSE source contract；T-35 曾完成固定 revision 的部分權重／圖片聊天驗收，但本輪未重啟 FastAPI、模型或 GPU。未驗證 MediaMTX。
 
 ## 調研依據與已知邊界
 
@@ -43,27 +43,31 @@ Registry 以已檢視的 `named_modules()` 路徑登記 vision／language 元件
 ```text
 API Server process
   FastAPI routes / schema / SSE serializer
-  Engine Core
+  LiveSessionManager ── 媒體擷取與 Live SSE 狀態
+  EngineClient ──────── 本機 Pipe RPC / 逐 request 事件
+             │
+             ▼
+Engine Core process
+  InferenceEngine
     TokenScheduler ── 公平輪轉 prefill/decode turn
     KVCacheManager ── 邏輯 block 預留、統計與回收
-    IPC client ────── Pipe RPC
+    MultiprocessModelWorker ── Worker Pipe RPC
                          │
                          ▼
-                   Model Worker process
-                     MageVLModelAdapter
-                     MageVLModelRunner
-                       model + processor + past_key_values
+GPU Worker process
+  MageVLModelAdapter / MageVLModelRunner
+  model + processor + past_key_values / RequestCacheManager
 ```
 
-此為最小兩程序拓樸：Engine Core 與 API Server 同進程，只有一個獨立 Worker 子進程。`launcher.py` 保持現有命令；`runtime.uvicorn_workers` 固定為 `1`，避免 API 複製時重複佔用 GPU。Worker 透過 multiprocessing `spawn` 啟動，`models.mage_vl_4b.app:create_model_worker` 延後匯入 Runner，避免 API Server import 時載入 Torch 或權重。Worker 啟動握手回報模型健康資訊；錯誤、逾時、程序退出及關閉均經 Pipe 處理。
+此為三程序拓樸。`launcher.py` 保持現有命令；`runtime.uvicorn_workers` 固定為 `1`，避免 API 複製時重複啟動 Engine Core 和 GPU Worker。API Server 以 `EngineClient` 建立 Engine Core `spawn` 子程序；模型包的 `engine_core.py` factory 在該程序建立 `InferenceEngine`，再由 Engine 啟動 `MultiprocessModelWorker` 子程序。Worker factory `models.mage_vl_4b.engine_core:create_model_worker` 延後匯入 Runner，API import 不載入 Torch 或權重。Engine Core 與 Worker 啟動握手均回報 PID／健康資訊；錯誤、逾時、取消及優雅關閉分別經各自 Pipe 處理。`/health` 提供 API、Engine Core 及 GPU Worker PID，便於確認程序邊界。
 
 ### API Server
 
-`api/` 維持現有路由、Pydantic schema、request body 限制、JSON/OpenAI response 與 SSE 序列化。上傳影片由 Engine 分塊寫入本機暫存檔，再傳路徑給 Worker，不經 Pipe 傳送整段影片 bytes。Live 影格透過本機 IPC 傳送；媒體 URL 與 Gateway API Key 邏輯不變。
+`api/` 維持現有路由、Pydantic schema、request body 限制、JSON/OpenAI response 與 SSE 序列化。推論操作透過 `EngineClient` 本機 IPC 傳送；上傳影片由 API 分塊寫入本機暫存檔，只將同機路徑傳給 Engine Core，不經 Pipe 傳送整段影片 bytes。Live session manager 與媒體擷取留在 API 程序；影格／片段分析呼叫透過 EngineClient 提交。Chat `text`、finish、錯誤事件依 request ID 逐項從 Pipe 取回，API route 沿用原有 OpenAI chunk 和 `[DONE]` 序列化；媒體 URL 與 Gateway API Key 邏輯不變。
 
 ### Engine Core
 
-`engine/engine.py` 擁有 Worker lifecycle、推論操作、Scheduler／KV 管理與 Live session 關閉順序。API route 不直接呼叫模型 Adapter／Runner。Engine Core 背景迴圈集中取得批次、呼叫 Worker、更新狀態並派送逐請求事件；一般 chat、SSE、影片與 Live 生成共用此路徑。
+`engine/engine.py` 在 Engine Core 程序擁有 Worker lifecycle、推論操作、Scheduler／KV 管理與執行狀態。API route 只依賴 `EngineClient` facade，不直接持有 Engine Core、Adapter 或 Runner。`engine/client.py` 使用一條多工 duplex Pipe，為每個 RPC／stream 設 request ID，由 reader thread 將 result、error、admission 和逐 token event 分派給對應等待者；Engine Core 在啟動生成 handler 前先登記 request ID，使過早取消也能被記錄並在輸入準備／排程邊界中止。SSE 關閉或請求逾時會送出 cancel。Engine Core 背景迴圈集中取得批次、呼叫 Worker、更新狀態並派送逐請求事件；一般 chat、SSE、影片與 Live 生成共用此路徑。Live session lifecycle 本身在 API 程序，Engine Core 不管理媒體連線。
 
 ### Token Scheduler
 
@@ -88,7 +92,7 @@ Worker 內的 `RequestCacheManager` 以 request ID 持有實際 Transformers Cac
 
 ### Worker／Model Runner
 
-`engine/worker.py` 定義 `ModelWorker`、保留供單元測試使用的 `InProcessModelWorker`，並由線上 app 使用 `MultiprocessModelWorker`。Worker 子程序在啟動時載入 Adapter／Runner；父程序不持有模型權重。
+`models/mage_vl_4b/engine_core.py:create_engine_core` 建立共用 `InferenceEngine` 及 `MultiprocessModelWorker`；`create_model_worker` 只在 GPU Worker 子程序載入 Adapter／Runner。`engine/worker.py` 保留 `InProcessModelWorker` 供單元測試使用。API 與 Engine Core 均不持有模型權重、GPU tensor 或實際 Cache object；這些資料只由 Worker 程序管理。
 
 Runner 的生成狀態以 request ID 保存輸入 IDs、attention mask、抽樣設定和產生 token；實際 `past_key_values` 由 Worker 內 `RequestCacheManager` 持有並追蹤長度。`prefill_generation()` 首次送入多模態輸入並得到首 token；後續 `decode_generation_step()` 使用 cache，只餵新 token，避免重跑視覺 Encoder。相容請求共用一次 forward 後，輸出 Cache 會拆回獨立 request 管理；每個 request 完成或取消時釋放生成狀態和 Cache 參照。API 仍透過逐 token text event 輸出文字 SSE。
 
@@ -111,6 +115,8 @@ Runner 的生成狀態以 request ID 保存輸入 IDs、attention mask、抽樣�
 | `engine.max_num_scheduled_tokens` | 線上完整 prompt prefill turn 上限；純批次規劃 helper 的 token 預算由呼叫方傳入 |
 | `engine.kv_cache.block_size_tokens` | 邏輯 cache block 的 token 數 |
 | `engine.kv_cache.capacity_tokens` | 邏輯 cache 總容量 |
+| `runtime.engine_core_startup_timeout_seconds` | Engine Core 啟動及其 GPU Worker 載入握手逾時 |
+| `runtime.engine_core_request_timeout_seconds` | API Server 等待 Engine Core RPC／串流的逾時 |
 | `runtime.worker_startup_timeout_seconds` | Worker 模型載入握手逾時 |
 | `runtime.worker_request_timeout_seconds` | Worker RPC 回應逾時 |
 
@@ -122,7 +128,7 @@ Runner 的生成狀態以 request ID 保存輸入 IDs、attention mask、抽樣�
 - Worker 啟動失敗：Engine 不進入 ready；`/health` 不回報 ready。
 - Runner step 失敗、請求取消或 SSE 關閉：取消 Worker generation state，移除 scheduler request，回收 KV lease。
 - Worker RPC 逾時或程序退出：回報執行錯誤並允許 Engine 關閉／重啟；本版不自動重載模型、不做請求重播。
-- Engine 關閉：停止 Live sessions、等待 Scheduler 無活動 request、關閉 Worker 子程序。
+- API Server 關閉：先停止 API 程序內的 Live sessions，再要求 Engine Core 優雅關閉；Engine Core 取消進行中的請求、等待 Scheduler 清空並關閉 GPU Worker 子程序。
 
 ## nano-vLLM 參考與本專案候選設計
 
@@ -149,17 +155,18 @@ Engine Core 背景迴圈管理本輪 Worker 批次與逐 request 事件；reques
 ### 建議的最小目標形狀
 
 ```text
-FastAPI routes / 現有 JSON、SSE 序列化
-  └─ InferenceEngine：接收請求、維護序列狀態、輸出每請求事件
-       ├─ TokenScheduler.schedule_batch() / postprocess()
-       ├─ KVCacheManager：准入容量帳本（初期仍是邏輯容量）
-       └─ MultiprocessModelWorker.execute_batch(work_items)
-            └─ MageVLModelRunner：模型專屬輸入處理、批次 prefill/decode、GPU cache
+API Server：FastAPI routes / 現有 JSON、SSE 序列化 / LiveSessionManager
+  └─ EngineClient ── Pipe IPC ── Engine Core process
+       └─ InferenceEngine：接收請求、維護序列狀態、輸出每請求事件
+            ├─ TokenScheduler.schedule_batch() / postprocess()
+            ├─ KVCacheManager：准入容量帳本（初期仍是邏輯容量）
+            └─ MultiprocessModelWorker.execute_batch(work_items)
+                 └─ GPU Worker process：MageVLModelRunner／Adapter、模型和 Cache
 ```
 
 以 `engine/sequence.py`（或同等單一模組）集中定義 `SequenceState`：request ID、來源類型、執行階段、prompt 進度、輸出上限及完成狀態。不要把模型 tensor 或 Transformers Cache 放入 Engine 狀態；它們由 Worker 按 request ID 保管。Live session 的生命週期仍由 `LiveSessionManager` 管理；每次送入模型的影格／片段生成才是可排程工作，不要把長連線 session 本身當作一條持續佔用 Scheduler 的 decode sequence。
 
-Engine 每輪取得 `ScheduledWork[]`，描述 request ID、prefill/decode 階段、prompt offset 和 token budget；Worker 回傳對應的 per-request step result。Engine 更新序列狀態並將文字增量或完成事件放入該 request 的事件佇列，現有 route 從佇列輸出既有 JSON／SSE 格式。現行 Worker 批次 RPC 及同階段規劃已在線上執行，Mage-VL Runner 仍逐筆 forward。後續須先依多模態 tensor 與 cache 形狀實作、驗證單次多 request forward，再接入 chunked prefill 或混合階段排程；目前各請求仍保留獨立 `past_key_values` 和逐 token SSE。
+Engine 每輪取得 `ScheduledWork[]`，描述 request ID、prefill/decode 階段、prompt offset 和 token budget；Worker 回傳對應的 per-request step result。Engine 更新序列狀態並將文字增量或完成事件放入該 request 的事件佇列；EngineClient 逐事件傳回 API route，沿用原有 JSON／SSE 格式。現行 Worker 批次 RPC 及同階段規劃已在線上執行；Mage-VL Runner 對相容輸入執行單次多序列 forward，不相容時逐筆 fallback。後續仍需依多模態 Cache 追加行為驗證 chunked prefill 或混合階段排程；目前各請求保留獨立 `past_key_values` 和逐 token SSE。
 
 Worker 已是獨立程序，因此 GPU tensor、cache tensor 及實體 KV page 的所有權必須留在 Worker。Engine 的 KV 管理器可做請求准入與預算，但 reservation 必須與 Worker 實際可用容量協調；不能只在 Engine 配 block ID，就宣稱已取得 GPU page。現有圖片、影片、Live frame 的 IPC 輸入契約可逐步演進，但不可為了批次排程把完整影片或 GPU tensor 搬進 Engine 狀態。
 
@@ -169,7 +176,7 @@ Worker 已是獨立程序，因此 GPU tensor、cache tensor 及實體 KV page �
 2. 固定 revision Mage-VL 對相容輸入共用一次 forward，不相容輸入明確退回單 request 路徑；真實圖片／影片 batch 及 GPU 行為仍待模型環境驗收。
 3. 下一步實作 chunked prefill 與 prefill/decode 混合排程；視覺特徵只能在首次前向處理，不能因文字 chunk 重複編碼。
 4. 已在 Worker 內建立每 request Transformers Cache handle／長度／釋放管理；Engine block IDs 仍只是邏輯 lease，在 attention 消費 block table 前不稱實體 paged block。
-5. 以 `EngineClient` 分離 API Server 與 Engine Core，保留現有 Worker 子程序；完成後再量測 mixed chat、影片及 Live 的吞吐、SSE 首 token 延遲、後續 token 間隔、取消回收和顯存峰值。
+5. 已透過 `EngineClient` 分離 API Server 與 Engine Core，並保留獨立 GPU Worker 子程序；多程序 fake 測試驗證 PID 隔離、逐 token event 順序、取消、錯誤回傳及優雅關閉。下一次模型環境驗收仍需量測 mixed chat、影片及 Live 的吞吐、SSE 首 token 延遲、後續 token 間隔、取消回收和顯存峰值。
 
 Prefix cache 應延後評估。多模態快取鍵至少須涵蓋模型與 Processor revision、文字 token、影像／影格內容及預處理設定；只用文字 prompt hash 可能錯誤重用視覺特徵或 KV 狀態。這些是後續驗證項目，不是目前功能或已排定實作承諾。
 

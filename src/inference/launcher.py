@@ -246,7 +246,7 @@ def main() -> None:
     api_workers = int(runtime.get("uvicorn_workers", 1))
     if api_workers != 1:
         raise ValueError(
-            "runtime.uvicorn_workers must be 1 while each API Server owns one dedicated Model Worker process."
+            "runtime.uvicorn_workers must be 1 while each API Server owns one Engine Core and GPU Worker process."
         )
 
     print(
@@ -255,7 +255,7 @@ def main() -> None:
     )
     import uvicorn
 
-    # 服務程序常駐提供 HTTP API；工作者數量由模型設定控制。
+    # API Server 單程序常駐；Engine Core 與 GPU Worker 各自管理獨立子程序。
     uvicorn.run(
         _load_service_app(app_path, model_alias, backend),
         host=host,

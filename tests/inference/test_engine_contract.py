@@ -275,6 +275,21 @@ class EngineContractTests(unittest.TestCase):
         self.assertEqual(engine.generate_chat({"id": "B"}).content, "ab")
         engine.close()
 
+    def test_ipc_cancel_before_generation_context_is_registered(self) -> None:
+        engine, _, adapter = self.make_engine(capacity=1, waiting=0)
+        engine.start()
+        request_id = "cancel-before-context"
+        engine.register_request(request_id)
+        engine.cancel_request(request_id)
+        stream = engine.stream_chat({"id": "A"}, request_id=request_id)
+        with self.assertRaises(GeneratorExit):
+            next(stream)
+        engine.unregister_request(request_id)
+        self.assertEqual(adapter._tasks, {})
+        self.assertEqual(engine.scheduler.snapshot()["running"], 0)
+        self.assertEqual(engine.kv_cache.snapshot()["used_blocks"], 0)
+        engine.close()
+
     def test_video_upload_is_spooled_and_forwarded_by_path(self) -> None:
         import io
 

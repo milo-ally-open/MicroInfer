@@ -14,12 +14,12 @@
 
 ## 推論服務分層
 
-請求主鏈路參考 vLLM V1 的五個核心職責，以兩個程序最小化落地：API Server 與 Engine Core 同進程，Model Worker 是獨立子程序。這不是 vLLM 後端，也沒有使用 vLLM attention kernel。
+請求主鏈路參考 vLLM V1 的五個核心職責，採用 API Server、Engine Core、GPU Worker 三個程序。API Server 透過共用 `EngineClient` 與 Engine Core 使用本機 Pipe 通訊；Engine Core 管理 Scheduler、KV lease 並透過既有 Worker IPC 呼叫 GPU Worker。這不是 vLLM 後端，也沒有使用 vLLM attention kernel。
 
 | 元件 | 程式位置 | 職責 |
 | --- | --- | --- |
 | API Server | `api/app.py`、`api/routes/`、`api/schemas.py`、`api/serializers.py` | HTTP 路由、schema、請求本文上限及 OpenAI/SSE response 序列化 |
-| Engine Core | `engine/engine.py` | Worker 生命週期、推論分派、Scheduler/KV 協調及 Live session 關閉 |
+| Engine Core | `engine/engine.py`、`engine/client.py` | 獨立程序中的推論生命週期；API 端 `EngineClient` 提供 IPC proxy |
 | Scheduler | `engine/scheduler.py` | 完整 prompt prefill 為一輪、decode 每輪一個 token；活動請求輪轉，佇列與序列數由 YAML 控制 |
 | KV Cache Manager | `engine/kv_cache.py` | 預留 prompt+輸出 token 邏輯 block，計算估算值，完成／取消後回收 block ID |
 | Worker | `engine/worker.py` | 線上使用 `MultiprocessModelWorker` 與 Pipe RPC；`InProcessModelWorker` 供測試或模型整合使用 |
@@ -40,11 +40,11 @@ Worker 內的 `RequestCacheManager` 以 request ID 持有實際 Transformers Cac
 
 Engine KV Cache Manager 追蹤邏輯 block 容量與 request-to-block table；Worker 的 `RequestCacheManager` 持有每 request 實際 Transformers Cache、序列長度及關聯 lease ID。完成、取消或失敗時兩端各自釋放對應狀態。KV tensor 仍由 Transformers 動態配置，邏輯 reservation 不等於實體 GPU 分頁，不支援 prefix cache 或 VRAM pool。`/health` 的 bytes 是根據模型層數、KV heads、head dimension 和 dtype 估算，並非 CUDA 記憶體實測。
 
-Worker 使用 Python `spawn` 子程序；API import 不載入 Mage-VL 模型。`runtime.uvicorn_workers` 必須為 `1`。本版 Runner 支援逐步 `past_key_values` 解碼、greedy／temperature／top-k／top-p／min-p 及重複懲罰；beam search、自訂 generation kwargs 和非預設 Cache implementation 暫不支援。若固定 revision 不提供必要介面，Worker 會明確報錯，不回退到不受 Token Scheduler 控制的完整 `generate()`。
+Engine Core 與 GPU Worker 都以 Python `spawn` 建立；API import 不載入 Mage-VL 模型。`runtime.uvicorn_workers` 必須為 `1`，避免重複建立整組 Engine Core／GPU Worker。Engine Core 啟動與 RPC 逾時分別由 `runtime.engine_core_startup_timeout_seconds` 和 `runtime.engine_core_request_timeout_seconds` 設定；`/health` 回報 API、Engine Core 與 GPU Worker PID。Chat 的逐 token `text` 事件經 EngineClient 傳回 API，仍由既有路由序列化為 OpenAI SSE chunk，包含 finish usage 與 `[DONE]`；Live session 與媒體擷取留在 API 程序，其模型分析請求經 EngineClient 提交。Runner 支援逐步 `past_key_values` 解碼、greedy／temperature／top-k／top-p／min-p 及重複懲罰；beam search、自訂 generation kwargs 和非預設 Cache implementation 暫不支援。若固定 revision 不提供必要介面，Worker 會明確報錯，不回退到不受 Token Scheduler 控制的完整 `generate()`。
 
 ## 新增模型的最小步驟
 
-每個模型自包含於 `src/inference/models/<model>/`，包含模型專屬的 `app.py`、`adapter.py`、`config.py`、`model_runner.py`、需要時的 `processor.py`，以及 `configs/` 和 `requirements/`。模型 `app.py` 匯出子程序可載入的 `create_model_worker()` factory；factory 建立 `InProcessModelWorker(Runner, Adapter)`，外層 app 使用共用 `MultiprocessModelWorker`、`InferenceEngine` 和 `api.create_app()`。
+每個模型自包含於 `src/inference/models/<model>/`，包含模型專屬的 `app.py`、`engine_core.py`、`adapter.py`、`config.py`、`model_runner.py`、需要時的 `processor.py`，以及 `configs/` 和 `requirements/`。模型 `app.py` 建立共用 `EngineClient` 並匯出 FastAPI app；`engine_core.py` 匯出 `create_engine_core()` 與 `create_model_worker()`，前者在 Engine Core 子程序建立共用 `InferenceEngine`／`MultiprocessModelWorker`，後者只在 GPU Worker 子程序載入 Runner。Live session 管理留在 API 程序，逐次模型分析透過 EngineClient 呼叫。
 
 逐步生成模型 Adapter 要提供 `prepare_*_generation`、`prefill_generation`、`decode_generation_step`、`finish_*_generation` 及 `cancel_generation` 操作；Runner 保存各 request 的 cache state。新模型可沿用共用 route／Scheduler／KV Manager，將原生多模態 cache 能力適配到此操作邊界。若模型不支援逐步執行，需先新增並驗收適配方案，不能把整段生成標記為 token-scheduled。
 

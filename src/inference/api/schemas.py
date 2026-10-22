@@ -123,6 +123,9 @@ class HealthResponse(APIModel):
     quantization: str
     live_sessions: int
     live_video_enabled: bool = True
+    api_pid: int | None = None
+    engine_core_pid: int | None = None
+    worker_pid: int | None = None
     gpu: str | None = None
     vram_free_bytes: int | None = None
     vram_total_bytes: int | None = None

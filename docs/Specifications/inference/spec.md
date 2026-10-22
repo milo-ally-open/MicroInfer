@@ -6,7 +6,7 @@
 ## 名詞與現況基線
 
 - **API Server**：FastAPI HTTP routes、schema、錯誤及 SSE/JSON response。
-- **Engine Core**：協調 API 推論工作、Scheduler、KV Cache Manager、Worker lifecycle；目前與 API Server 同進程。
+- **Engine Core**：獨立程序，協調 API 推論工作、Scheduler、KV Cache Manager 及 GPU Worker lifecycle；API Server 透過 `EngineClient` IPC 存取。
 - **Token Scheduler**：以 prompt／decode token turn 排程活動 request。
 - **KV Cache Manager**：按 token 容量建立邏輯 block table、估算 reservation、回收 block ID；底層 Cache tensor 仍由 Model Runner 管理。
 - **Model Worker**：獨立子程序，載入模型並處理 Engine IPC；單一 Worker 對應一份模型副本。
@@ -98,7 +98,7 @@
 
 ### REQ-30：Model Worker 隔離程序與 GPU Runtime
 
-- **AC-30.1** 線上 app 使用 `MultiprocessModelWorker`，以 `spawn` 建立一個 Worker 子程序，API import 不建立模型物件。
+- **AC-30.1** 模型包的 Engine Core factory 使用 `MultiprocessModelWorker`，以 `spawn` 建立一個 GPU Worker 子程序；API import 不建立 Engine Core、Worker 或模型物件。
 - **AC-30.2** Worker IPC 支援啟動 handshake、invoke、stream event、健康資訊、GPU 狀態、錯誤、逾時與 graceful close。
 - **AC-30.3** `runtime.uvicorn_workers` 不是 `1` 時 launcher 拒絕啟動，避免重複載入模型副本。
 - **AC-30.4** IPC 假 Worker 測試證明 Worker PID 不等於 API PID，並驗證呼叫、串流、健康和關閉。
@@ -186,10 +186,10 @@
 | 元件 | 程式位置 | 已實作行為／限制 |
 |---|---|---|
 | API Server | `api/` | HTTP、schema、錯誤、SSE/JSON response |
-| Engine Core | `engine/engine.py` | Worker lifecycle、操作分派、Live shutdown；與 API 同進程 |
+| Engine Core | `engine/engine.py`、`models/mage_vl_4b/engine_core.py` | 獨立程序內管理 Worker lifecycle、操作分派、Scheduler/KV 與批次執行 |
 | Scheduler | `engine/scheduler.py`、`engine/batch_planner.py` | 線上規劃同階段多 request prefill/decode 批次並傳至 Worker；不切塊、不混合階段 |
 | KV Cache Manager | `engine/kv_cache.py` | 線上邏輯 block 預留、估算、釋放與 ID 重用；另有原子 batch reservation helper；皆非實體 PagedAttention |
-| Worker／Model Runner | `engine/worker.py`、`models/mage_vl_4b/model_runner.py` | 子程序隔離、批次 IPC、逐 request stepwise forward/cache state；batch item 目前分別 forward |
+| Worker／Model Runner | `engine/worker.py`、`models/mage_vl_4b/model_runner.py` | 第三個程序載入模型；相容同階段 request 可合併至單次 forward，逐 request 保留 Cache 與文字事件 |
 
 ## 追蹤矩陣
 

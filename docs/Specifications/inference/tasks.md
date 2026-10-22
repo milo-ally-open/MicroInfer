@@ -39,7 +39,7 @@
 - [x] **T-38 實作 Mage-VL 相容輸入的單次多 request forward** — 範圍：`models/mage_vl_4b/model_runner.py`、`components/stepwise_generation.py`、來源契約及 `tests/inference/stepwise_batch_example.py`；交付：相容多模態輸入共用一次 prefill/decode forward，逐 request 分離 logits、Cache 與抽樣狀態；不相容時逐 request fallback；覆蓋：REQ-38 / AC-38.1、AC-38.2、AC-38.3；依賴：T-37；狀態：程式、固定 revision 模型原始碼及 Transformers Cache API 已靜態檢視；語法與來源契約驗證通過；假模型 CPU 範例已提供，因目前 Python 環境未安裝 PyTorch而未執行，亦未執行真實多模態/GPU forward。
 - [ ] **T-39 實作 chunked prefill 與 prefill/decode 混合排程** — 範圍：`engine/batch_planner.py`、`engine/scheduler.py`、Mage-VL Runner、`tests/inference/`；交付：offset、token budget、request 狀態及視覺輸入只處理一次；覆蓋：REQ-39 / AC-39.1、AC-39.2、AC-39.3；依賴：T-38；狀態：未開始，需先驗證多模態 Cache 追加行為。
 - [x] **T-40 將 KV Cache Manager 連結至 Worker 實際 Cache 生命週期** — 範圍：`models/mage_vl_4b/components/cache_manager.py`、Stepwise Runner、Adapter health、`tests/inference/test_cache_manager.py`；交付：Worker 端每 request 持有實際 Cache object、追蹤實際長度與 Engine lease block IDs，長度不符時拒絕替換，finish／cancel／Worker close 釋放參照；Engine `KVCacheManager` 仍只管理邏輯容量；覆蓋：REQ-40 / AC-40.1、AC-40.2、AC-40.3；依賴：T-38；狀態：假 Cache 單元測試驗證長度、request 隔離與釋放，source contract 驗證 Runner 收尾掛接；未測 CUDA 配置、PagedAttention 或實際多模態 cache。
-- [ ] **T-41 透過 EngineClient 分離 API Server 與 Engine Core 程序** — 範圍：`api/`、`engine/`、launcher／process management、`tests/inference/`；交付：獨立 API、Engine Core、GPU Worker 程序，支援事件串流、取消、錯誤與優雅關閉；覆蓋：REQ-18 / AC-18.1、AC-18.2；REQ-30 / AC-30.1、AC-30.2；REQ-41 / AC-41.1、AC-41.2、AC-41.3、AC-41.4；依賴：T-37、T-40；狀態：未開始；目前 API Server 與 Engine Core 同進程，Worker 為子進程。
+- [x] **T-41 透過 EngineClient 分離 API Server 與 Engine Core 程序** — 範圍：`api/`、`engine/client.py`、模型 `engine_core.py`、Inference YAML、`tests/inference/`；交付：API Server、Engine Core、GPU Worker 三程序；支援 request ID 多工 IPC、逐 token 事件、取消、錯誤、影片同機路徑轉交及優雅關閉；Live session／媒體擷取留在 API 程序，模型分析透過 EngineClient；覆蓋：REQ-18 / AC-18.1、AC-18.2；REQ-30 / AC-30.1、AC-30.2；REQ-41 / AC-41.1、AC-41.2、AC-41.3、AC-41.4；依賴：T-37、T-40；狀態：完成。三程序 fake Worker 測試驗證 PID 隔離、逐 token 事件順序、錯誤回傳、關閉 stream 後資源回收及優雅退出；Engine 測試另驗證 context 建立前取消會在排程前停止。來源契約確認既有 OpenAI SSE chunk、finish usage 和 `[DONE]` 路由未改。未啟動 FastAPI runtime、真模型、GPU 或 MediaMTX。
 
 ## 驗收紀錄
 
@@ -53,6 +53,15 @@
 | FastAPI 啟動／HTTP runtime smoke | 部分通過 | `GET /health`、Gateway `GET /readyz`、授權 `GET /v1/models` 均返回 200；固定 revision Worker 已成功載入 |
 | Mage-VL／GPU／MediaMTX | 部分驗收 | RTX 4060 Laptop GPU、NF4；圖片聊天完成 Gateway→Inference→Worker 往返並返回 200。未測影片輸入或 MediaMTX |
 | Go Gateway／端到端效能 | 功能往返通過；基線未建立 | 已完成一次圖片聊天請求（Gateway 上游約 1.93 秒）；未執行性能基線或多請求測試 |
+
+### Engine Core 程序隔離驗收（T-41）
+
+| 檢查 | 結果 | 證據／限制 |
+|---|---|---|
+| EngineClient／Engine Core／GPU Worker IPC | 通過 | `python -m unittest test_engine_client -v`；3 項純 Python 多程序測試驗證三個不同 PID、逐 token 事件順序、遠端錯誤後可繼續服務、SSE iterator 關閉後 scheduler／KV lease 歸零及優雅退出。 |
+| API／SSE 契約 | 通過 | `test_source_contract` 確認 API 只組裝 `EngineClient`、Engine Core factory 建立 `InferenceEngine`／`MultiprocessModelWorker`，chat route 保留逐 token text event 與 `[DONE]`；未啟動 FastAPI runtime。 |
+| 推論與端到端契約 | 部分通過 | 31 項目標 Inference 測試及 7 項 `tests/end2end/` 測試通過。完整 Inference discovery 共 52 項，51 項通過；工作樹既有未追蹤 `tests/inference/test_capability_probe.py` 的字面 source assertion 失敗，本次未修改該檔。 |
+| Spec／語法／差異 | 通過 | Spec validator：25 項需求、91 項驗收條件、33 項任務；`compileall` 與針對本次檔案的 `git diff --check` 通過；未載入權重、未執行 GPU、真實 API runtime 或 MediaMTX。 |
 
 ### 本次補充驗收（T-28、T-29）
 

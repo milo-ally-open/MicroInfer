@@ -65,6 +65,8 @@ runtime:
   startup_result_file: logs/transformers-startup.json
   worker_startup_timeout_seconds: 2400
   worker_request_timeout_seconds: 1800
+  engine_core_startup_timeout_seconds: 2430
+  engine_core_request_timeout_seconds: 1830
 
 api:
   image_resampling: lanczos

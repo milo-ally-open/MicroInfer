@@ -87,6 +87,8 @@ class InferenceEngine:
         self._live_sessions: Any = None
         self._contexts: dict[str, _GenerationContext] = {}
         self._contexts_lock = threading.RLock()
+        self._registered_requests: set[str] = set()
+        self._cancelled_requests: set[str] = set()
         self._dispatcher_stop = threading.Event()
         self._scheduler_wakeup = threading.Event()
         self._dispatcher: threading.Thread | None = None
@@ -158,17 +160,22 @@ class InferenceEngine:
         finish_operation: str,
         *,
         on_admitted: Any = None,
+        request_id: str | None = None,
     ) -> Iterator[InferenceStreamEvent]:
         """準備並登記請求；Engine Core 背景迴圈負責排程、執行及逐事件回傳。"""
         self._require_ready()
-        request_id = uuid.uuid4().hex
+        request_id = request_id or uuid.uuid4().hex
         prepared = False
         lease_created = False
         context: _GenerationContext | None = None
         try:
+            if self._request_was_cancelled(request_id):
+                raise GeneratorExit
             # prepare 可能在內部建立部分狀態後失敗；之後一律執行冪等取消清理。
             prepared = True
             descriptor = self.worker.invoke(prepare_operation, request_id, *prepare_args)
+            if self._request_was_cancelled(request_id):
+                raise GeneratorExit
             prompt_tokens = int(descriptor["prompt_tokens"])
             max_output_tokens = int(descriptor["max_new_tokens"])
             lease = self.kv_cache.reserve(
@@ -178,6 +185,8 @@ class InferenceEngine:
                 raise InferenceError(429, "The KV cache token capacity is exhausted; retry after active requests finish.")
             lease_created = True
             self.worker.invoke("bind_generation_cache", request_id, lease.block_ids)
+            if self._request_was_cancelled(request_id):
+                raise GeneratorExit
             context = _GenerationContext(request_id=request_id, finish_operation=finish_operation)
             with self._contexts_lock:
                 self._contexts[request_id] = context
@@ -189,6 +198,11 @@ class InferenceEngine:
                 raise InferenceError(429, "The inference scheduler is full; retry after active requests finish.") from exc
             except ValueError as exc:
                 raise InferenceError(413, "The prompt exceeds the scheduler's per-turn token budget.") from exc
+            with self._contexts_lock:
+                cancelled_before_schedule = context.cancelled
+            if cancelled_before_schedule:
+                self.scheduler.cancel_request(request_id)
+                raise GeneratorExit
             if on_admitted is not None:
                 on_admitted()
             context.events.put(InferenceStreamEvent("start", prompt_tokens=prompt_tokens))
@@ -247,6 +261,36 @@ class InferenceEngine:
         with self._contexts_lock:
             return self._contexts.get(request_id)
 
+    def cancel_request(self, request_id: str) -> None:
+        """取消指定請求並喚醒其事件 iterator，供 EngineClient IPC 中斷使用。"""
+        with self._contexts_lock:
+            context = self._contexts.get(request_id)
+            if context is None:
+                if request_id in self._registered_requests:
+                    self._cancelled_requests.add(request_id)
+                return
+        self._cancel_context(context)
+        context.events.put(GeneratorExit())
+
+    def register_request(self, request_id: str) -> None:
+        """在 Engine Core 接收 IPC 後、啟動 handler 前登記可取消的工作。"""
+        if not request_id:
+            raise ValueError("request_id is required.")
+        with self._contexts_lock:
+            if request_id in self._registered_requests or request_id in self._contexts:
+                raise ValueError(f"Duplicate active inference request: {request_id}")
+            self._registered_requests.add(request_id)
+
+    def unregister_request(self, request_id: str) -> None:
+        """清除 IPC request 註冊及未消耗的提前取消旗標。"""
+        with self._contexts_lock:
+            self._registered_requests.discard(request_id)
+            self._cancelled_requests.discard(request_id)
+
+    def _request_was_cancelled(self, request_id: str) -> bool:
+        with self._contexts_lock:
+            return request_id in self._cancelled_requests
+
     def _finish_context(self, context: _GenerationContext, result: InferenceResult) -> None:
         with self._contexts_lock:
             if context.terminal or context.cancelled:
@@ -293,14 +337,22 @@ class InferenceEngine:
         except BaseException:
             pass
 
-    def generate_chat(self, request_body: dict[str, Any]) -> InferenceResult:
+    def generate_chat(
+        self, request_body: dict[str, Any], *, request_id: str | None = None
+    ) -> InferenceResult:
         result = self._collect_result(
-            self._run_generation("prepare_chat_generation", (request_body,), "finish_chat_generation")
+            self._run_generation(
+                "prepare_chat_generation", (request_body,), "finish_chat_generation", request_id=request_id
+            )
         )
         return result
 
-    def stream_chat(self, request_body: dict[str, Any]) -> Iterator[InferenceStreamEvent]:
-        yield from self._run_generation("prepare_chat_generation", (request_body,), "finish_chat_generation")
+    def stream_chat(
+        self, request_body: dict[str, Any], *, request_id: str | None = None
+    ) -> Iterator[InferenceStreamEvent]:
+        yield from self._run_generation(
+            "prepare_chat_generation", (request_body,), "finish_chat_generation", request_id=request_id
+        )
 
     def understand_video(
         self, upload_stream: BinaryIO, filename: str | None, request_body: dict[str, Any]
@@ -310,12 +362,27 @@ class InferenceEngine:
             started = time.perf_counter()
             upload_bytes = save_upload(upload_stream, destination, self.max_video_bytes)
             staging_seconds = time.perf_counter() - started
-            result = self._collect_result(self._run_generation(
-                "prepare_video_generation",
-                (str(destination), filename, request_body, upload_bytes, staging_seconds),
-                "finish_video_generation",
-            ))
-            return result
+            return self.understand_video_path(
+                str(destination), filename, request_body, upload_bytes, staging_seconds
+            )
+
+    def understand_video_path(
+        self,
+        video_path: str,
+        filename: str | None,
+        request_body: dict[str, Any],
+        upload_bytes: int,
+        staging_seconds: float = 0.0,
+        *,
+        request_id: str | None = None,
+    ) -> InferenceResult:
+        """執行 API Server 已安全暫存的影片，不把 bytes 跨 Engine IPC 傳輸。"""
+        return self._collect_result(self._run_generation(
+            "prepare_video_generation",
+            (video_path, filename, request_body, upload_bytes, staging_seconds),
+            "finish_video_generation",
+            request_id=request_id,
+        ))
 
     @staticmethod
     def _collect_result(events: Iterator[InferenceStreamEvent]) -> InferenceResult:
@@ -345,7 +412,7 @@ class InferenceEngine:
         self.worker.invoke("validate_live_video_backend", backend, codec_engine)
 
     def try_live_inference(
-        self, operation: str, *args: Any, on_admitted: Any = None
+        self, operation: str, *args: Any, on_admitted: Any = None, request_id: str | None = None
     ) -> tuple[bool, Any]:
         """讓 Live 分析共用公平 Token Scheduler 與 KV block 預留。"""
         self._require_ready()
@@ -362,6 +429,7 @@ class InferenceEngine:
                 args,
                 "finish_live_generation",
                 on_admitted=on_admitted,
+                request_id=request_id,
             ))
         except InferenceError as exc:
             if exc.status_code == 429:

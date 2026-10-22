@@ -1,22 +1,12 @@
-"""組裝 API Server 與獨立 Mage-VL Model Worker。"""
+"""組裝 API Server，並透過 EngineClient 啟動獨立 Engine Core。"""
 
 from __future__ import annotations
 
 from api.app import create_app
-from engine.engine import InferenceEngine
-from engine.worker import InProcessModelWorker, MultiprocessModelWorker
+from engine.client import EngineClient
 from media.live_sessions import LiveSessionManager
 
 from . import config
-
-
-def create_model_worker() -> InProcessModelWorker:
-    """由 Worker 子程序呼叫，延後載入 GPU 模型程式。"""
-    from .adapter import MageVLModelAdapter
-    from .model_runner import MageVLModelRunner
-
-    model_runner = MageVLModelRunner()
-    return InProcessModelWorker(model_runner, MageVLModelAdapter(model_runner))
 
 
 def _resize_live_frame(image: object, max_side: int) -> object:
@@ -35,20 +25,10 @@ def _resize_live_frame(image: object, max_side: int) -> object:
     return image
 
 
-worker = MultiprocessModelWorker(
-    "models.mage_vl_4b.app:create_model_worker",
-    startup_timeout_seconds=config.WORKER_STARTUP_TIMEOUT,
-    request_timeout_seconds=config.WORKER_REQUEST_TIMEOUT,
-)
-engine = InferenceEngine(
-    worker,
-    model_id=config.MODEL_ID,
-    max_concurrent_requests=config.MAX_NUM_SEQS,
-    max_waiting_requests=config.MAX_WAITING_REQUESTS,
-    max_num_scheduled_tokens=config.MAX_NUM_SCHEDULED_TOKENS,
-    batch_wait_seconds=config.BATCH_WAIT_SECONDS,
-    kv_cache_block_size_tokens=config.KV_CACHE_BLOCK_SIZE_TOKENS,
-    kv_cache_capacity_tokens=config.KV_CACHE_CAPACITY_TOKENS,
+engine = EngineClient(
+    "models.mage_vl_4b.engine_core:create_engine_core",
+    startup_timeout_seconds=config.ENGINE_CORE_STARTUP_TIMEOUT,
+    request_timeout_seconds=config.ENGINE_CORE_REQUEST_TIMEOUT,
     max_video_bytes=config.MAX_VIDEO_BYTES,
 )
 engine.attach_live_sessions(LiveSessionManager(

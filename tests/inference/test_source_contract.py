@@ -93,6 +93,23 @@ class InferenceSourceContractTests(unittest.TestCase):
             self.assertNotIn("from fastapi", source)
             self.assertNotIn("StreamingResponse", source)
 
+    def test_api_engine_core_and_worker_use_three_process_boundary(self) -> None:
+        app = (INFERENCE / "models/mage_vl_4b/app.py").read_text(encoding="utf-8")
+        core_factory = (INFERENCE / "models/mage_vl_4b/engine_core.py").read_text(encoding="utf-8")
+        client = (INFERENCE / "engine/client.py").read_text(encoding="utf-8")
+        chat_route = (INFERENCE / "api/routes/chat_completions.py").read_text(encoding="utf-8")
+        self.assertIn("EngineClient(", app)
+        self.assertIn("models.mage_vl_4b.engine_core:create_engine_core", app)
+        self.assertNotIn("InferenceEngine(", app)
+        self.assertIn("InferenceEngine(", core_factory)
+        self.assertIn("MultiprocessModelWorker(", core_factory)
+        self.assertIn('multiprocessing.get_context("spawn")', client)
+        self.assertIn('context.Pipe(duplex=True)', client)
+        self.assertIn("engine.register_request(request_id)", client)
+        self.assertIn("engine.unregister_request(request_id)", client)
+        self.assertIn('"data: [DONE]\\n\\n"', chat_route)
+        self.assertIn('if event.kind == "text"', chat_route)
+
     def test_routes_call_engine_without_model_or_session_manager_access(self) -> None:
         route_paths = [path for path in (INFERENCE / "api/routes").glob("*.py") if path.name != "__init__.py"]
         route_sources = [path.read_text(encoding="utf-8") for path in route_paths]
@@ -130,15 +147,20 @@ class InferenceSourceContractTests(unittest.TestCase):
     def test_new_model_onboarding_reuses_shared_launcher_api_and_engine(self) -> None:
         launcher = (INFERENCE / "launcher.py").read_text(encoding="utf-8")
         app = (INFERENCE / "models/mage_vl_4b/app.py").read_text(encoding="utf-8")
+        engine_core = (INFERENCE / "models/mage_vl_4b/engine_core.py").read_text(encoding="utf-8")
         adapter = (INFERENCE / "models/mage_vl_4b/adapter.py").read_text(encoding="utf-8")
         readme = (INFERENCE / "README.md").read_text(encoding="utf-8")
         self.assertIn("sys.path.insert(0, str(INFERENCE_ROOT))", launcher)
         self.assertNotIn("mage-vl-4b", launcher)
         self.assertIn("from api.app import create_app", app)
         self.assertIn("app = create_app(", app)
-        self.assertIn("InferenceEngine(", app)
-        self.assertIn("MultiprocessModelWorker(", app)
-        self.assertIn("def create_model_worker(", app)
+        self.assertIn("EngineClient(", app)
+        self.assertNotIn("InferenceEngine(", app)
+        self.assertNotIn("MultiprocessModelWorker(", app)
+        self.assertIn("def create_engine_core(", engine_core)
+        self.assertIn("InferenceEngine(", engine_core)
+        self.assertIn("MultiprocessModelWorker(", engine_core)
+        self.assertIn("def create_model_worker(", engine_core)
         for method in (
             "prepare_chat_generation",
             "prepare_video_generation",
