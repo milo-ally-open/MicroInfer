@@ -30,6 +30,7 @@ def create_engine_core() -> InferenceEngine:
         max_concurrent_requests=config.MAX_NUM_SEQS,
         max_waiting_requests=config.MAX_WAITING_REQUESTS,
         max_num_scheduled_tokens=config.MAX_NUM_SCHEDULED_TOKENS,
+        prefill_chunk_size_tokens=config.PREFILL_CHUNK_SIZE_TOKENS,
         batch_wait_seconds=config.BATCH_WAIT_SECONDS,
         kv_cache_block_size_tokens=config.KV_CACHE_BLOCK_SIZE_TOKENS,
         kv_cache_capacity_tokens=config.KV_CACHE_CAPACITY_TOKENS,

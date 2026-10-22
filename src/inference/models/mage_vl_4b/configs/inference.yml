@@ -110,10 +110,12 @@ engine:
   # 單一 Model Worker 上的輪轉序列數與等待佇列上限。
   max_num_seqs: 4
   max_waiting_requests: 16
-  # 短暫合併同階段工作；此等待時間會增加少量首 token latency。
+  # 短暫合併可同時執行的工作；此等待時間會增加少量首 token latency。
   batch_wait_seconds: 0.01
-  # 每輪 token 上限；prefill 暫不切塊，需不大於此上限。
+  # 每輪實際執行 token 上限。首個 chunk 會包含全部視覺 token，必要時可大於 chunk size。
   max_num_scheduled_tokens: 8192
+  # 其餘 prompt token 分輪追加至同一請求的 Transformers Cache。
+  prefill_chunk_size_tokens: 2048
   kv_cache:
     block_size_tokens: 16
     capacity_tokens: 32768

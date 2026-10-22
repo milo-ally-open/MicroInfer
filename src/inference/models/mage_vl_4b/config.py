@@ -82,10 +82,14 @@ MAX_NUM_SEQS = int(ENGINE_CONFIG.get("max_num_seqs", API_CONFIG.get("max_concurr
 MAX_WAITING_REQUESTS = int(ENGINE_CONFIG.get("max_waiting_requests", 16))
 MAX_NUM_SCHEDULED_TOKENS = int(ENGINE_CONFIG.get("max_num_scheduled_tokens", MAX_CONTEXT_TOKENS))
 BATCH_WAIT_SECONDS = float(ENGINE_CONFIG.get("batch_wait_seconds", 0.01))
+_prefill_chunk_size = ENGINE_CONFIG.get("prefill_chunk_size_tokens")
+PREFILL_CHUNK_SIZE_TOKENS = int(_prefill_chunk_size) if _prefill_chunk_size is not None else None
+if _prefill_chunk_size is not None and PREFILL_CHUNK_SIZE_TOKENS < 1:
+    raise RuntimeError("engine.prefill_chunk_size_tokens must be positive when configured.")
 if MAX_NUM_SCHEDULED_TOKENS < MAX_CONTEXT_TOKENS:
     raise RuntimeError(
         "engine.max_num_scheduled_tokens must be at least api.max_context_tokens "
-        "while chunked prefill is disabled."
+        "so an indivisible first visual prompt chunk always fits."
     )
 KV_CACHE_CONFIG = ENGINE_CONFIG.get("kv_cache", {})
 KV_CACHE_BLOCK_SIZE_TOKENS = int(KV_CACHE_CONFIG.get("block_size_tokens", 16))

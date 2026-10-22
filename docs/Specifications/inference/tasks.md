@@ -37,7 +37,7 @@
 - [x] **T-36 建立 Runner 批次呼叫入口並保留文字串流** — 範圍：`engine/engine.py`、`engine/worker.py`、`models/mage_vl_4b/adapter.py`、`model_runner.py`；交付：Engine 每輪透過 `execute_batch(requests)` 到 Runner，結果依 request ID 回傳；逐 token `text` 事件仍序列化為 OpenAI SSE chunk；覆蓋：REQ-31 / AC-31.3、AC-31.4；REQ-33 / AC-33.1；依賴：T-23、T-24、T-34；狀態：初始 batch size 1 介面及文字事件／錯誤清理測試通過；後續線上批次接入見 T-37。
 - [x] **T-37 將 batch planner 接入線上 Engine／Worker** — 範圍：`engine/engine.py`、`engine/scheduler.py`、`engine/worker.py`、Mage-VL Runner、Inference YAML；交付：Engine Core 背景迴圈執行同階段多 request prefill/decode 批次，受序列數及 token budget 約束；Worker 回傳逐 request 結果；覆蓋：REQ-31 / AC-31.1、AC-31.3、AC-31.4；REQ-34 / AC-34.1、AC-34.2、AC-34.4；依賴：T-36；狀態：Scheduler／Engine fake 測試驗證多請求 prefill/decode、輪轉、SSE 增量文字及收尾；Mage-VL 單次多序列 forward 由 T-38 實作。
 - [x] **T-38 實作 Mage-VL 相容輸入的單次多 request forward** — 範圍：`models/mage_vl_4b/model_runner.py`、`components/stepwise_generation.py`、來源契約及 `tests/inference/stepwise_batch_example.py`；交付：相容多模態輸入共用一次 prefill/decode forward，逐 request 分離 logits、Cache 與抽樣狀態；不相容時逐 request fallback；覆蓋：REQ-38 / AC-38.1、AC-38.2、AC-38.3；依賴：T-37；狀態：程式、固定 revision 模型原始碼及 Transformers Cache API 已靜態檢視；語法與來源契約驗證通過；假模型 CPU 範例已提供，因目前 Python 環境未安裝 PyTorch而未執行，亦未執行真實多模態/GPU forward。
-- [ ] **T-39 實作 chunked prefill 與 prefill/decode 混合排程** — 範圍：`engine/batch_planner.py`、`engine/scheduler.py`、Mage-VL Runner、`tests/inference/`；交付：offset、token budget、request 狀態及視覺輸入只處理一次；覆蓋：REQ-39 / AC-39.1、AC-39.2、AC-39.3；依賴：T-38；狀態：未開始，需先驗證多模態 Cache 追加行為。
+- [x] **T-39 實作 chunked prefill 與 prefill/decode 混合排程** — 範圍：`engine/batch_planner.py`、`engine/scheduler.py`、Mage-VL Runner、Inference YAML、`tests/inference/`；交付：Scheduler 追蹤 prompt offset／逐輪 token budget 並支援單次 Worker RPC 混合階段；Runner 只在首塊傳入視覺輸入，後續追加同一 Cache，最後一塊才取樣首個 token；文字仍以逐 token SSE 發布；覆蓋：REQ-39 / AC-39.1、AC-39.2、AC-39.3；依賴：T-38；狀態：Fake Scheduler／Worker、來源契約、語法及端到端 mock 驗證通過；未執行固定 revision 多模態 Cache／GPU forward。
 - [x] **T-40 將 KV Cache Manager 連結至 Worker 實際 Cache 生命週期** — 範圍：`models/mage_vl_4b/components/cache_manager.py`、Stepwise Runner、Adapter health、`tests/inference/test_cache_manager.py`；交付：Worker 端每 request 持有實際 Cache object、追蹤實際長度與 Engine lease block IDs，長度不符時拒絕替換，finish／cancel／Worker close 釋放參照；Engine `KVCacheManager` 仍只管理邏輯容量；覆蓋：REQ-40 / AC-40.1、AC-40.2、AC-40.3；依賴：T-38；狀態：假 Cache 單元測試驗證長度、request 隔離與釋放，source contract 驗證 Runner 收尾掛接；未測 CUDA 配置、PagedAttention 或實際多模態 cache。
 - [x] **T-41 透過 EngineClient 分離 API Server 與 Engine Core 程序** — 範圍：`api/`、`engine/client.py`、模型 `engine_core.py`、Inference YAML、`tests/inference/`；交付：API Server、Engine Core、GPU Worker 三程序；支援 request ID 多工 IPC、逐 token 事件、取消、錯誤、影片同機路徑轉交及優雅關閉；Live session／媒體擷取留在 API 程序，模型分析透過 EngineClient；覆蓋：REQ-18 / AC-18.1、AC-18.2；REQ-30 / AC-30.1、AC-30.2；REQ-41 / AC-41.1、AC-41.2、AC-41.3、AC-41.4；依賴：T-37、T-40；狀態：完成。三程序 fake Worker 測試驗證 PID 隔離、逐 token 事件順序、錯誤回傳、關閉 stream 後資源回收及優雅退出；Engine 測試另驗證 context 建立前取消會在排程前停止。來源契約確認既有 OpenAI SSE chunk、finish usage 和 `[DONE]` 路由未改。未啟動 FastAPI runtime、真模型、GPU 或 MediaMTX。
 
@@ -62,6 +62,16 @@
 | API／SSE 契約 | 通過 | `test_source_contract` 確認 API 只組裝 `EngineClient`、Engine Core factory 建立 `InferenceEngine`／`MultiprocessModelWorker`，chat route 保留逐 token text event 與 `[DONE]`；未啟動 FastAPI runtime。 |
 | 推論與端到端契約 | 部分通過 | 31 項目標 Inference 測試及 7 項 `tests/end2end/` 測試通過。完整 Inference discovery 共 52 項，51 項通過；工作樹既有未追蹤 `tests/inference/test_capability_probe.py` 的字面 source assertion 失敗，本次未修改該檔。 |
 | Spec／語法／差異 | 通過 | Spec validator：25 項需求、91 項驗收條件、33 項任務；`compileall` 與針對本次檔案的 `git diff --check` 通過；未載入權重、未執行 GPU、真實 API runtime 或 MediaMTX。 |
+
+### Chunked prefill 與混合排程驗收（T-39）
+
+| 檢查 | 結果 | 證據／限制 |
+|---|---|---|
+| Scheduler 與 batch planner | 通過 | Fake scheduler 測試覆蓋 partial prefill offset、token budget、首段視覺 token 下限、prefill 完成後的 decode 轉換及同輪 prefill/decode 混合；未執行模型 forward。 |
+| Mage-VL Cache／視覺輸入邊界 | 靜態通過 | 固定 revision 原始碼確認視覺特徵與全部視覺 placeholder 必須同次 forward；首塊延伸到最後視覺 token，之後 Worker 只傳 Cache 與文字 mask。真實多模態 Cache 追加和視覺編碼次數仍待 GPU 驗收。 |
+| 文字 SSE | 通過 | Worker partial prefill 不發布文字；只在完整 prompt 前向後取樣首 token，後續 decode 仍逐 token回傳；既有 route source contract 確認 OpenAI SSE chunk 與 `[DONE]` 格式保留。 |
+| Inference／end-to-end mock | 通過 | 39 項目標 Inference 測試通過，含 chunked stream 逐 token 事件及 lease 回收；7 項 `tests/end2end/` 測試及 `compileall` 通過。完整 discovery 的既有未追蹤 `test_capability_probe.py` 斷言問題詳見 T-41 驗收紀錄。 |
+| Spec／限制 | 通過／未執行 | Spec validator：25 項需求、91 項驗收條件、33 項任務；未載入 Mage-VL 權重、未啟動 GPU、API runtime 或 MediaMTX。 |
 
 ### 本次補充驗收（T-28、T-29）
 

@@ -55,7 +55,10 @@ class FakeAdapter:
         results: list[WorkerResult] = []
         for request in requests:
             if request.phase is ExecutionPhase.PREFILL:
-                results.append(WorkerResult(request.request_id))
+                results.append(WorkerResult(
+                    request.request_id,
+                    prompt_tokens_processed=request.prompt_offset + request.token_budget,
+                ))
                 continue
             time.sleep(0.15)
             task = self.tasks[request.request_id]

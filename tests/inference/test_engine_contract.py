@@ -6,13 +6,14 @@ import sys
 import threading
 import time
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 
 INFERENCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "inference"
 sys.path.insert(0, str(INFERENCE_ROOT))
 
 from engine.engine import InferenceEngine, InferenceResult
-from engine.contracts import ExecutionPhase, WorkerResult
+from engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
 from engine.errors import InferenceError
 from engine.scheduler import TokenScheduler
 from engine.worker import InProcessModelWorker
@@ -122,6 +123,42 @@ class FakeAdapter:
         return {"answer": "legacy"}
 
 
+class ChunkedFakeAdapter(FakeAdapter):
+    def prepare_chat_generation(self, request_id: str, body: dict[str, object]) -> dict[str, int]:
+        self._tasks[request_id] = {"id": body.get("id"), "steps": 0}
+        return {
+            "prompt_tokens": 7,
+            "max_new_tokens": 2,
+            "prefill_min_chunk_tokens": 2,
+        }
+
+    def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> tuple[WorkerResult, ...]:
+        results = []
+        for request in requests:
+            if request.phase is ExecutionPhase.PREFILL:
+                processed = request.prompt_offset + request.token_budget
+                final_chunk = processed == 7
+                results.append(WorkerResult(
+                    request.request_id,
+                    text_delta="A" if final_chunk else "",
+                    generated_tokens=1 if final_chunk else 0,
+                    prompt_tokens_processed=processed,
+                ))
+            else:
+                results.append(WorkerResult(
+                    request.request_id,
+                    text_delta="B",
+                    generated_tokens=1,
+                    finished=True,
+                    finish_reason="stop",
+                ))
+        return tuple(results)
+
+    def finish_chat_generation(self, request_id: str) -> InferenceResult:
+        self._tasks.pop(request_id)
+        return InferenceResult("AB", 7, 2, "stop")
+
+
 class FakeLiveSessions:
     def __init__(self) -> None:
         self.stopped = 0
@@ -181,8 +218,8 @@ class EngineContractTests(unittest.TestCase):
         self.assertEqual([item.phase for item in prefill.work_items], [ExecutionPhase.PREFILL, ExecutionPhase.PREFILL])
         self.assertEqual(prefill.total_scheduled_tokens, 7)
         scheduler.complete_batch([
-            WorkerResult("A", text_delta="a", generated_tokens=1),
-            WorkerResult("B", text_delta="b", generated_tokens=1),
+            WorkerResult("A", text_delta="a", generated_tokens=1, prompt_tokens_processed=3),
+            WorkerResult("B", text_delta="b", generated_tokens=1, prompt_tokens_processed=4),
         ])
         decode = scheduler.schedule_batch()
         self.assertIsNotNone(decode)
@@ -194,6 +231,80 @@ class EngineContractTests(unittest.TestCase):
             WorkerResult("B", text_delta="y", generated_tokens=1, finished=True),
         ])
         self.assertEqual(scheduler.snapshot()["running"], 0)
+
+    def test_scheduler_requeues_prefill_chunks_and_mixes_decode(self) -> None:
+        scheduler = TokenScheduler(
+            max_num_seqs=2,
+            max_waiting_requests=0,
+            max_num_scheduled_tokens=5,
+            prefill_chunk_size_tokens=3,
+            batch_wait_seconds=0,
+        )
+        scheduler.add_request("long", prompt_tokens=8, max_output_tokens=4)
+        scheduler.add_request("short", prompt_tokens=2, max_output_tokens=4)
+
+        first = scheduler.schedule_batch()
+        self.assertIsNotNone(first)
+        assert first is not None
+        self.assertEqual(
+            [(item.request_id, item.phase, item.prompt_offset, item.token_budget)
+             for item in first.work_items],
+            [
+                ("long", ExecutionPhase.PREFILL, 0, 3),
+                ("short", ExecutionPhase.PREFILL, 0, 2),
+            ],
+        )
+        scheduler.complete_batch([
+            WorkerResult("long", prompt_tokens_processed=3),
+            WorkerResult("short", text_delta="s", generated_tokens=1, prompt_tokens_processed=2),
+        ])
+
+        mixed = scheduler.schedule_batch()
+        self.assertIsNotNone(mixed)
+        assert mixed is not None
+        self.assertEqual(
+            [(item.request_id, item.phase, item.prompt_offset, item.token_budget)
+             for item in mixed.work_items],
+            [
+                ("short", ExecutionPhase.DECODE, 0, 1),
+                ("long", ExecutionPhase.PREFILL, 3, 3),
+            ],
+        )
+        scheduler.complete_batch([
+            WorkerResult("short", text_delta="t", generated_tokens=1),
+            WorkerResult("long", prompt_tokens_processed=6),
+        ])
+        self.assertEqual(scheduler.snapshot()["running"], 2)
+        scheduler.cancel_request("long")
+        scheduler.cancel_request("short")
+        self.assertEqual(scheduler.snapshot()["running"], 0)
+
+    def test_chunked_stream_publishes_only_generated_tokens_and_releases_lease(self) -> None:
+        runner = FakeRunner()
+        adapter = ChunkedFakeAdapter(runner)
+        engine = InferenceEngine(
+            InProcessModelWorker(runner, adapter),
+            model_id="fake-model",
+            max_concurrent_requests=2,
+            max_waiting_requests=2,
+            max_num_scheduled_tokens=5,
+            prefill_chunk_size_tokens=3,
+            kv_cache_block_size_tokens=4,
+            kv_cache_capacity_tokens=64,
+            batch_wait_seconds=0,
+        )
+        engine.start()
+        try:
+            events = list(engine.stream_chat({"id": "chunked"}))
+            self.assertEqual(
+                [event.text for event in events if event.kind == "text"],
+                ["A", "B"],
+            )
+            self.assertEqual(engine.scheduler.snapshot()["scheduled_rounds"], 4)
+            self.assertEqual(engine.scheduler.snapshot()["running"], 0)
+            self.assertEqual(engine.kv_cache.snapshot()["used_blocks"], 0)
+        finally:
+            engine.close()
 
     def test_chat_uses_prefill_decode_and_releases_cache_blocks(self) -> None:
         engine, _, adapter = self.make_engine()
@@ -244,7 +355,10 @@ class EngineContractTests(unittest.TestCase):
         second.join(timeout=2)
         self.assertFalse(first.is_alive())
         self.assertFalse(second.is_alive())
-        self.assertEqual(adapter.turns[:2], [("A", "prefill"), ("B", "prefill")])
+        self.assertEqual(
+            adapter.turns[:3],
+            [("A", "prefill"), ("A", "decode"), ("B", "prefill")],
+        )
         self.assertEqual(engine.scheduler.snapshot()["scheduled_rounds"], 3)
         engine.close()
 

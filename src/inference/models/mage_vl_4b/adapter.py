@@ -69,7 +69,7 @@ class MageVLModelAdapter:
             "generation_options": options,
             "started_at": time.perf_counter(),
         }
-        return {"prompt_tokens": prompt_tokens, "max_new_tokens": options["max_new_tokens"]}
+        return self._generation_descriptor(request_id, prompt_tokens, options)
 
     def prepare_video_generation(
         self,
@@ -142,7 +142,7 @@ class MageVLModelAdapter:
             "decode_seconds": decode_seconds,
             "processor_seconds": processor_seconds,
         }
-        return {"prompt_tokens": prompt_tokens, "max_new_tokens": options["max_new_tokens"]}
+        return self._generation_descriptor(request_id, prompt_tokens, options)
 
     def prepare_live_frames_generation(
         self, request_id: str, question: str, frames: list[Any], generation_options: dict[str, Any]
@@ -159,7 +159,7 @@ class MageVLModelAdapter:
             "generation_options": generation_options,
             "started_at": started,
         }
-        return {"prompt_tokens": prompt_tokens, "max_new_tokens": generation_options["max_new_tokens"]}
+        return self._generation_descriptor(request_id, prompt_tokens, generation_options)
 
     def prepare_live_video_generation(
         self,
@@ -192,15 +192,15 @@ class MageVLModelAdapter:
             "started_at": started,
             "codec_canvas_count": canvas_count,
         }
-        return {"prompt_tokens": prompt_tokens, "max_new_tokens": generation_options["max_new_tokens"]}
+        return self._generation_descriptor(request_id, prompt_tokens, generation_options)
 
     def bind_generation_cache(self, request_id: str, block_ids: tuple[int, ...]) -> None:
         self.model_runner.bind_generation_cache(request_id, block_ids)
 
     def prefill_generation(self, request_id: str, token_budget: int) -> dict[str, Any]:
         task = self._task(request_id)
-        if token_budget != task["prompt_tokens"]:
-            raise RuntimeError("Scheduler prefill token budget does not match the prepared prompt.")
+        if not 1 <= token_budget <= task["prompt_tokens"]:
+            raise RuntimeError("Scheduler prefill token budget is outside the prepared prompt.")
         task["generation_started"] = time.perf_counter()
         return self.model_runner.prefill_generation(request_id)
 
@@ -210,14 +210,25 @@ class MageVLModelAdapter:
         return self.model_runner.decode_generation_step(request_id)
 
     def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> tuple[WorkerResult, ...]:
-        """將 Scheduler work items 交給模型 Runner，逐請求回傳生成結果。"""
+        """將同輪混合 work items 交給模型 Runner，逐請求回傳生成結果。"""
         for request in requests:
             task = self._task(request.request_id)
-            if request.phase is ExecutionPhase.PREFILL and request.token_budget != task["prompt_tokens"]:
-                raise RuntimeError("Scheduler prefill token budget does not match the prepared prompt.")
+            if request.phase is ExecutionPhase.PREFILL and (
+                request.prompt_offset + request.token_budget > task["prompt_tokens"]
+            ):
+                raise RuntimeError("Scheduler prefill chunk exceeds the prepared prompt.")
             if request.phase is ExecutionPhase.DECODE and request.token_budget != 1:
                 raise RuntimeError("Decode scheduling must assign exactly one token per turn.")
         return self.model_runner.execute_batch(requests)
+
+    def _generation_descriptor(
+        self, request_id: str, prompt_tokens: int, options: dict[str, Any]
+    ) -> dict[str, int]:
+        return {
+            "prompt_tokens": prompt_tokens,
+            "max_new_tokens": int(options["max_new_tokens"]),
+            "prefill_min_chunk_tokens": self.model_runner.prefill_min_chunk_tokens(request_id),
+        }
 
     def finish_chat_generation(self, request_id: str) -> InferenceResult:
         task = self._task(request_id)

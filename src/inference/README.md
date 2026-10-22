@@ -28,15 +28,15 @@
 | 模型元件 | `models/mage_vl_4b/components/` | 固定 revision 的模型設定、視覺塔、多模態組裝、生成頭、逐步生成狀態及替換登記 |
 | 通用媒體／Live session | `media/video.py`、`media/live_sessions.py` | 上傳影片暫存、通用 metadata／影格讀取及即時 session 生命週期 |
 
-Scheduler 為活動 chat、影片及 Live 工作維護等待／執行佇列，依 `max_num_seqs` 和 `max_num_scheduled_tokens` 建立同階段的 prefill 或 decode 批次；滿載時等待佇列耗盡後回 `429`。prefill 不切塊，完整 prompt 必須不大於 `engine.max_num_scheduled_tokens`。`batch_wait_seconds` 提供短暫請求合併窗口。
+Scheduler 為活動 chat、影片及 Live 工作維護等待／執行佇列，依 `max_num_seqs` 和 `max_num_scheduled_tokens` 建立 prefill、decode 或混合批次；滿載時等待佇列耗盡後回 `429`。啟用 `prefill_chunk_size_tokens` 時，長 prompt 會按 offset 分輪追加至同一 Cache。首段會延伸至涵蓋全部視覺 token，確保 Mage-VL 的影像／影片特徵只在首次 forward 編碼；若該不可拆分前綴超過每輪 token 上限，請求會在排程前拒絕。`batch_wait_seconds` 提供短暫請求合併窗口。
 
-Engine Core 背景迴圈取得 Scheduler 批次、一次呼叫 Worker，依每個 request ID 更新狀態並把 token 事件送回對應串流。Mage-VL Runner 對相容的同階段請求使用一次多序列模型 forward，並將 logits 與 Cache 分別還原到各 request；不相容的輸入會退回逐 request forward。Prefill 以左側 padding 合併不同長度 prompt，分離 Cache 時移除 padding 對應的 KV；decode 僅合併 Cache 長度與張量結構相容的請求。文字 SSE 仍由每個 request 的逐 token `text` 事件輸出。
+Engine Core 背景迴圈取得 Scheduler 批次、一次呼叫 Worker，依每個 request ID 更新狀態並把 token 事件送回對應串流。Mage-VL Runner 對相容的同階段請求使用一次多序列模型 forward，並將 logits 與 Cache 分別還原到各 request；混合批次在同一 Worker 呼叫內按階段執行 prefill／decode 子批次，不會把不同 Cache 狀態強塞進同一模型 forward。不相容的輸入會退回逐 request forward。分塊 prefill 只追加當輪 token，完成最後一塊後才取樣第一個 token。文字 SSE 仍由每個 request 的逐 token `text` 事件輸出。
 
 Engine 對每個生成請求依序執行輸入準備、KV 容量預留、Scheduler 准入、Worker prefill／decode、狀態更新及事件發布。成功、拒絕、取消、Worker 逾時或異常均經同一個 `finally` 收尾，回收 Scheduler 名額與邏輯 KV reservation，並取消可能部分建立的 Runner 狀態。`stream_chat()` 逐個 token 發出文字事件；API 路由將其序列化為 OpenAI SSE chunk，取消 HTTP 串流時會關閉生成 iterator 以觸發收尾。
 
 Worker 內的 `RequestCacheManager` 以 request ID 持有實際 Transformers Cache 物件，記錄 Cache 序列長度及 Engine lease 對應的邏輯 block ID；prefill／decode 後核對預期長度，成功完成、取消、失敗或 Worker 關閉時釋放參照。Engine 的 `KVCacheManager` 仍只作容量准入與邏輯 lease，不代表 GPU 實體分頁。`/health` 分別回報 Engine reservation 估算和 Worker 實際 Cache request／token 計數。
 
-`engine/batch_planner.py` 已由線上 Scheduler 呼叫，規劃同階段 prefill/decode 工作並驅動 Worker；目前不做 chunked prefill 或 prefill/decode 混合批次。Mage-VL 對相容輸入已支援 fused batched forward；Worker 端 `RequestCacheManager` 管理真實 Cache 物件生命週期。尚未實作 continuous batching、KV 實體 block 或 prefix cache。`KVCacheManager.reserve_batch()` 仍是未接入線上的原子邏輯 lease helper。
+`engine/batch_planner.py` 已由線上 Scheduler 呼叫，按序列上限及每輪 token 預算產生 chunked prefill、batched decode 和混合階段批次。Worker 端 `RequestCacheManager` 管理真實 Cache 物件生命週期。尚未實作 continuous batching、KV 實體 block 或 prefix cache。`KVCacheManager.reserve_batch()` 仍是未接入線上的原子邏輯 lease helper。
 
 Engine KV Cache Manager 追蹤邏輯 block 容量與 request-to-block table；Worker 的 `RequestCacheManager` 持有每 request 實際 Transformers Cache、序列長度及關聯 lease ID。完成、取消或失敗時兩端各自釋放對應狀態。KV tensor 仍由 Transformers 動態配置，邏輯 reservation 不等於實體 GPU 分頁，不支援 prefix cache 或 VRAM pool。`/health` 的 bytes 是根據模型層數、KV heads、head dimension 和 dtype 估算，並非 CUDA 記憶體實測。
 

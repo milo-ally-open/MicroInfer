@@ -78,6 +78,32 @@ class BatchPlannerTests(unittest.TestCase):
         self.assertEqual(len(request_ids), len(set(request_ids)))
         self.assertLessEqual(plan.scheduled_tokens, 5)
 
+    def test_visual_prefix_is_kept_in_first_chunk_and_mixed_with_decode(self) -> None:
+        plan = plan_batch(
+            [
+                SequenceProgress("decode", "decode", 8, 8, 1),
+                SequenceProgress(
+                    "visual-prefill", "prefill", 12, 0,
+                    prefill_min_chunk_tokens=5,
+                ),
+                SequenceProgress("text-prefill", "prefill", 10, 0),
+            ],
+            max_num_seqs=3,
+            max_num_scheduled_tokens=8,
+            prefill_chunk_size=3,
+        )
+
+        self.assertEqual(
+            [(item.request_id, item.phase, item.prompt_offset, item.token_budget)
+             for item in plan.sequences],
+            [
+                ("visual-prefill", "prefill", 0, 5),
+                ("decode", "decode", 0, 1),
+                ("text-prefill", "prefill", 0, 2),
+            ],
+        )
+        self.assertEqual(plan.scheduled_tokens, 8)
+
     def test_invalid_progress_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             plan_batch(

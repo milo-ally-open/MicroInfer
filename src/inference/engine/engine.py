@@ -64,6 +64,7 @@ class InferenceEngine:
         max_concurrent_requests: int,
         max_waiting_requests: int = 16,
         max_num_scheduled_tokens: int = 8192,
+        prefill_chunk_size_tokens: int | None = None,
         batch_wait_seconds: float = 0.01,
         kv_cache_block_size_tokens: int = 16,
         kv_cache_capacity_tokens: int = 32768,
@@ -76,6 +77,7 @@ class InferenceEngine:
             max_waiting_requests=max_waiting_requests,
             max_num_scheduled_tokens=max_num_scheduled_tokens,
             batch_wait_seconds=batch_wait_seconds,
+            prefill_chunk_size_tokens=prefill_chunk_size_tokens,
         )
         self.kv_cache = KVCacheManager(
             block_size_tokens=kv_cache_block_size_tokens,
@@ -192,7 +194,10 @@ class InferenceEngine:
                 self._contexts[request_id] = context
             try:
                 self.scheduler.add_request(
-                    request_id, prompt_tokens=prompt_tokens, max_output_tokens=max_output_tokens
+                    request_id,
+                    prompt_tokens=prompt_tokens,
+                    max_output_tokens=max_output_tokens,
+                    prefill_min_chunk_tokens=int(descriptor.get("prefill_min_chunk_tokens", 1)),
                 )
             except SchedulerFullError as exc:
                 raise InferenceError(429, "The inference scheduler is full; retry after active requests finish.") from exc

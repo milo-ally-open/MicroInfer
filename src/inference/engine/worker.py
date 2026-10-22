@@ -67,6 +67,10 @@ class InProcessModelWorker:
                     generated_tokens=int(step.get("generated_tokens", 0)),
                     finished=bool(step.get("done", False)),
                     finish_reason=step.get("finish_reason"),
+                    prompt_tokens_processed=(
+                        request.prompt_offset + request.token_budget
+                        if request.phase.value == "prefill" else None
+                    ),
                 )
             )
         return results

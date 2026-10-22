@@ -118,6 +118,7 @@ class WorkerResult:
     finished: bool = False
     finish_reason: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    prompt_tokens_processed: int | None = None
 
 
 @dataclass(frozen=True)

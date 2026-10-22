@@ -106,7 +106,7 @@
 ### REQ-31：Token Scheduler 分配逐輪工作預算
 
 - **AC-31.1** Scheduler 維護活動／等待 request，達到 `max_num_seqs` 及等待佇列上限時回 HTTP／SSE `429`。
-- **AC-31.2** Prefill 單輪分配 prompt 的完整 token 數；prompt 超過 `max_num_scheduled_tokens` 時明確失敗，不假裝 chunked prefill。
+- **AC-31.2** Scheduler 以完整 prompt token 數維持請求狀態；啟用 REQ-39 時可按 offset 分輪執行，未啟用時 prompt 超過 `max_num_scheduled_tokens` 必須明確失敗。
 - **AC-31.3** Decode 每輪分配一個 token，完成後未結束 request 加入輪轉佇列尾端；可由 Fake Worker 測試觀察交錯順序。
 - **AC-31.4** 錯誤、客戶端取消、Live stop 和 Engine shutdown 都移除排程狀態，Scheduler idle 後才允許關閉 Worker。
 
@@ -126,8 +126,8 @@
 
 ### REQ-34：Scheduler 依 token 預算建立線上批次
 
-- **AC-34.1** 線上 `TokenScheduler.schedule_batch()` 呼叫 `engine/batch_planner.py`，批次尊重活動序列數與 scheduled-token 上限；同一階段的多個 decode 各分配一個 token，多個完整 prompt prefill 可共用一批。
-- **AC-34.2** 每個批次中的 request ID 唯一；規劃輸入進度或限制無效時明確拋出 `ValueError`。目前線上不切分 prefill，也不混合 prefill/decode。
+- **AC-34.1** 線上 `TokenScheduler.schedule_batch()` 呼叫 `engine/batch_planner.py`，批次尊重活動序列數與 scheduled-token 上限；同一階段相容的多個 decode／prefill 可共用 Worker 批次。
+- **AC-34.2** 每個批次中的 request ID 唯一；規劃輸入進度或限制無效時明確拋出 `ValueError`。線上 chunked prefill 和 mixed-phase 行為另由 REQ-39 規定。
 - **AC-34.3** `KVCacheManager.reserve_batch()` 以全有或全無方式建立邏輯 lease；容量不足不改變已用 block 狀態，成功 lease 可個別釋放並重用 block ID。此 helper 目前不接入線上 Engine 准入。
 - **AC-34.4** Engine 將 `ScheduledBatch` 傳至 `Worker.execute_batch()`，並驗證逐 request 結果；Mage-VL 對相容輸入可用單次多序列 forward，不相容時逐 request fallback。此能力不代表 continuous batching 或實體 GPU cache page。
 
@@ -187,9 +187,9 @@
 |---|---|---|
 | API Server | `api/` | HTTP、schema、錯誤、SSE/JSON response |
 | Engine Core | `engine/engine.py`、`models/mage_vl_4b/engine_core.py` | 獨立程序內管理 Worker lifecycle、操作分派、Scheduler/KV 與批次執行 |
-| Scheduler | `engine/scheduler.py`、`engine/batch_planner.py` | 線上規劃同階段多 request prefill/decode 批次並傳至 Worker；不切塊、不混合階段 |
+| Scheduler | `engine/scheduler.py`、`engine/batch_planner.py` | 線上規劃 token-budgeted chunked prefill、batched decode 及混合階段批次並傳至 Worker |
 | KV Cache Manager | `engine/kv_cache.py` | 線上邏輯 block 預留、估算、釋放與 ID 重用；另有原子 batch reservation helper；皆非實體 PagedAttention |
-| Worker／Model Runner | `engine/worker.py`、`models/mage_vl_4b/model_runner.py` | 第三個程序載入模型；相容同階段 request 可合併至單次 forward，逐 request 保留 Cache 與文字事件 |
+| Worker／Model Runner | `engine/worker.py`、`models/mage_vl_4b/model_runner.py` | 第三個程序載入模型；相容同階段 request 可合併至單次 forward，混合階段在單次 Worker RPC 內分組執行，逐 request 保留 Cache 與文字事件 |
 
 ## 追蹤矩陣
 
@@ -221,4 +221,5 @@
 | 2026-10-20 | 新增尚未接入線上路徑的批次規劃／原子 KV lease 驗收規格，以及 scripts 下的離線能力探測範例。 |
 | 2026-10-22 | 將 REQ-34 更新為線上同階段批次規劃，新增 fused Runner batch、chunked/mixed scheduling、實際 Cache lifecycle 與 EngineClient 程序邊界的後續驗收條件。 |
 | 2026-10-22 | 完成 REQ-38：Mage-VL 相容請求共用多序列 prefill/decode forward，Cache 分離回每個 request；文字 SSE 仍逐 token 發送。假模型 CPU 驗證範例已加入，未在此工作區執行。 |
+| 2026-10-22 | 完成 REQ-39：線上 Scheduler 已接入 chunked prefill 與 prefill/decode 混合 Worker batch；首個 chunk 覆蓋視覺 token 區段，後續 chunk 追加至同一 request Cache。已通過無模型 Scheduler、SSE source contract、compileall 及端到端 mock 驗證；未載入固定 revision、未執行 GPU Cache 驗證。 |
 | 2026-10-22 | 完成 REQ-40：Worker `RequestCacheManager` 以 request ID 持有實際 Cache object、核對序列長度並釋放參照；Engine block IDs 仍為邏輯 lease，不宣稱實體 GPU page。 |

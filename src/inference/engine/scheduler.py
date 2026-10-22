@@ -15,15 +15,23 @@ class SchedulerFullError(RuntimeError):
 
 
 class _RequestState:
-    def __init__(self, phase: str, prompt_tokens: int, max_output_tokens: int) -> None:
+    def __init__(
+        self,
+        phase: str,
+        prompt_tokens: int,
+        max_output_tokens: int,
+        prefill_min_chunk_tokens: int,
+    ) -> None:
         self.phase = phase
         self.prompt_tokens = prompt_tokens
+        self.prompt_tokens_processed = 0
         self.max_output_tokens = max_output_tokens
         self.generated_tokens = 0
+        self.prefill_min_chunk_tokens = prefill_min_chunk_tokens
 
 
 class TokenScheduler:
-    """以 batch planner 從等待／執行佇列選取同階段的 Runner 工作。"""
+    """以序列上限、輪次 token 預算和 prefill chunk 規劃混合 Runner 工作。"""
 
     def __init__(
         self,
@@ -32,31 +40,46 @@ class TokenScheduler:
         max_waiting_requests: int,
         max_num_scheduled_tokens: int,
         batch_wait_seconds: float = 0.01,
+        prefill_chunk_size_tokens: int | None = None,
     ) -> None:
         if (
             max_num_seqs < 1 or max_waiting_requests < 0 or max_num_scheduled_tokens < 1
             or batch_wait_seconds < 0
+            or (prefill_chunk_size_tokens is not None and prefill_chunk_size_tokens < 1)
         ):
             raise ValueError("Scheduler limits must be positive (waiting requests may be zero).")
         self.max_num_seqs = max_num_seqs
         self.max_waiting_requests = max_waiting_requests
         self.max_num_scheduled_tokens = max_num_scheduled_tokens
         self.batch_wait_seconds = batch_wait_seconds
+        self.prefill_chunk_size_tokens = prefill_chunk_size_tokens
         self._condition = threading.Condition()
         self._requests: dict[str, _RequestState] = {}
         self._ready: deque[str] = deque()
         self._ready_since: float | None = None
         self._inflight: set[str] = set()
+        self._inflight_items: dict[str, ScheduledWorkItem] = {}
         self._running = False
         self._rounds = 0
 
-    def add_request(self, request_id: str, *, prompt_tokens: int, max_output_tokens: int) -> None:
+    def add_request(
+        self,
+        request_id: str,
+        *,
+        prompt_tokens: int,
+        max_output_tokens: int,
+        prefill_min_chunk_tokens: int = 1,
+    ) -> None:
         if prompt_tokens < 1 or max_output_tokens < 1:
             raise ValueError("Prompt and output token counts must be positive.")
-        if prompt_tokens > self.max_num_scheduled_tokens:
+        if not 1 <= prefill_min_chunk_tokens <= prompt_tokens:
+            raise ValueError("The first prefill chunk requirement must fit the prompt.")
+        if prefill_min_chunk_tokens > self.max_num_scheduled_tokens:
+            raise ValueError("The indivisible visual prompt prefix exceeds the per-turn token budget.")
+        if prompt_tokens > self.max_num_scheduled_tokens and self.prefill_chunk_size_tokens is None:
             raise ValueError(
                 f"Prompt has {prompt_tokens} tokens, exceeding the per-turn budget "
-                f"{self.max_num_scheduled_tokens}; chunked prefill is not enabled."
+                f"{self.max_num_scheduled_tokens}; chunked prefill is disabled."
             )
         with self._condition:
             if request_id in self._requests:
@@ -66,7 +89,9 @@ class TokenScheduler:
             if running_count >= self.max_num_seqs and waiting_count >= self.max_waiting_requests:
                 raise SchedulerFullError("The inference scheduler is full.")
             phase = "prefill" if running_count < self.max_num_seqs else "waiting_prefill"
-            self._requests[request_id] = _RequestState(phase, prompt_tokens, max_output_tokens)
+            self._requests[request_id] = _RequestState(
+                phase, prompt_tokens, max_output_tokens, prefill_min_chunk_tokens
+            )
             if phase == "prefill":
                 if not self._ready:
                     self._ready_since = time.monotonic()
@@ -84,7 +109,7 @@ class TokenScheduler:
             if running_count >= self.max_num_seqs and self._waiting_count() >= self.max_waiting_requests:
                 raise SchedulerFullError("The inference scheduler is full.")
             phase = "atomic" if running_count < self.max_num_seqs else "waiting_atomic"
-            self._requests[request_id] = _RequestState(phase, token_budget, token_budget)
+            self._requests[request_id] = _RequestState(phase, token_budget, token_budget, 1)
             if phase == "atomic":
                 if not self._ready:
                     self._ready_since = time.monotonic()
@@ -92,7 +117,7 @@ class TokenScheduler:
             self._condition.notify_all()
 
     def schedule_batch(self) -> ScheduledBatch | None:
-        """以 batch planner 建立一個同階段批次，暫不切分 prompt prefill。"""
+        """以一輪 token 預算建立可同時包含 prefill 與 decode 的批次。"""
         with self._condition:
             if self._running or not self._ready:
                 return None
@@ -102,26 +127,21 @@ class TokenScheduler:
                     self._condition.wait(timeout=remaining)
                     if self._running or not self._ready:
                         return None
-            first = self._requests.get(self._ready[0])
-            if first is None:
-                self._ready.popleft()
-                return None
-            phase = first.phase
-            if phase not in {"prefill", "decode"}:
-                return None
             eligible = [
                 request_id for request_id in self._ready
-                if request_id in self._requests and self._requests[request_id].phase == phase
+                if request_id in self._requests
+                and self._requests[request_id].phase in {"prefill", "decode"}
             ]
+            if not eligible:
+                return None
             progress = [
                 SequenceProgress(
                     request_id=request_id,
-                    phase=phase,
+                    phase=self._requests[request_id].phase,
                     prompt_tokens_total=self._requests[request_id].prompt_tokens,
-                    prompt_tokens_processed=(
-                        0 if phase == "prefill" else self._requests[request_id].prompt_tokens
-                    ),
+                    prompt_tokens_processed=self._requests[request_id].prompt_tokens_processed,
                     generated_tokens=self._requests[request_id].generated_tokens,
+                    prefill_min_chunk_tokens=self._requests[request_id].prefill_min_chunk_tokens,
                 )
                 for request_id in eligible
             ]
@@ -129,17 +149,11 @@ class TokenScheduler:
                 progress,
                 max_num_seqs=self.max_num_seqs,
                 max_num_scheduled_tokens=self.max_num_scheduled_tokens,
+                prefill_chunk_size=self.prefill_chunk_size_tokens,
             )
-            # 若 token 預算只容許部分 prefill，延後該 request，避免假裝 Runner 已支援 chunked prefill。
-            selected_ids = {
-                item.request_id
-                for item in plan.sequences
-                if item.phase == "decode"
-                or item.token_budget == self._requests[item.request_id].prompt_tokens
-            }
+            selected_ids = {item.request_id for item in plan.sequences}
             if not selected_ids:
                 return None
-            selected = [item for item in plan.sequences if item.request_id in selected_ids]
             scheduled = tuple(
                 ScheduledWorkItem(
                     request_id=item.request_id,
@@ -147,13 +161,14 @@ class TokenScheduler:
                     token_budget=item.token_budget,
                     prompt_offset=item.prompt_offset,
                 )
-                for item in selected
+                for item in plan.sequences
             )
             total_tokens = sum(item.token_budget for item in scheduled)
             batch = ScheduledBatch(scheduled, total_tokens)
             self._ready = deque(request_id for request_id in self._ready if request_id not in selected_ids)
             self._ready_since = time.monotonic() if self._ready else None
             self._inflight = set(selected_ids)
+            self._inflight_items = {item.request_id: item for item in scheduled}
             self._running = True
             self._rounds += 1
             return batch
@@ -164,15 +179,42 @@ class TokenScheduler:
         with self._condition:
             if not self._running or len(result_ids) != len(set(result_ids)) or set(result_ids) != self._inflight:
                 raise RuntimeError("Worker batch results do not match the in-flight scheduler batch.")
+            work_items = self._inflight_items
+            for result in results:
+                state = self._requests.get(result.request_id)
+                work_item = work_items[result.request_id]
+                if state is None or work_item.phase is not ExecutionPhase.PREFILL:
+                    continue
+                expected_processed = work_item.prompt_offset + work_item.token_budget
+                if result.prompt_tokens_processed != expected_processed:
+                    raise RuntimeError(
+                        f"Worker prefill progress for {result.request_id} must be "
+                        f"{expected_processed}, got {result.prompt_tokens_processed}."
+                    )
+                if expected_processed < state.prompt_tokens and result.generated_tokens:
+                    raise RuntimeError("A partial prefill must not publish a generated token.")
             self._running = False
             self._inflight.clear()
+            self._inflight_items = {}
             for result in results:
                 state = self._requests.get(result.request_id)
                 if state is None:
                     continue
+                work_item = work_items[result.request_id]
+                if work_item.phase is ExecutionPhase.PREFILL:
+                    expected_processed = work_item.prompt_offset + work_item.token_budget
+                    state.prompt_tokens_processed = expected_processed
                 state.generated_tokens += result.generated_tokens
                 if result.finished or state.generated_tokens >= state.max_output_tokens:
                     del self._requests[result.request_id]
+                elif (
+                    work_item.phase is ExecutionPhase.PREFILL
+                    and state.prompt_tokens_processed < state.prompt_tokens
+                ):
+                    state.phase = "prefill"
+                    if not self._ready:
+                        self._ready_since = time.monotonic()
+                    self._ready.append(result.request_id)
                 else:
                     state.phase = "decode"
                     if not self._ready:
@@ -188,6 +230,7 @@ class TokenScheduler:
                 raise RuntimeError("Only the active Worker batch can be aborted.")
             self._running = False
             self._inflight.clear()
+            self._inflight_items = {}
             for request_id in request_ids:
                 self._requests.pop(request_id, None)
             self._ready = deque(request_id for request_id in self._ready if request_id not in request_ids)
