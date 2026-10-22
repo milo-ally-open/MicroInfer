@@ -221,3 +221,4 @@
 | 2026-10-20 | 新增尚未接入線上路徑的批次規劃／原子 KV lease 驗收規格，以及 scripts 下的離線能力探測範例。 |
 | 2026-10-22 | 將 REQ-34 更新為線上同階段批次規劃，新增 fused Runner batch、chunked/mixed scheduling、實際 Cache lifecycle 與 EngineClient 程序邊界的後續驗收條件。 |
 | 2026-10-22 | 完成 REQ-38：Mage-VL 相容請求共用多序列 prefill/decode forward，Cache 分離回每個 request；文字 SSE 仍逐 token 發送。假模型 CPU 驗證範例已加入，未在此工作區執行。 |
+| 2026-10-22 | 完成 REQ-40：Worker `RequestCacheManager` 以 request ID 持有實際 Cache object、核對序列長度並釋放參照；Engine block IDs 仍為邏輯 lease，不宣稱實體 GPU page。 |

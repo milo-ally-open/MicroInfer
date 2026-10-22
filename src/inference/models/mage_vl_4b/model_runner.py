@@ -124,6 +124,10 @@ class MageVLModelRunner:
         dtype_bytes = next(self.model.parameters()).element_size()
         return {"bytes_per_token": int(2 * layers * kv_heads * head_dim * dtype_bytes)}
 
+    def kv_cache_snapshot(self) -> dict[str, int]:
+        """回報 Worker 端實際持有的 Cache 物件、序列長度及關聯邏輯 block 數。"""
+        return self._stepwise.cache_snapshot()
+
     def stream(self, inputs: dict[str, Any], generation_options: dict[str, Any], timeout: float) -> Iterator[str]:
         """在背景執行模型生成，並依序輸出 Processor streamer 的文字片段。"""
         if self.model is None or self.processor is None:

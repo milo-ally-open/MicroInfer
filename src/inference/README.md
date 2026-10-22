@@ -34,9 +34,11 @@ Engine Core 背景迴圈取得 Scheduler 批次、一次呼叫 Worker，依每�
 
 Engine 對每個生成請求依序執行輸入準備、KV 容量預留、Scheduler 准入、Worker prefill／decode、狀態更新及事件發布。成功、拒絕、取消、Worker 逾時或異常均經同一個 `finally` 收尾，回收 Scheduler 名額與邏輯 KV reservation，並取消可能部分建立的 Runner 狀態。`stream_chat()` 逐個 token 發出文字事件；API 路由將其序列化為 OpenAI SSE chunk，取消 HTTP 串流時會關閉生成 iterator 以觸發收尾。
 
-`engine/batch_planner.py` 已由線上 Scheduler 呼叫，規劃同階段 prefill/decode 工作並驅動 Worker；目前不做 chunked prefill 或 prefill/decode 混合批次。Mage-VL 對相容輸入已支援 fused batched forward，但尚未實作 continuous batching、KV 實體 block 或 prefix cache。`KVCacheManager.reserve_batch()` 仍是未接入線上的原子邏輯 lease helper。
+Worker 內的 `RequestCacheManager` 以 request ID 持有實際 Transformers Cache 物件，記錄 Cache 序列長度及 Engine lease 對應的邏輯 block ID；prefill／decode 後核對預期長度，成功完成、取消、失敗或 Worker 關閉時釋放參照。Engine 的 `KVCacheManager` 仍只作容量准入與邏輯 lease，不代表 GPU 實體分頁。`/health` 分別回報 Engine reservation 估算和 Worker 實際 Cache request／token 計數。
 
-KV Cache Manager 追蹤邏輯 block 容量與 request-to-block table，完成、取消或失敗時回收 block ID。HF Cache tensor 仍由 Runner 動態配置；邏輯 reservation 不等於實體 GPU 分頁，不支援 prefix cache 或 VRAM pool。`/health` 的 bytes 是根據模型層數、KV heads、head dimension 和 dtype 估算，並非 CUDA 記憶體實測。
+`engine/batch_planner.py` 已由線上 Scheduler 呼叫，規劃同階段 prefill/decode 工作並驅動 Worker；目前不做 chunked prefill 或 prefill/decode 混合批次。Mage-VL 對相容輸入已支援 fused batched forward；Worker 端 `RequestCacheManager` 管理真實 Cache 物件生命週期。尚未實作 continuous batching、KV 實體 block 或 prefix cache。`KVCacheManager.reserve_batch()` 仍是未接入線上的原子邏輯 lease helper。
+
+Engine KV Cache Manager 追蹤邏輯 block 容量與 request-to-block table；Worker 的 `RequestCacheManager` 持有每 request 實際 Transformers Cache、序列長度及關聯 lease ID。完成、取消或失敗時兩端各自釋放對應狀態。KV tensor 仍由 Transformers 動態配置，邏輯 reservation 不等於實體 GPU 分頁，不支援 prefix cache 或 VRAM pool。`/health` 的 bytes 是根據模型層數、KV heads、head dimension 和 dtype 估算，並非 CUDA 記憶體實測。
 
 Worker 使用 Python `spawn` 子程序；API import 不載入 Mage-VL 模型。`runtime.uvicorn_workers` 必須為 `1`。本版 Runner 支援逐步 `past_key_values` 解碼、greedy／temperature／top-k／top-p／min-p 及重複懲罰；beam search、自訂 generation kwargs 和非預設 Cache implementation 暫不支援。若固定 revision 不提供必要介面，Worker 會明確報錯，不回退到不受 Token Scheduler 控制的完整 `generate()`。
 

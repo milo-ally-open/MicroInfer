@@ -8,6 +8,8 @@ from typing import Any
 
 import torch
 
+from .cache_manager import RequestCacheManager
+
 
 class MageVLStepwiseGeneration:
     """保存每個 request 的 Transformers Cache 並逐 token 執行模型。"""
@@ -16,6 +18,7 @@ class MageVLStepwiseGeneration:
         self.model: Any = None
         self.processor: Any = None
         self._states: dict[str, dict[str, Any]] = {}
+        self.cache_manager = RequestCacheManager()
 
     def bind(self, model: Any, processor: Any) -> None:
         self.model = model
@@ -48,11 +51,11 @@ class MageVLStepwiseGeneration:
             eos_token_id = getattr(self.model.generation_config, "eos_token_id", None)
         if eos_token_id is None:
             eos_token_id = getattr(self.processor.tokenizer, "eos_token_id", None)
+        self.cache_manager.register(request_id)
         self._states[request_id] = {
             "input_ids": input_ids,
             "model_inputs": model_inputs,
             "options": dict(options),
-            "past_key_values": None,
             "generated_ids": [],
             "eos_token_ids": set(
                 eos_token_id if isinstance(eos_token_id, (list, tuple, set))
@@ -60,11 +63,11 @@ class MageVLStepwiseGeneration:
             ),
             "finish_reason": "stop",
             "done": False,
-            "logical_block_ids": (),
         }
 
     def bind_cache(self, request_id: str, block_ids: tuple[int, ...]) -> None:
-        self._state(request_id)["logical_block_ids"] = tuple(block_ids)
+        self._state(request_id)
+        self.cache_manager.bind_blocks(request_id, block_ids)
 
     def prefill(self, request_id: str) -> dict[str, Any]:
         return self._step(request_id, first=True)
@@ -100,10 +103,10 @@ class MageVLStepwiseGeneration:
             past_key_values = None
             cache_position_start = 0
         else:
-            past_key_values = self._combine_caches([state["past_key_values"] for state in states])
+            past_key_values = self._combine_caches([self.cache_manager.get(request_id) for request_id in request_ids])
             if past_key_values is None:
                 return tuple(self._step(request_id, first=False) for request_id in request_ids)
-            cache_lengths = {self._cache_length(state["past_key_values"]) for state in states}
+            cache_lengths = {self.cache_manager.length(request_id) for request_id in request_ids}
             if len(cache_lengths) != 1:
                 return tuple(self._step(request_id, first=False) for request_id in request_ids)
             cache_position_start = cache_lengths.pop()
@@ -129,14 +132,22 @@ class MageVLStepwiseGeneration:
         if output_cache is None:
             raise RuntimeError("The loaded Mage-VL model did not return past_key_values for batch decoding.")
         split_caches = self._split_cache(output_cache, len(states), pad_offsets)
+        expected_cache_length = (
+            None if first else cache_position_start + 1
+        )
         results: list[dict[str, Any]] = []
         for index, (request_id, state) in enumerate(zip(request_ids, states)):
-            state["past_key_values"] = split_caches[index]
             if first:
                 # Cache rows have their left-padding positions removed, so each request keeps its true prompt length.
-                state["model_inputs"] = {"attention_mask": attention_masks[index][:, pad_offsets[index] :]}
+                request_attention_mask = attention_masks[index][:, pad_offsets[index] :]
+                state["model_inputs"] = {"attention_mask": request_attention_mask}
+                expected_length = int(request_attention_mask.sum().item())
             else:
                 state["model_inputs"] = {"attention_mask": attention_masks[index]}
+                expected_length = expected_cache_length
+            self.cache_manager.update(
+                request_id, split_caches[index], expected_length=expected_length
+            )
             results.append(
                 self._record_token(state, output.logits[index : index + 1, -1, :])
             )
@@ -149,13 +160,19 @@ class MageVLStepwiseGeneration:
         )
         finish_reason = state["finish_reason"]
         self._states.pop(request_id, None)
+        self.cache_manager.release(request_id)
         return generated_ids, finish_reason
 
     def cancel(self, request_id: str) -> None:
         self._states.pop(request_id, None)
+        self.cache_manager.release(request_id)
 
     def clear(self) -> None:
         self._states.clear()
+        self.cache_manager.clear()
+
+    def cache_snapshot(self) -> dict[str, int]:
+        return self.cache_manager.snapshot()
 
     def _state(self, request_id: str) -> dict[str, Any]:
         try:
@@ -170,7 +187,7 @@ class MageVLStepwiseGeneration:
             return {"text": "", "generated_tokens": 0, "done": True, "finish_reason": state["finish_reason"]}
 
         input_ids = state["input_ids"]
-        past_key_values = state["past_key_values"]
+        past_key_values = self.cache_manager.get(request_id)
         model_inputs = dict(state["model_inputs"])
         if not first:
             target_mask_length = self._cache_length(past_key_values) + 1
@@ -206,7 +223,14 @@ class MageVLStepwiseGeneration:
             output = self.model(**prepared, return_dict=True)
         if getattr(output, "past_key_values", None) is None:
             raise RuntimeError("The loaded Mage-VL model did not return past_key_values for stepwise decoding.")
-        state["past_key_values"] = output.past_key_values
+        expected_cache_length = (
+            int(model_inputs["attention_mask"].sum().item())
+            if first
+            else self.cache_manager.length(request_id) + 1
+        )
+        self.cache_manager.update(
+            request_id, output.past_key_values, expected_length=expected_cache_length
+        )
         state["model_inputs"] = {"attention_mask": model_inputs["attention_mask"]}
         return self._record_token(state, output.logits[:, -1, :])
 

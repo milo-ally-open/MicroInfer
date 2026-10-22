@@ -54,6 +54,7 @@ class MageVLModelAdapter:
             "quantization": config.QUANTIZATION_CONFIG["method"],
             "live_video_enabled": True,
             "kv_cache_profile": self.model_runner.kv_cache_profile(),
+            "worker_kv_cache": self.model_runner.kv_cache_snapshot(),
         }
 
     def prepare_chat_generation(self, request_id: str, request_body: dict[str, Any]) -> dict[str, int]:
