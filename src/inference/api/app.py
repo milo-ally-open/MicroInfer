@@ -60,6 +60,7 @@ def create_app(
     engine: Any,
     model_id: str,
     request_limits: dict[str, tuple[str, int]],
+    input_processor: Any | None = None,
     title: str | None = None,
     enable_video: bool = True,
     enable_live_sessions: bool = True,
@@ -68,16 +69,24 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        engine.start()
+        engine_started = False
         try:
+            if input_processor is not None:
+                input_processor.start()
+            engine.start()
+            engine_started = True
             yield
         finally:
-            engine.close()
+            if engine_started:
+                engine.close()
+            if input_processor is not None:
+                input_processor.close()
 
     app = FastAPI(title=title or f"{model_id} API", version="0.1.0", lifespan=lifespan)
     app.state.engine = engine
     app.state.model_id = model_id
     app.state.request_limits = request_limits
+    app.state.input_processor = input_processor
 
     @app.get("/health", response_model=HealthResponse)
     def health(request: Request) -> dict[str, Any]:

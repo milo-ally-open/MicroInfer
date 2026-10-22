@@ -13,6 +13,7 @@ import uuid
 from collections.abc import Iterator
 from typing import Any
 
+from engine.contracts import PreparedChatInput
 from engine.errors import InferenceError
 from media.video import save_upload, uploaded_video_path
 
@@ -24,7 +25,12 @@ class EngineClientError(RuntimeError):
 class EngineClientStream:
     """可跨執行緒取消的 EngineClient event iterator。"""
 
-    def __init__(self, client: EngineClient, request_body: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        client: EngineClient,
+        request_body: dict[str, Any],
+        prepared_input: PreparedChatInput | None = None,
+    ) -> None:
         self._client = client
         self._request_id = uuid.uuid4().hex
         self._pending = client._register(self._request_id)
@@ -37,7 +43,7 @@ class EngineClientStream:
                 "kind": "stream",
                 "request_id": self._request_id,
                 "operation": "stream_chat",
-                "args": (request_body,),
+                "args": (request_body,) if prepared_input is None else (request_body, prepared_input),
             })
         except BaseException:
             self._finish()
@@ -167,7 +173,7 @@ def _engine_core_process_main(connection: Any, factory_path: str) -> None:
             if operation in {"generate_chat", "understand_video_path", "try_live_inference"}:
                 kwargs["request_id"] = request_id
             if message["kind"] == "stream":
-                stream = engine.stream_chat(args[0], request_id=request_id)
+                stream = engine.stream_chat(*args, request_id=request_id)
                 try:
                     for event in stream:
                         send({"kind": "event", "request_id": request_id, "value": event})
@@ -337,11 +343,17 @@ class EngineClient:
         data["live_sessions"] = self.live_session_count()
         return data
 
-    def generate_chat(self, request_body: dict[str, Any]) -> Any:
-        return self._invoke("generate_chat", request_body)
+    def generate_chat(
+        self, request_body: dict[str, Any], prepared_input: PreparedChatInput | None = None
+    ) -> Any:
+        if prepared_input is None:
+            return self._invoke("generate_chat", request_body)
+        return self._invoke("generate_chat", request_body, prepared_input)
 
-    def stream_chat(self, request_body: dict[str, Any]) -> EngineClientStream:
-        return EngineClientStream(self, request_body)
+    def stream_chat(
+        self, request_body: dict[str, Any], prepared_input: PreparedChatInput | None = None
+    ) -> EngineClientStream:
+        return EngineClientStream(self, request_body, prepared_input)
 
     def understand_video(self, upload_stream: Any, filename: str | None, request_body: dict[str, Any]) -> Any:
         with tempfile.TemporaryDirectory(prefix="api-inference-video-") as temp_dir:

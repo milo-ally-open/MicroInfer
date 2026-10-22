@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
-from engine.engine import InferenceResult
+from engine.contracts import InferenceResult
 from engine.errors import InferenceError
 from media.video import probe_video_metadata, sample_video_frames
 

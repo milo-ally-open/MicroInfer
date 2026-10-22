@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from engine.engine import InferenceEngine
-from engine.worker import InProcessModelWorker, MultiprocessModelWorker
+from engine.executor import LocalProcessExecutor
+from engine.worker import InProcessModelWorker
 from . import config
 
 
@@ -18,13 +19,13 @@ def create_model_worker() -> InProcessModelWorker:
 
 def create_engine_core() -> InferenceEngine:
     """由 Engine Core 子程序建立共用 Scheduler、邏輯 KV lease 與 GPU Worker。"""
-    worker = MultiprocessModelWorker(
+    executor = LocalProcessExecutor(
         "models.qwen3_0_6b.engine_core:create_model_worker",
         startup_timeout_seconds=config.WORKER_STARTUP_TIMEOUT,
         request_timeout_seconds=config.WORKER_REQUEST_TIMEOUT,
     )
     return InferenceEngine(
-        worker,
+        executor,
         model_id=config.MODEL_ALIAS,
         max_concurrent_requests=config.MAX_NUM_SEQS,
         max_waiting_requests=config.MAX_WAITING_REQUESTS,

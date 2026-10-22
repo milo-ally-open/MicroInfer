@@ -12,8 +12,10 @@ if str(INFERENCE_ROOT) not in sys.path:
     sys.path.insert(0, str(INFERENCE_ROOT))
 
 from engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
-from engine.engine import InferenceEngine, InferenceResult
-from engine.worker import InProcessModelWorker, MultiprocessModelWorker
+from engine.contracts import InferenceResult
+from engine.engine import InferenceEngine
+from engine.executor import LocalProcessExecutor
+from engine.worker import InProcessModelWorker
 
 
 class FakeRunner:
@@ -95,7 +97,7 @@ def create_model_worker() -> InProcessModelWorker:
 
 
 def create_engine_core() -> InferenceEngine:
-    worker = MultiprocessModelWorker(
+    worker = LocalProcessExecutor(
         "engine_client_fakes:create_model_worker",
         startup_timeout_seconds=10,
         request_timeout_seconds=10,

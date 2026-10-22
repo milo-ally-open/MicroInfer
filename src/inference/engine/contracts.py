@@ -31,6 +31,7 @@ class ExecutionPhase(str, Enum):
 class EngineEventKind(str, Enum):
     START = "start"
     TEXT = "text"
+    TOKEN = "token"
     FINISH = "finish"
     ERROR = "error"
 
@@ -46,6 +47,47 @@ class EngineRequest:
     def __post_init__(self) -> None:
         if not self.request_id or not self.model_alias or not self.operation:
             raise ValueError("request_id, model_alias, and operation are required.")
+
+
+@dataclass(frozen=True)
+class PreparedChatInput:
+    """由 API 輸入處理器建立、可安全跨 Engine IPC 傳遞的模型輸入。"""
+
+    model_alias: str
+    input_ids: tuple[int, ...]
+    sampling_params: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.model_alias or not self.input_ids:
+            raise ValueError("Prepared chat input requires a model alias and at least one token.")
+        if any(token_id < 0 for token_id in self.input_ids):
+            raise ValueError("Prepared chat input token IDs must be non-negative.")
+
+
+@dataclass(frozen=True)
+class InferenceResult:
+    """跨 API、Engine 與模型 Adapter 傳遞的單次推論結果。"""
+
+    content: str
+    prompt_tokens: int
+    completion_tokens: int
+    finish_reason: str
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+    token_ids: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class InferenceStreamEvent:
+    """不依賴 SSE 或 OpenAI schema 的逐請求生成事件。"""
+
+    kind: str
+    text: str | None = None
+    token_id: int | None = None
+    token_ids: tuple[int, ...] = ()
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    finish_reason: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -114,6 +156,7 @@ class ScheduledBatch:
 class WorkerResult:
     request_id: str
     text_delta: str = ""
+    token_id: int | None = None
     generated_tokens: int = 0
     finished: bool = False
     finish_reason: str | None = None
@@ -126,6 +169,7 @@ class EngineEvent:
     request_id: str
     kind: EngineEventKind
     text: str | None = None
+    token_id: int | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     finish_reason: str | None = None

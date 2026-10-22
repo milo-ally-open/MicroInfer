@@ -12,6 +12,7 @@ INFERENCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "inference"
 sys.path.insert(0, str(INFERENCE_ROOT))
 
 from models.qwen3_0_6b.compatibility.hf_config import verify_snapshot_revision
+from engine.contracts import ExecutionPhase, ScheduledWorkItem
 
 try:
     import torch
@@ -23,6 +24,7 @@ except ImportError:  # pragma: no cover - 依賴精簡的開發環境略過此�
 
 if torch is not None and save_file is not None:
     from models.qwen3_0_6b.compatibility.safetensors_loader import load_safetensors
+    from models.qwen3_0_6b.model.input_batch import InputBatch
     from models.qwen3_0_6b.model.paged_kv_cache import PagedKVCache
     from models.qwen3_0_6b.model.qwen3_model import Qwen3ForCausalLM
 
@@ -90,6 +92,33 @@ class Qwen3NativeRuntimeTests(unittest.TestCase):
             device=torch.device("cpu"),
             dtype=torch.float32,
         )
+
+    def test_input_batch_pads_and_validates_scheduled_metadata(self) -> None:
+        items = (
+            ScheduledWorkItem("short", ExecutionPhase.PREFILL, 2),
+            ScheduledWorkItem("long", ExecutionPhase.PREFILL, 3),
+        )
+        batch = InputBatch.build(
+            items,
+            (torch.tensor([11, 12]), torch.tensor([21, 22, 23])),
+            (2, 3),
+            (0, 0),
+            ((0,), (1, 2)),
+            device=torch.device("cpu"),
+        )
+        self.assertEqual(batch.request_ids, ("short", "long"))
+        self.assertEqual(batch.input_ids.tolist(), [[11, 12, 0], [21, 22, 23]])
+        self.assertEqual(batch.token_lengths, (2, 3))
+        self.assertEqual(batch.block_tables, ((0,), (1, 2)))
+        with self.assertRaisesRegex(ValueError, "scheduled token budgets"):
+            InputBatch.build(
+                (ScheduledWorkItem("bad", ExecutionPhase.PREFILL, 3),),
+                (torch.tensor([1, 2]),),
+                (2,),
+                (0,),
+                ((0,),),
+                device=torch.device("cpu"),
+            )
 
     def test_safetensors_mapping_loads_all_synthetic_model_tensors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

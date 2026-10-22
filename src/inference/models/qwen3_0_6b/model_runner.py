@@ -8,10 +8,12 @@ from typing import Any
 import torch
 
 from engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
+from engine.platform import Platform, create_platform
 from . import config
 from .compatibility.hf_config import load_model_config
 from .compatibility.hf_tokenizer import load_tokenizer
 from .compatibility.safetensors_loader import load_safetensors
+from .model.input_batch import InputBatch
 from .model.paged_kv_cache import PagedKVCache
 from .model.qwen3_model import Qwen3ForCausalLM
 from .sampler import Qwen3Sampler
@@ -20,7 +22,8 @@ from .sampler import Qwen3Sampler
 class Qwen3ModelRunner:
     """GPU Worker 內的 Qwen3 batch runner 與 request 狀態擁有者。"""
 
-    def __init__(self) -> None:
+    def __init__(self, platform: Platform | None = None) -> None:
+        self.platform = platform or create_platform(config.PLATFORM_NAME)
         self.model: Qwen3ForCausalLM | None = None
         self.tokenizer: Any = None
         self.model_config: Any = None
@@ -32,13 +35,7 @@ class Qwen3ModelRunner:
         snapshot = config.LOCAL_MODEL_PATH
         if not snapshot.is_dir() or not (snapshot / "config.json").is_file():
             raise FileNotFoundError(f"Qwen3 local snapshot is incomplete: {snapshot}")
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is unavailable; Qwen3-0.6B is configured for GPU inference.")
-        device = torch.device(config.MODEL_DEVICE)
-        if device.type != "cuda":
-            raise RuntimeError("Qwen3-0.6B requires a CUDA device in this deployment profile.")
-        if device.index is not None and device.index >= torch.cuda.device_count():
-            raise RuntimeError(f"Configured Qwen3 CUDA device is unavailable: {device}.")
+        device = self.platform.resolve_device(config.MODEL_DEVICE)
         dtype = getattr(torch, config.MODEL_DTYPE, None)
         if dtype not in (torch.float16, torch.bfloat16, torch.float32):
             raise ValueError(f"Unsupported Qwen3 model dtype: {config.MODEL_DTYPE}.")
@@ -77,7 +74,8 @@ class Qwen3ModelRunner:
             raise RuntimeError("Qwen3 model is not loaded.")
         if request_id in self._states:
             raise ValueError(f"Generation request already exists: {request_id}")
-        input_ids = inputs["input_ids"].detach().to(device="cpu", dtype=torch.long)
+        raw_input_ids = inputs["input_ids"]
+        input_ids = torch.as_tensor(raw_input_ids, dtype=torch.long, device="cpu")
         attention_mask = inputs.get("attention_mask")
         if input_ids.ndim != 2 or input_ids.shape[0] != 1:
             raise ValueError("Qwen3 chat generation requires one unpadded prompt per request.")
@@ -208,19 +206,21 @@ class Qwen3ModelRunner:
             raise RuntimeError("Qwen3 model and physical KV cache must be loaded before execution.")
         if not (len(items) == len(input_sequences) == len(lengths) == len(offsets)):
             raise ValueError("Qwen3 batch tensors and work items must have matching lengths.")
-        query_width = max(lengths)
-        input_ids = torch.zeros((len(items), query_width), device=self.input_device, dtype=torch.long)
-        for index, tokens in enumerate(input_sequences):
-            input_ids[index, :lengths[index]] = tokens.to(device=self.input_device, dtype=torch.long)
-        request_ids = [item.request_id for item in items]
-        block_tables = [self._state(item.request_id)["block_ids"] for item in items]
+        batch = InputBatch.build(
+            items,
+            input_sequences,
+            lengths,
+            offsets,
+            [self._state(item.request_id)["block_ids"] for item in items],
+            device=self.input_device,
+        )
         with torch.inference_mode():
             return self.model.forward_batch(
-                input_ids,
-                token_lengths=lengths,
-                position_offsets=offsets,
-                request_ids=request_ids,
-                block_tables=block_tables,
+                batch.input_ids,
+                token_lengths=batch.token_lengths,
+                position_offsets=batch.position_offsets,
+                request_ids=batch.request_ids,
+                block_tables=batch.block_tables,
                 cache=self.cache,
             )
 
@@ -245,15 +245,9 @@ class Qwen3ModelRunner:
         state["done"] = stopped or reached_limit
         if state["done"]:
             state["finish_reason"] = "length" if reached_limit and not stopped else "stop"
-        try:
-            text = self.tokenizer.decode(
-                [token_id], skip_special_tokens=True, clean_up_tokenization_spaces=False
-            )
-        except TypeError:
-            text = self.tokenizer.decode([token_id], skip_special_tokens=True)
         return WorkerResult(
             request_id=request_id,
-            text_delta=text,
+            token_id=token_id,
             generated_tokens=1,
             finished=state["done"],
             finish_reason=state["finish_reason"],
@@ -273,20 +267,6 @@ class Qwen3ModelRunner:
         if self.cache is not None:
             self.cache.release(request_id)
         self._states.pop(request_id, None)
-
-    def decode(self, generated_ids: torch.Tensor) -> str:
-        if self.tokenizer is None:
-            raise RuntimeError("Qwen3 tokenizer is not loaded.")
-        return self.tokenizer.decode(
-            generated_ids.detach().cpu().tolist(),
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=False,
-        ).strip()
-
-    def token_count(self, text: str) -> int:
-        if self.tokenizer is None:
-            raise RuntimeError("Qwen3 tokenizer is not loaded.")
-        return len(self.tokenizer.encode(text, add_special_tokens=False))
 
     def kv_cache_profile(self) -> dict[str, int]:
         if self.model_config is None or self.cache is None:
@@ -323,22 +303,18 @@ class Qwen3ModelRunner:
         return snapshot
 
     def gpu_status(self) -> dict[str, Any]:
-        if self.model is None or not torch.cuda.is_available():
+        if self.model is None:
             return {}
-        free, total = torch.cuda.mem_get_info(self.input_device)
-        return {"gpu": torch.cuda.get_device_name(self.input_device), "vram_free_bytes": free, "vram_total_bytes": total}
+        return self.platform.gpu_status(self.input_device)
 
     def peak_memory(self) -> dict[str, int]:
-        if not torch.cuda.is_available():
+        if self.model is None:
             return {"peak_allocated": 0, "peak_reserved": 0}
-        return {
-            "peak_allocated": int(torch.cuda.max_memory_allocated(self.input_device)),
-            "peak_reserved": int(torch.cuda.max_memory_reserved(self.input_device)),
-        }
+        return self.platform.peak_memory(self.input_device)
 
     def reset_peak_memory(self) -> None:
-        if torch.cuda.is_available():
-            torch.cuda.reset_peak_memory_stats(self.input_device)
+        if self.model is not None:
+            self.platform.reset_peak_memory(self.input_device)
 
     def close(self) -> None:
         if self.cache is not None:
@@ -349,8 +325,7 @@ class Qwen3ModelRunner:
         self.model = None
         self.model_config = None
         self.tokenizer = None
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        self.platform.release_cached_memory()
 
     def _state(self, request_id: str) -> dict[str, Any]:
         try:

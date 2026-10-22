@@ -6,6 +6,7 @@ model:
   device: cuda:0
 
 runtime:
+  platform: torch_cuda
   local_model_path: checkpoints/Qwen3-0.6B-c1899de
   local_files_only: true
   worker_startup_timeout_seconds: 900

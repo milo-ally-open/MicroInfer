@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from engine.engine import InferenceEngine
-from engine.worker import InProcessModelWorker, MultiprocessModelWorker
+from engine.executor import LocalProcessExecutor
+from engine.worker import InProcessModelWorker
 
 from . import config
 
@@ -19,13 +20,13 @@ def create_model_worker() -> InProcessModelWorker:
 
 def create_engine_core() -> InferenceEngine:
     """由獨立 Engine Core 子程序呼叫，建立 Scheduler、KV 管理及 GPU Worker。"""
-    worker = MultiprocessModelWorker(
+    executor = LocalProcessExecutor(
         "models.mage_vl_4b.engine_core:create_model_worker",
         startup_timeout_seconds=config.WORKER_STARTUP_TIMEOUT,
         request_timeout_seconds=config.WORKER_REQUEST_TIMEOUT,
     )
     return InferenceEngine(
-        worker,
+        executor,
         model_id=config.MODEL_ID,
         max_concurrent_requests=config.MAX_NUM_SEQS,
         max_waiting_requests=config.MAX_WAITING_REQUESTS,

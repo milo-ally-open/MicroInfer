@@ -28,6 +28,7 @@ MODEL_ID = str(MODEL_CONFIG["id"])
 MODEL_REVISION = str(MODEL_CONFIG["revision"])
 MODEL_DTYPE = str(MODEL_CONFIG.get("dtype", "bfloat16"))
 MODEL_DEVICE = str(MODEL_CONFIG.get("device", "cuda:0"))
+PLATFORM_NAME = str(RUNTIME_CONFIG.get("platform", "torch_cuda"))
 LOCAL_MODEL_PATH = Path(os.path.expandvars(os.path.expanduser(str(RUNTIME_CONFIG["local_model_path"]))))
 if not LOCAL_MODEL_PATH.is_absolute():
     LOCAL_MODEL_PATH = PROJECT_ROOT / LOCAL_MODEL_PATH

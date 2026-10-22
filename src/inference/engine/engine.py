@@ -12,34 +12,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from engine.contracts import InferenceResult, InferenceStreamEvent, PreparedChatInput
 from engine.errors import InferenceError
+from engine.executor import Executor
 from engine.kv_cache import KVCacheManager
+from engine.output_processor import EngineOutputProcessor
 from engine.scheduler import SchedulerFullError, TokenScheduler
-from engine.worker import ModelWorker
 from media.video import save_upload, uploaded_video_path
-
-
-@dataclass(frozen=True)
-class InferenceResult:
-    """不依賴 HTTP 協定的單次推論結果。"""
-
-    content: str
-    prompt_tokens: int
-    completion_tokens: int
-    finish_reason: str
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class InferenceStreamEvent:
-    """不依賴 SSE／OpenAI schema 的生成事件。"""
-
-    kind: str
-    text: str | None = None
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    finish_reason: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -58,7 +37,7 @@ class InferenceEngine:
 
     def __init__(
         self,
-        worker: ModelWorker,
+        executor: Executor,
         *,
         model_id: str,
         max_concurrent_requests: int,
@@ -70,7 +49,8 @@ class InferenceEngine:
         kv_cache_capacity_tokens: int = 32768,
         max_video_bytes: int = 209715200,
     ) -> None:
-        self.worker = worker
+        self.executor = executor
+        self.output_processor = EngineOutputProcessor()
         self.model_id = model_id
         self.scheduler = TokenScheduler(
             max_num_seqs=max_concurrent_requests,
@@ -112,8 +92,8 @@ class InferenceEngine:
                 raise RuntimeError(f"Cannot start inference engine in state {self._state}.")
             self._state = "loading"
         try:
-            self.worker.start()
-            profile = self.worker.health_info().get("kv_cache_profile", {})
+            self.executor.start()
+            profile = self.executor.health_info().get("kv_cache_profile", {})
             if "physical_blocks" in profile:
                 allocation = self.kv_cache.snapshot()
                 if int(profile["physical_blocks"]) != allocation["capacity_blocks"]:
@@ -122,6 +102,10 @@ class InferenceEngine:
                     raise RuntimeError("Engine KV block size does not match the Worker physical page pool.")
             self.kv_cache.set_bytes_per_token(int(profile.get("bytes_per_token", 0)))
         except BaseException:
+            try:
+                self.executor.close()
+            except BaseException:
+                pass
             with self._state_lock:
                 self._state = "failed"
             raise
@@ -146,7 +130,7 @@ class InferenceEngine:
         if self._dispatcher is not None:
             self._dispatcher.join(timeout=30)
         try:
-            self.worker.close()
+            self.executor.close()
         finally:
             with self._state_lock:
                 self._state = "closed"
@@ -181,7 +165,7 @@ class InferenceEngine:
                 raise GeneratorExit
             # prepare 可能在內部建立部分狀態後失敗；之後一律執行冪等取消清理。
             prepared = True
-            descriptor = self.worker.invoke(prepare_operation, request_id, *prepare_args)
+            descriptor = self.executor.invoke(prepare_operation, request_id, *prepare_args)
             if self._request_was_cancelled(request_id):
                 raise GeneratorExit
             prompt_tokens = int(descriptor["prompt_tokens"])
@@ -192,7 +176,7 @@ class InferenceEngine:
             if lease is None:
                 raise InferenceError(429, "The KV cache token capacity is exhausted; retry after active requests finish.")
             lease_created = True
-            self.worker.invoke("bind_generation_cache", request_id, lease.block_ids)
+            self.executor.invoke("bind_generation_cache", request_id, lease.block_ids)
             if self._request_was_cancelled(request_id):
                 raise GeneratorExit
             context = _GenerationContext(request_id=request_id, finish_operation=finish_operation)
@@ -244,7 +228,7 @@ class InferenceEngine:
                 continue
             request_ids = {item.request_id for item in batch.work_items}
             try:
-                results = tuple(self.worker.execute_batch(batch.work_items))
+                results = tuple(self.executor.execute_batch(batch.work_items))
                 self.scheduler.complete_batch(results)
             except BaseException as exc:
                 self.scheduler.abort_batch(request_ids)
@@ -258,11 +242,17 @@ class InferenceEngine:
                 context = self._get_context(result.request_id)
                 if context is None or context.terminal or context.cancelled:
                     continue
-                if result.text_delta:
-                    context.events.put(InferenceStreamEvent("text", text=result.text_delta))
+                for output in self.output_processor.process(result):
+                    context.events.put(
+                        InferenceStreamEvent(
+                            output.kind,
+                            text=output.text,
+                            token_id=output.token_id,
+                        )
+                    )
                 if result.finished:
                     try:
-                        final = self.worker.invoke(context.finish_operation, context.request_id)
+                        final = self.executor.invoke(context.finish_operation, context.request_id)
                         self._finish_context(context, final)
                     except BaseException as exc:
                         self._fail_context(context, exc)
@@ -317,6 +307,7 @@ class InferenceEngine:
                 completion_tokens=result.completion_tokens,
                 finish_reason=result.finish_reason,
                 metadata=result.metadata,
+                token_ids=result.token_ids,
             )
         )
 
@@ -344,25 +335,35 @@ class InferenceEngine:
 
     def _cancel_worker_generation(self, request_id: str) -> None:
         try:
-            self.worker.invoke("cancel_generation", request_id)
+            self.executor.invoke("cancel_generation", request_id)
         except BaseException:
             pass
 
     def generate_chat(
-        self, request_body: dict[str, Any], *, request_id: str | None = None
+        self,
+        request_body: dict[str, Any],
+        prepared_input: PreparedChatInput | None = None,
+        *,
+        request_id: str | None = None,
     ) -> InferenceResult:
+        prepare_args = (request_body,) if prepared_input is None else (request_body, prepared_input)
         result = self._collect_result(
             self._run_generation(
-                "prepare_chat_generation", (request_body,), "finish_chat_generation", request_id=request_id
+                "prepare_chat_generation", prepare_args, "finish_chat_generation", request_id=request_id
             )
         )
         return result
 
     def stream_chat(
-        self, request_body: dict[str, Any], *, request_id: str | None = None
+        self,
+        request_body: dict[str, Any],
+        prepared_input: PreparedChatInput | None = None,
+        *,
+        request_id: str | None = None,
     ) -> Iterator[InferenceStreamEvent]:
+        prepare_args = (request_body,) if prepared_input is None else (request_body, prepared_input)
         yield from self._run_generation(
-            "prepare_chat_generation", (request_body,), "finish_chat_generation", request_id=request_id
+            "prepare_chat_generation", prepare_args, "finish_chat_generation", request_id=request_id
         )
 
     def understand_video(
@@ -412,15 +413,16 @@ class InferenceEngine:
             completion_tokens=int(final.completion_tokens or 0),
             finish_reason=final.finish_reason or "stop",
             metadata=final.metadata,
+            token_ids=final.token_ids,
         )
 
     def generation_options(self, request_body: dict[str, Any]) -> dict[str, Any]:
         self._require_ready()
-        return self.worker.invoke("generation_options", request_body)
+        return self.executor.invoke("generation_options", request_body)
 
     def validate_live_video_backend(self, backend: str, codec_engine: str | None) -> None:
         self._require_ready()
-        self.worker.invoke("validate_live_video_backend", backend, codec_engine)
+        self.executor.invoke("validate_live_video_backend", backend, codec_engine)
 
     def try_live_inference(
         self, operation: str, *args: Any, on_admitted: Any = None, request_id: str | None = None
@@ -454,16 +456,16 @@ class InferenceEngine:
         }
 
     def health(self) -> dict[str, Any]:
-        data = self.worker.health_info()
+        data = self.executor.health_info()
         data.update(
             status="ok" if self.ready else "starting",
             live_sessions=self.live_session_count(),
             scheduler=self.scheduler.snapshot(),
             kv_cache=self.kv_cache.snapshot(),
-            worker_pid=getattr(self.worker, "pid", None),
+            worker_pid=getattr(self.executor, "pid", None),
         )
         if self.ready:
-            data.update(self.worker.gpu_status())
+            data.update(self.executor.gpu_status())
         return data
 
     def live_settings(self) -> Any:

@@ -22,32 +22,34 @@ Mage-VL 與 Qwen3 的服務設定分別位於 `src/inference/models/mage_vl_4b/c
 | Engine Core | `engine/engine.py`、`engine/client.py` | 獨立程序中的推論生命週期；API 端 `EngineClient` 提供 IPC proxy |
 | Scheduler | `engine/scheduler.py` | 完整 prompt prefill 為一輪、decode 每輪一個 token；活動請求輪轉，佇列與序列數由 YAML 控制 |
 | KV Cache Manager | `engine/kv_cache.py` | 預留 prompt+輸出 token 邏輯 block，計算估算值，完成／取消後回收 block ID |
-| Worker | `engine/worker.py` | 線上使用 `MultiprocessModelWorker` 與 Pipe RPC；`InProcessModelWorker` 供測試或模型整合使用 |
+| Executor／Worker | `engine/executor.py`、`engine/worker.py` | `LocalProcessExecutor` 透過 Pipe 管理本機 Worker 子程序；`InProcessModelWorker` 保留程序內測試與整合用途 |
 | 模型 Adapter／Runner | `models/mage_vl_4b/adapter.py`、`model_runner.py` | Adapter 負責 Mage-VL 輸入及結果適配；Runner 在 Worker 子程序載入模型並逐步執行生成 |
 | 模型輸入處理 | `models/mage_vl_4b/processor.py` | Mage-VL 專屬 prompt、影像／影片 Processor 與生成參數 |
 | 模型元件 | `models/mage_vl_4b/components/` | 固定 revision 的模型設定、視覺塔、多模態組裝、生成頭、逐步生成狀態及替換登記 |
 | 純文字模型 Adapter／Runner | `models/qwen3_0_6b/adapter.py`、`model_runner.py`、`model/` | Hugging Face 相容輸入、Qwen3 本地 PyTorch 計算圖、批次 prefill/decode、GPU 實體 KV page |
 | 通用媒體／Live session | `media/video.py`、`media/live_sessions.py` | 上傳影片暫存、通用 metadata／影格讀取及即時 session 生命週期 |
 
-## Qwen3-0.6B 三層實作
+## Qwen3-0.6B 五層推論架構
 
 此架構只套用於 Qwen3-0.6B；Mage-VL 保持原路徑。需求、設計與驗收證據見 [Inference Spec](../../docs/Specifications/inference/)。
 
-| 層 | 所有權 | Qwen3 目標位置 |
+| 層 | 職責 | 目前實作位置 |
 | --- | --- | --- |
-| 生態兼容層 | Hugging Face config、tokenizer/chat template、固定 revision Safetensors 權重格式 | `models/qwen3_0_6b/compatibility/` |
-| 性能優化層 | 共用 Engine Core／Scheduler／Worker，加上本地 Qwen3 model、批次 Runner、sampling 及 GPU KV block pool | `engine/`、`models/qwen3_0_6b/model/`、`model_runner.py` |
-| 對外接口層 | 共用 FastAPI、OpenAI schema、錯誤映射與文字 SSE 序列化 | `api/` |
+| L1 接口與門面 | API schema、Tokenizer、Detokenizer、SSE／JSON 序列化與 Engine IPC client | `api/`、`engine/client.py`、Qwen `input_processor.py` |
+| L2 編排與調度 | Engine Core 請求生命週期、Token Scheduler、邏輯 KV reservation、輸出事件分派 | `engine/engine.py`、`scheduler.py`、`kv_cache.py`、`output_processor.py` |
+| L3 執行抽象與 Worker | 本機程序啟動、Worker RPC、硬體與記憶體觀測 | `engine/executor.py`、`worker.py`、`platform.py` |
+| L4 模型運行時 | Qwen 輸入批次、模型 forward、Sampling 與輸出 token ID | Qwen `model_runner.py`、`model/input_batch.py`、`sampler.py` |
+| L5 模型與算子 | Qwen 模型拓撲、Attention、RoPE、權重映射及上游格式相容 | Qwen `model/`、`compatibility/` |
 
-生態兼容層以 `AutoConfig`／`AutoTokenizer` 讀取設定與 chat template，並安全載入固定 revision 的 Safetensors；性能層以本地 Qwen3 計算圖執行批次 prefill/decode，Engine block ID 對應 GPU Worker 中的 K/V page；對外接口保留 `/v1/chat/completions`、`qwen3-0.6b` alias、逐 token SSE、finish usage 和 `[DONE]`。正常完成的 SSE 契約不變；客戶端斷線時 response 同步監聽 ASGI disconnect，透過 `EngineClient` 取消生成，並在 shielded cleanup 中等待 Worker 釋放 page。模型以 PyTorch／SDPA 運算；Attention 目前將 paged KV gather 成連續張量，因此不稱為 PagedAttention kernel。
+Qwen `AutoConfig`／`AutoTokenizer` 僅用於固定 revision 的設定、Tokenizer 與 Chat Template；模型 forward 由本地 PyTorch 計算圖執行。批次 prefill/decode 的 Engine block ID 對應 GPU Worker 中的 K/V page。API 保留 `/v1/chat/completions`、`qwen3-0.6b` alias、逐 token SSE、finish usage 和 `[DONE]`；Worker 回傳 token ID，API 負責串流及非串流 Detokenize。客戶端斷線時 response 監聽 ASGI disconnect，透過 `EngineClient` 取消生成，並在 shielded cleanup 中等待 Worker 釋放 page。Attention 目前將 paged KV gather 成連續張量，因此不稱為 PagedAttention kernel。
 
 目前 Qwen YAML 設定 1024 個 16-token pages；以 BF16 計算，K/V pool 預配置約 1.75 GiB。`/health` 回報執行 backend、Scheduler、Engine lease、Worker 實體 page 使用量與 GPU 峰值記憶體。Qwen API 仍只提供文字 Chat，不包含影片或 Live 路由。
 
 Scheduler 為活動 chat、影片及 Live 工作維護等待／執行佇列，依 `max_num_seqs` 和 `max_num_scheduled_tokens` 建立 prefill、decode 或混合批次；滿載時等待佇列耗盡後回 `429`。啟用 `prefill_chunk_size_tokens` 時，長 prompt 會按 offset 分輪追加至同一 Cache。首段會延伸至涵蓋全部視覺 token，確保 Mage-VL 的影像／影片特徵只在首次 forward 編碼；若該不可拆分前綴超過每輪 token 上限，請求會在排程前拒絕。`batch_wait_seconds` 提供短暫請求合併窗口。
 
-Engine Core 背景迴圈取得 Scheduler 批次、一次呼叫 Worker，依每個 request ID 更新狀態並把 token 事件送回對應串流。Mage-VL Runner 對相容的同階段請求使用一次多序列模型 forward，並將 logits 與 Cache 分別還原到各 request；混合批次在同一 Worker 呼叫內按階段執行 prefill／decode 子批次，不會把不同 Cache 狀態強塞進同一模型 forward。不相容的輸入會退回逐 request forward。分塊 prefill 只追加當輪 token，完成最後一塊後才取樣第一個 token。文字 SSE 仍由每個 request 的逐 token `text` 事件輸出。
+Engine Core 背景迴圈取得 Scheduler 批次、一次呼叫 Worker，依每個 request ID 更新狀態並把結果送回對應串流。Mage-VL Runner 對相容的同階段請求使用一次多序列模型 forward，並將 logits 與 Cache 分別還原到各 request；混合批次在同一 Worker 呼叫內按階段執行 prefill／decode 子批次，不會把不同 Cache 狀態強塞進同一模型 forward。不相容的輸入會退回逐 request forward。分塊 prefill 只追加當輪 token，完成最後一塊後才取樣第一個 token。Mage-VL 維持逐 request 的 `text` 事件；Qwen3 回傳 `token_id`，由 L1 Detokenize 後形成相同 OpenAI 文字 SSE。
 
-Engine 對每個生成請求依序執行輸入準備、KV 容量預留、Scheduler 准入、Worker prefill／decode、狀態更新及事件發布。成功、拒絕、取消、Worker 逾時或異常均經同一個 `finally` 收尾，回收 Scheduler 名額與邏輯 KV reservation，並取消可能部分建立的 Runner 狀態。`stream_chat()` 逐個 token 發出文字事件；API 路由將其序列化為 OpenAI SSE chunk，取消 HTTP 串流時會關閉生成 iterator 以觸發收尾。
+Engine 對每個生成請求依序執行輸入準備、KV 容量預留、Scheduler 准入、Worker prefill／decode、狀態更新及事件發布。成功、拒絕、取消、Worker 逾時或異常均經同一個 `finally` 收尾，回收 Scheduler 名額與邏輯 KV reservation，並取消可能部分建立的 Runner 狀態。`stream_chat()` 將 Worker 結果依 request ID 發成 Engine event；Qwen3 使用 token ID、Mage-VL 使用文字增量；API 路由將其序列化為 OpenAI SSE chunk，取消 HTTP 串流時會關閉生成 iterator 以觸發收尾。
 
 Mage-VL Worker 的 `RequestCacheManager` 以 request ID 持有 Transformers Cache 物件，Engine block ID 仍是邏輯 reservation。Qwen3 則使用模型專屬 `PagedKVCache` 實體 tensor pool；共用 Engine `KVCacheManager` 分配 page ID，Worker 驗證租約並在 finish／cancel／close 時釋放 page 所有權。這是物理儲存分頁，不是直接以 block table 計算的 PagedAttention kernel。
 
@@ -55,11 +57,11 @@ Mage-VL Worker 的 `RequestCacheManager` 以 request ID 持有 Transformers Cach
 
 Mage-VL 的 Engine lease 不代表 GPU 實體分頁；其 KV tensor 仍由 Transformers 動態配置。Qwen3 的 Engine 容量與 Worker page pool 從同一份模型 YAML 建立，啟動時核對 block 數與 block size。Worker 的 page pool 預先配置於 GPU，`/health` 分別回報 lease 估算值、實體 pool 使用量及實際 CUDA peak allocated/reserved bytes。
 
-Engine Core 與 GPU Worker 都以 Python `spawn` 建立；API import 不載入 Mage-VL 模型。`runtime.uvicorn_workers` 必須為 `1`，避免重複建立整組 Engine Core／GPU Worker。Engine Core 啟動與 RPC 逾時分別由 `runtime.engine_core_startup_timeout_seconds` 和 `runtime.engine_core_request_timeout_seconds` 設定；`/health` 回報 API、Engine Core 與 GPU Worker PID。Chat 的逐 token `text` 事件經 EngineClient 傳回 API，仍由既有路由序列化為 OpenAI SSE chunk，包含 finish usage 與 `[DONE]`；Live session 與媒體擷取留在 API 程序，其模型分析請求經 EngineClient 提交。Runner 支援逐步 `past_key_values` 解碼、greedy／temperature／top-k／top-p／min-p 及重複懲罰；beam search、自訂 generation kwargs 和非預設 Cache implementation 暫不支援。若固定 revision 不提供必要介面，Worker 會明確報錯，不回退到不受 Token Scheduler 控制的完整 `generate()`。
+Engine Core 與 GPU Worker 都以 Python `spawn` 建立；API import 不載入 Mage-VL 模型。`runtime.uvicorn_workers` 必須為 `1`，避免重複建立整組 Engine Core／GPU Worker。Engine Core 啟動與 RPC 逾時分別由 `runtime.engine_core_startup_timeout_seconds` 和 `runtime.engine_core_request_timeout_seconds` 設定；`/health` 回報 API、Engine Core 與 GPU Worker PID。Chat 的 Qwen token ID／Mage-VL 文字增量事件經 EngineClient 傳回 API；Qwen3 由 API Detokenize 後序列化成 OpenAI SSE chunk，包含 finish usage 與 `[DONE]`；Live session 與媒體擷取留在 API 程序，其模型分析請求經 EngineClient 提交。Runner 支援逐步 `past_key_values` 解碼、greedy／temperature／top-k／top-p／min-p 及重複懲罰；beam search、自訂 generation kwargs 和非預設 Cache implementation 暫不支援。若固定 revision 不提供必要介面，Worker 會明確報錯，不回退到不受 Token Scheduler 控制的完整 `generate()`。
 
 ## 新增模型的最小步驟
 
-每個模型自包含於 `src/inference/models/<model>/`，包含模型專屬的 `app.py`、`engine_core.py`、`adapter.py`、`config.py`、`model_runner.py`、需要時的 `processor.py`，以及 `configs/` 和 `requirements/`。模型 `app.py` 建立共用 `EngineClient` 並匯出 FastAPI app；`engine_core.py` 匯出 `create_engine_core()` 與 `create_model_worker()`，前者在 Engine Core 子程序建立共用 `InferenceEngine`／`MultiprocessModelWorker`，後者只在 GPU Worker 子程序載入 Runner。Live session 管理留在 API 程序，逐次模型分析透過 EngineClient 呼叫。
+每個模型自包含於 `src/inference/models/<model>/`，包含模型專屬的 `app.py`、`engine_core.py`、`adapter.py`、`config.py`、`model_runner.py`、需要時的 `processor.py`，以及 `configs/` 和 `requirements/`。模型 `app.py` 建立共用 `EngineClient` 並匯出 FastAPI app；`engine_core.py` 匯出 `create_engine_core()` 與 `create_model_worker()`，前者在 Engine Core 子程序建立共用 `InferenceEngine`／`LocalProcessExecutor`，後者只在 GPU Worker 子程序載入 Runner。Live session 管理留在 API 程序，逐次模型分析透過 EngineClient 呼叫。
 
 逐步生成模型 Adapter 要提供 `prepare_*_generation`、`prefill_generation`、`decode_generation_step`、`finish_*_generation` 及 `cancel_generation` 操作；Runner 保存各 request 的 cache state。新模型可沿用共用 route／Scheduler／KV Manager，將原生多模態 cache 能力適配到此操作邊界。若模型不支援逐步執行，需先新增並驗收適配方案，不能把整段生成標記為 token-scheduled。
 

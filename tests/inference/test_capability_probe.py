@@ -55,7 +55,9 @@ class CapabilityProbeContractTests(unittest.TestCase):
 
         self.assertIn('os.environ["HF_HUB_OFFLINE"] = "1"', source)
         self.assertIn('os.environ["TRANSFORMERS_OFFLINE"] = "1"', source)
-        self.assertIn("local_files_only=True", source)
+        self.assertIn('"local_files_only": True', source)
+        self.assertIn("AutoProcessor.from_pretrained(snapshot, **processor_kwargs)", source)
+        self.assertIn("AutoModelForCausalLM.from_pretrained(snapshot, **kwargs)", source)
 
     def test_help_does_not_require_model_dependencies(self) -> None:
         result = subprocess.run(

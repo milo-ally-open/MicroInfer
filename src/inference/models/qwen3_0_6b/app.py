@@ -5,6 +5,7 @@ from __future__ import annotations
 from api.app import create_app
 from engine.client import EngineClient
 from . import config
+from .input_processor import Qwen3InputProcessor
 
 
 engine = EngineClient(
@@ -18,6 +19,7 @@ app = create_app(
     engine=engine,
     model_id=config.MODEL_ALIAS,
     title="Qwen3-0.6B API",
+    input_processor=Qwen3InputProcessor(),
     request_limits={
         "/v1/chat/completions": ("Chat request", config.MAX_CHAT_REQUEST_BYTES),
     },

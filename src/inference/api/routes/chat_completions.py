@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import replace
 from typing import Any
 
 import anyio
@@ -58,11 +59,20 @@ async def chat_completions(body: ChatCompletionRequest, request: Request) -> Any
     if body.model not in {None, request.app.state.model_id}:
         raise HTTPException(status_code=404, detail=f"Unknown model: {body.model}")
     request_body = body.model_dump(exclude_none=True)
+    input_processor = request.app.state.input_processor
+    prepared_input = input_processor.prepare_chat(request_body) if input_processor is not None else None
     if body.stream:
+        output_processor = (
+            input_processor.create_stream_output_processor() if input_processor is not None else None
+        )
+
         async def event_stream():
             request_id = f"chatcmpl-{uuid.uuid4().hex}"
             created = int(time.time())
-            stream = request.app.state.engine.stream_chat(request_body)
+            if prepared_input is None:
+                stream = request.app.state.engine.stream_chat(request_body)
+            else:
+                stream = request.app.state.engine.stream_chat(request_body, prepared_input=prepared_input)
             try:
                 while True:
                     event = await run_in_threadpool(_next_stream_event, stream)
@@ -76,7 +86,24 @@ async def chat_completions(body: ChatCompletionRequest, request: Request) -> Any
                         chunk = chat_completion_chunk(
                             request_id, created, request.app.state.model_id, delta={"content": event.text}
                         )
+                    elif event.kind == "token" and event.token_id is not None and output_processor is not None:
+                        text_delta = output_processor.push(event.token_id)
+                        if not text_delta:
+                            continue
+                        chunk = chat_completion_chunk(
+                            request_id, created, request.app.state.model_id, delta={"content": text_delta}
+                        )
                     elif event.kind == "finish":
+                        if output_processor is not None:
+                            final_text = output_processor.finish()
+                            if final_text:
+                                final_chunk = chat_completion_chunk(
+                                    request_id,
+                                    created,
+                                    request.app.state.model_id,
+                                    delta={"content": final_text},
+                                )
+                                yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
                         prompt_tokens = int(event.prompt_tokens or 0)
                         completion_tokens = int(event.completion_tokens or 0)
                         chunk = chat_completion_chunk(
@@ -111,5 +138,12 @@ async def chat_completions(body: ChatCompletionRequest, request: Request) -> Any
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
-    result = await run_in_threadpool(request.app.state.engine.generate_chat, request_body)
+    if prepared_input is None:
+        result = await run_in_threadpool(request.app.state.engine.generate_chat, request_body)
+    else:
+        result = await run_in_threadpool(
+            request.app.state.engine.generate_chat, request_body, prepared_input
+        )
+    if result.token_ids and input_processor is not None:
+        result = replace(result, content=input_processor.decode_tokens(result.token_ids))
     return chat_completion(result, request.app.state.model_id)

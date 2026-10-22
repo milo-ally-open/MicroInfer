@@ -9,12 +9,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "inference"))
 
-from engine.worker import MultiprocessModelWorker
+from engine.executor import LocalProcessExecutor
 
 
 class MultiprocessWorkerTests(unittest.TestCase):
     def test_worker_starts_in_child_and_executes_ipc_calls(self) -> None:
-        worker = MultiprocessModelWorker(
+        worker = LocalProcessExecutor(
             "worker_process_fixture:create_worker",
             startup_timeout_seconds=10,
             request_timeout_seconds=10,

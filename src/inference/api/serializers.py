@@ -6,7 +6,7 @@ import time
 import uuid
 from typing import Any
 
-from engine.engine import InferenceResult
+from engine.contracts import InferenceResult
 
 
 def chat_completion(result: InferenceResult, model_id: str, *, video: bool = False) -> dict[str, Any]:

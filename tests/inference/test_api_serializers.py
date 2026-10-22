@@ -10,7 +10,7 @@ INFERENCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "inference"
 sys.path.insert(0, str(INFERENCE_ROOT))
 
 from api.serializers import chat_completion, chat_completion_chunk
-from engine.engine import InferenceResult
+from engine.contracts import InferenceResult
 
 
 class APISerializerTests(unittest.TestCase):

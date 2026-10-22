@@ -8,9 +8,11 @@
 - `src/inference/models/mage_vl_4b/configs/`：集中存放模型推論、網路與 MediaMTX YAML。
 - `src/inference/models/mage_vl_4b/requirements/`：保存目前 Mage-VL-4B 的 Python 依賴清單與鎖定檔。
 - `src/inference/models/qwen3_0_6b/`：Qwen3-0.6B 純文字聊天服務、Hugging Face 相容載入層、本地模型計算圖、批次 Runner 及實體 KV page pool。
-- `src/inference/api/`、`engine/`、`media/`、`models/mage_vl_4b/`：分層維護 API Server、Runtime、通用媒體及 Mage-VL Model Runner。
+- `src/inference/api/`、`engine/`、`media/`、`models/<model>/`：推論引擎依接口門面、編排調度、執行抽象、模型運行時、模型與算子五層職責組織；五層是程式邊界，不代表五個程序。當前 API Server、Engine Core 和 Model Worker 為三個程序。
 - 新模型放入 `src/inference/models/<model>/`，並在 `model_registry.yaml` 登錄其 YAML 路徑及 `app.py`；共用 API、Runtime 和啟動器不需為模型新增分支。
 - Gateway 預設監聽 `127.0.0.1:8000`；推論服務預設監聽 `127.0.0.1:8001`，兩者仍是分離程序。
+
+Inference Engine 借鑑 vLLM／nano-vLLM 的元件職責，沒有 vLLM backend、自訂 PagedAttention kernel 或 prefix cache。五層模組歸屬、輸入與文字流輸出契約及支援範圍見 [`src/inference/README.md`](src/inference/README.md) 與 [Inference Spec](docs/Specifications/inference/)。Mage-VL 使用 Transformers Runtime；Qwen3-0.6B 實驗服務使用本地 PyTorch Runner。兩條模型路徑共用 API／Engine 職責，不混用模型專屬計算圖或把未實作後端標成已支援。
 
 ## 啟動指定模型設定
 

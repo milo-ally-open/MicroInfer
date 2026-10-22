@@ -12,7 +12,8 @@ from pathlib import Path
 INFERENCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "inference"
 sys.path.insert(0, str(INFERENCE_ROOT))
 
-from engine.engine import InferenceEngine, InferenceResult
+from engine.contracts import InferenceResult
+from engine.engine import InferenceEngine
 from engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
 from engine.errors import InferenceError
 from engine.scheduler import TokenScheduler
@@ -202,6 +203,32 @@ class EngineContractTests(unittest.TestCase):
         self.assertEqual(engine.state, "closed")
         self.assertEqual(runner.loaded, 1)
         self.assertEqual(runner.closed, 1)
+
+    def test_executor_is_closed_when_startup_handshake_fails(self) -> None:
+        class FailingExecutor:
+            closed = 0
+
+            @property
+            def pid(self) -> None:
+                return None
+
+            def start(self) -> None:
+                raise RuntimeError("startup handshake failed")
+
+            def close(self) -> None:
+                self.closed += 1
+
+        executor = FailingExecutor()
+        engine = InferenceEngine(
+            executor,
+            model_id="fake-model",
+            max_concurrent_requests=1,
+            kv_cache_capacity_tokens=16,
+        )
+        with self.assertRaisesRegex(RuntimeError, "startup handshake failed"):
+            engine.start()
+        self.assertEqual(executor.closed, 1)
+        self.assertEqual(engine.state, "failed")
 
     def test_scheduler_builds_prefill_and_decode_batches_with_token_budget(self) -> None:
         scheduler = TokenScheduler(

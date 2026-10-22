@@ -76,17 +76,19 @@ class InferenceSourceContractTests(unittest.TestCase):
         engine = (INFERENCE / "engine/engine.py").read_text(encoding="utf-8")
         scheduler = (INFERENCE / "engine/scheduler.py").read_text(encoding="utf-8")
         worker = (INFERENCE / "engine/worker.py").read_text(encoding="utf-8")
+        executor = (INFERENCE / "engine/executor.py").read_text(encoding="utf-8")
         adapter = (INFERENCE / "models/mage_vl_4b/adapter.py").read_text(encoding="utf-8")
-        self.assertIn("self.worker.start()", engine)
-        self.assertIn("self.worker.invoke(prepare_operation", engine)
-        self.assertIn("self.worker.execute_batch(batch.work_items)", engine)
+        self.assertIn("self.executor.start()", engine)
+        self.assertIn("self.executor.invoke(prepare_operation", engine)
+        self.assertIn("self.executor.execute_batch(batch.work_items)", engine)
         self.assertIn("def _dispatch_batches(", engine)
         self.assertIn("TokenScheduler", engine)
         self.assertIn("schedule_batch", scheduler)
         self.assertIn("decode_generation_step", adapter)
         self.assertIn("class ModelWorker(Protocol)", worker)
         self.assertIn("class InProcessModelWorker", worker)
-        self.assertIn("class MultiprocessModelWorker", worker)
+        self.assertIn("class LocalProcessExecutor", executor)
+        self.assertIn("class Executor(Protocol)", executor)
         model_sources = [path.read_text(encoding="utf-8") for path in (INFERENCE / "models").rglob("*.py")]
         engine_sources = [path.read_text(encoding="utf-8") for path in (INFERENCE / "engine").rglob("*.py")]
         for source in model_sources + engine_sources:
@@ -102,7 +104,7 @@ class InferenceSourceContractTests(unittest.TestCase):
         self.assertIn("models.mage_vl_4b.engine_core:create_engine_core", app)
         self.assertNotIn("InferenceEngine(", app)
         self.assertIn("InferenceEngine(", core_factory)
-        self.assertIn("MultiprocessModelWorker(", core_factory)
+        self.assertIn("LocalProcessExecutor(", core_factory)
         self.assertIn('multiprocessing.get_context("spawn")', client)
         self.assertIn('context.Pipe(duplex=True)', client)
         self.assertIn("engine.register_request(request_id)", client)
@@ -124,6 +126,7 @@ class InferenceSourceContractTests(unittest.TestCase):
         scheduler = (INFERENCE / "engine/scheduler.py").read_text(encoding="utf-8")
         cache = (INFERENCE / "engine/kv_cache.py").read_text(encoding="utf-8")
         worker = (INFERENCE / "engine/worker.py").read_text(encoding="utf-8")
+        executor = (INFERENCE / "engine/executor.py").read_text(encoding="utf-8")
         runner = (INFERENCE / "models/mage_vl_4b/model_runner.py").read_text(encoding="utf-8")
         stepwise = (INFERENCE / "models/mage_vl_4b/components/stepwise_generation.py").read_text(encoding="utf-8")
         self.assertIn("class TokenScheduler", scheduler)
@@ -133,8 +136,9 @@ class InferenceSourceContractTests(unittest.TestCase):
         self.assertIn("class KVCacheManager", cache)
         self.assertIn("self.kv_cache.reserve", engine)
         self.assertIn("self.kv_cache.release", engine)
-        self.assertIn("class MultiprocessModelWorker", worker)
-        self.assertIn("multiprocessing.get_context(\"spawn\")", worker)
+        self.assertIn("class InProcessModelWorker", worker)
+        self.assertIn("class LocalProcessExecutor", executor)
+        self.assertIn("multiprocessing.get_context(\"spawn\")", executor)
         self.assertIn("def _step(", stepwise)
         self.assertIn("past_key_values", stepwise)
 
@@ -159,7 +163,7 @@ class InferenceSourceContractTests(unittest.TestCase):
         self.assertNotIn("MultiprocessModelWorker(", app)
         self.assertIn("def create_engine_core(", engine_core)
         self.assertIn("InferenceEngine(", engine_core)
-        self.assertIn("MultiprocessModelWorker(", engine_core)
+        self.assertIn("LocalProcessExecutor(", engine_core)
         self.assertIn("def create_model_worker(", engine_core)
         for method in (
             "prepare_chat_generation",
@@ -183,7 +187,7 @@ class InferenceSourceContractTests(unittest.TestCase):
         cache_manager = (INFERENCE / "models/mage_vl_4b/components/cache_manager.py").read_text(encoding="utf-8")
         adapter_source = (INFERENCE / "models/mage_vl_4b/adapter.py").read_text(encoding="utf-8")
         route = (INFERENCE / "api/routes/chat_completions.py").read_text(encoding="utf-8")
-        self.assertIn("self.worker.execute_batch(batch.work_items)", engine)
+        self.assertIn("self.executor.execute_batch(batch.work_items)", engine)
         self.assertIn("def execute_batch(self, requests", worker)
         self.assertIn("def execute_batch(self, requests", adapter)
         self.assertIn("def execute_batch(self, requests", runner)
@@ -208,6 +212,17 @@ class InferenceSourceContractTests(unittest.TestCase):
         self.assertIn('"worker_kv_cache": self.model_runner.kv_cache_snapshot()', adapter_source)
         self.assertIn('elif event.kind == "text":', route)
         self.assertIn('delta={"content": event.text}', route)
+
+    def test_qwen_tokenize_and_detokenize_stay_at_api_boundary(self) -> None:
+        processor = (INFERENCE / "models/qwen3_0_6b/input_processor.py").read_text(encoding="utf-8")
+        route = (INFERENCE / "api/routes/chat_completions.py").read_text(encoding="utf-8")
+        runner = (INFERENCE / "models/qwen3_0_6b/model_runner.py").read_text(encoding="utf-8")
+        self.assertIn("tokenizer.apply_chat_template", processor)
+        self.assertIn("def decode_tokens(", processor)
+        self.assertIn('event.kind == "token"', route)
+        self.assertIn("output_processor.push(event.token_id)", route)
+        self.assertIn("input_processor.decode_tokens(result.token_ids)", route)
+        self.assertNotIn("self.tokenizer.decode(", runner)
 
     def test_src_and_inference_roots_are_not_python_packages(self) -> None:
         self.assertFalse((ROOT / "src/__init__.py").exists())
