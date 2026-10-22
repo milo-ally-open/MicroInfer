@@ -58,7 +58,8 @@ class InProcessModelWorker:
             }.get(request.phase.value)
             if operation is None:
                 raise ValueError(f"Unsupported model execution phase: {request.phase.value}")
-            step = self.invoke(operation, request.request_id, request.token_budget)
+            method = getattr(self.model_adapter, operation)
+            step = method(request.request_id, request.token_budget)
             results.append(
                 WorkerResult(
                     request_id=request.request_id,

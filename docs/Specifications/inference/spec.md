@@ -124,12 +124,12 @@
 - **AC-33.3** beam search、`use_cache=false`、自訂 GenerationMixin kwargs 和非預設 Cache implementation 以明確錯誤拒絕；不回退至不受排程的整段 `generate()`。
 - **AC-33.4** 假模型／合成 cache 測試驗證 prefill、decode、EOS、max token、request 隔離及取消釋放；真模型相容性仍需固定 revision 的 GPU 驗收。
 
-### REQ-34：為未來批次執行提供可驗證的規劃與 cache 預留邏輯
+### REQ-34：Scheduler 依 token 預算建立線上批次
 
-- **AC-34.1** `engine/batch_planner.py` 只依傳入的序列快照建立不可變批次計畫；尊重序列數與 scheduled-token 上限，每個 decode 序列分配一個 token，prefill 可按 chunk 上限分段並提供 prompt offset／是否最後一段。
-- **AC-34.2** 批次計畫每輪最多包含同一 request 一次，並回傳可供下一輪使用的輪轉 cursor；輸入進度或限制無效時明確拋出 `ValueError`。
-- **AC-34.3** `KVCacheManager.reserve_batch()` 以全有或全無方式建立 lease；容量不足不改變已用 block 狀態，重複／空 request ID 或非法 token 數在配置前拒絕；成功 lease 可個別釋放並重用 block ID。
-- **AC-34.4** 此批次規劃及批量預留邏輯不會被描述成線上 batched forward／continuous batching，也不宣稱規劃用 block table 映射至實體 GPU cache；單元測試不載入模型或 CUDA。
+- **AC-34.1** 線上 `TokenScheduler.schedule_batch()` 呼叫 `engine/batch_planner.py`，批次尊重活動序列數與 scheduled-token 上限；同一階段的多個 decode 各分配一個 token，多個完整 prompt prefill 可共用一批。
+- **AC-34.2** 每個批次中的 request ID 唯一；規劃輸入進度或限制無效時明確拋出 `ValueError`。目前線上不切分 prefill，也不混合 prefill/decode。
+- **AC-34.3** `KVCacheManager.reserve_batch()` 以全有或全無方式建立邏輯 lease；容量不足不改變已用 block 狀態，成功 lease 可個別釋放並重用 block ID。此 helper 目前不接入線上 Engine 准入。
+- **AC-34.4** Engine 將 `ScheduledBatch` 傳至 `Worker.execute_batch()`，並驗證逐 request 結果；Mage-VL Runner 目前仍逐筆 forward。文件不得因此宣稱 tensor-level batched forward、continuous batching 或實體 GPU cache page。
 
 ### REQ-35：提供不依賴推論服務 import 的 Mage-VL 能力探測範例
 
@@ -156,15 +156,40 @@
 - **AC-37.4** 拆分保留原始模型 module attribute 名稱與生成方法簽章，使固定 checkpoint 的 state-dict 路徑及現有 Adapter／Runner 呼叫契約不變；真實權重相容性須另外執行模型整合驗收。
 - **AC-37.5** 此次不載入權重、不啟動 CUDA/GPU、不宣稱模型輸出等價或效能改善；文件標明靜態檢查與未執行的實機驗收。
 
+### REQ-38：Model Runner 以單次 forward 執行相容的多 request 批次
+
+- **AC-38.1** `execute_batch(requests)` 為每個 request 回傳獨立結果及生成狀態；相容輸入可在同一次模型 forward 共同 prefill 或 decode，Cache 與抽樣狀態不得跨 request 混用。
+- **AC-38.2** 不相容的影像／影片 tensor 形狀可按明確能力策略拆批或回退單 request；不可靜默丟失視覺輸入、位置資訊或結果歸屬。
+- **AC-38.3** 假模型測試驗證 batch 輸入對齊、結果映射、cache 隔離及錯誤時整批收尾；固定 revision 多模態整合需在專用模型環境另行驗收。
+
+### REQ-39：支援 token-budgeted chunked prefill 與階段混合排程
+
+- **AC-39.1** Scheduler 維護等待／執行佇列，依 `max_num_seqs` 及每輪 token budget 產生 chunked prefill、batched decode 或混合批次；prefill offset 和完成狀態可逐輪追蹤。
+- **AC-39.2** Worker 只向模型 Cache 追加本輪 prompt chunk；輸入影像／影片視覺特徵不因文字 chunking 重複計算或錯位。
+- **AC-39.3** 同一 request 每輪最多出現一次；取消、逾時、Worker 錯誤及 SSE 斷線均走共用清理，其他 request 狀態不受影響。
+
+### REQ-40：KV Cache Manager 對應每 request 的實際 Cache 生命週期
+
+- **AC-40.1** Manager 可識別 Worker 為 request 使用的實際 Cache 物件／不透明 handle、已處理長度及追加結果；執行狀態與 Cache 長度不一致時明確失敗。
+- **AC-40.2** 成功、取消、逾時、錯誤及 Worker 關閉時均釋放對應 Cache 參照；管理器不把 Transformers Cache 稱為實體 paged block。
+- **AC-40.3** 假 Cache 測試驗證長度更新、request 隔離及各終止路徑釋放；GPU 記憶體與多模態 cache 行為另行實測。
+
+### REQ-41：以 EngineClient 分離 API Server 與 Engine Core 程序
+
+- **AC-41.1** API Server 透過 `EngineClient` 提交請求、讀取逐 request 事件及取消；API route 不直接持有 Engine Core 或 Model Worker 物件。
+- **AC-41.2** Engine Core 在獨立程序中協調 Scheduler、KV 管理和 GPU Worker；程序訊息只傳送可序列化請求資料、事件及錯誤，不傳 GPU tensor 或模型 Cache。
+- **AC-41.3** IPC 支援啟動／就緒、請求錯誤、逾時、客戶端取消與優雅關閉；文字 SSE chunk、順序、finish usage 和 `[DONE]` 與既有 API 契約一致。
+- **AC-41.4** 多程序 fake Worker 測試驗證 API／Engine／Worker PID 隔離、事件串流、取消與資源收尾；真模型驗收不得由 mock 結果替代。
+
 ## 五個元件對照
 
 | 元件 | 程式位置 | 已實作行為／限制 |
 |---|---|---|
 | API Server | `api/` | HTTP、schema、錯誤、SSE/JSON response |
 | Engine Core | `engine/engine.py` | Worker lifecycle、操作分派、Live shutdown；與 API 同進程 |
-| Scheduler | `engine/scheduler.py`、`engine/batch_planner.py` | 線上 Scheduler 執行完整 prompt prefill turn、單 token decode 輪轉；獨立 batch planner 可規劃 chunk，但尚未接入線上路徑 |
+| Scheduler | `engine/scheduler.py`、`engine/batch_planner.py` | 線上規劃同階段多 request prefill/decode 批次並傳至 Worker；不切塊、不混合階段 |
 | KV Cache Manager | `engine/kv_cache.py` | 線上邏輯 block 預留、估算、釋放與 ID 重用；另有原子 batch reservation helper；皆非實體 PagedAttention |
-| Worker／Model Runner | `engine/worker.py`、`models/mage_vl_4b/model_runner.py` | 子程序隔離、IPC、stepwise forward/cache state；目前一個 Worker |
+| Worker／Model Runner | `engine/worker.py`、`models/mage_vl_4b/model_runner.py` | 子程序隔離、批次 IPC、逐 request stepwise forward/cache state；batch item 目前分別 forward |
 
 ## 追蹤矩陣
 
@@ -178,10 +203,14 @@
 | REQ-31 | `engine/scheduler.py`、Engine、Runner | T-24、T-27 |
 | REQ-32 | `engine/kv_cache.py`、Runner cache profile | T-25、T-27 |
 | REQ-33 | `models/mage_vl_4b/model_runner.py`、Adapter | T-24、T-27 |
-| REQ-34 | `engine/batch_planner.py`、`engine/kv_cache.py`、`tests/inference/` | T-28 |
+| REQ-34 | `engine/batch_planner.py`、Scheduler、Worker、`tests/inference/` | T-28、T-37 |
 | REQ-35 | `scripts/mage_vl_4b/test.py`、`scripts/mage_vl_4b/test.yaml`、`scripts/README.md` | T-29、T-33 |
 | REQ-36 | `models/mage_vl_4b/components/`、Mage-VL YAML、`tests/inference/` | T-30、T-31、T-32、T-33 |
 | REQ-37 | `models/mage_vl_4b/components/`、Mage-VL `model_loader.py`、Inference README | T-34 |
+| REQ-38 | Model Runner、Mage-VL 多模態 batch、`tests/inference/` | T-38 |
+| REQ-39 | Scheduler、batch planner、Model Runner、`tests/inference/` | T-39 |
+| REQ-40 | KV Cache Manager、Worker cache adapter、`tests/inference/` | T-40 |
+| REQ-41 | API Server、`EngineClient`、Engine Core IPC、`tests/inference/` | T-41 |
 | REQ-24 | `tests/inference/`、`tests/end2end/` | T-27 |
 
 ## 變更記錄
@@ -190,3 +219,4 @@
 |---|---|
 | 2026-10-20 | 重新定義 vLLM 職責參考下的五元件最小 Engine，補上 Token Scheduler、KV block manager、子程序 Worker 與逐步 Runner 的可驗收行為。 |
 | 2026-10-20 | 新增尚未接入線上路徑的批次規劃／原子 KV lease 驗收規格，以及 scripts 下的離線能力探測範例。 |
+| 2026-10-22 | 將 REQ-34 更新為線上同階段批次規劃，新增 fused Runner batch、chunked/mixed scheduling、實際 Cache lifecycle 與 EngineClient 程序邊界的後續驗收條件。 |

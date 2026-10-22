@@ -108,7 +108,9 @@ engine:
   # 單一 Model Worker 上的輪轉序列數與等待佇列上限。
   max_num_seqs: 4
   max_waiting_requests: 16
-  # 每輪 token 上限；prefill 暫不切塊，需不小於 max_context_tokens。
+  # 短暫合併同階段工作；此等待時間會增加少量首 token latency。
+  batch_wait_seconds: 0.01
+  # 每輪 token 上限；prefill 暫不切塊，需不大於此上限。
   max_num_scheduled_tokens: 8192
   kv_cache:
     block_size_tokens: 16

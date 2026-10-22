@@ -81,6 +81,7 @@ MAX_NEW_TOKENS = int(API_CONFIG["max_new_tokens"])
 MAX_NUM_SEQS = int(ENGINE_CONFIG.get("max_num_seqs", API_CONFIG.get("max_concurrent_requests", 4)))
 MAX_WAITING_REQUESTS = int(ENGINE_CONFIG.get("max_waiting_requests", 16))
 MAX_NUM_SCHEDULED_TOKENS = int(ENGINE_CONFIG.get("max_num_scheduled_tokens", MAX_CONTEXT_TOKENS))
+BATCH_WAIT_SECONDS = float(ENGINE_CONFIG.get("batch_wait_seconds", 0.01))
 if MAX_NUM_SCHEDULED_TOKENS < MAX_CONTEXT_TOKENS:
     raise RuntimeError(
         "engine.max_num_scheduled_tokens must be at least api.max_context_tokens "

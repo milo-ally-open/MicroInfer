@@ -63,7 +63,7 @@ API Server process
 
 ### Engine Core
 
-`engine/engine.py` 擁有 Worker lifecycle、推論操作、Scheduler／KV 管理與 Live session 關閉順序。API route 不直接呼叫模型 Adapter／Runner。一般 chat、SSE、影片與 Live 生成走同一個逐步排程迴圈；Worker RPC 每次只執行 prefill 或一個 decode step。
+`engine/engine.py` 擁有 Worker lifecycle、推論操作、Scheduler／KV 管理與 Live session 關閉順序。API route 不直接呼叫模型 Adapter／Runner。Engine Core 背景迴圈集中取得批次、呼叫 Worker、更新狀態並派送逐請求事件；一般 chat、SSE、影片與 Live 生成共用此路徑。
 
 ### Token Scheduler
 
@@ -72,10 +72,11 @@ API Server process
 - `engine.max_num_seqs` 限制同時保留生成狀態的序列數；`max_waiting_requests` 限制等待佇列。
 - Prefill 是完整 prompt 的單一 turn，Scheduler 將 `prompt_tokens` 作為該輪預算。由於尚未實作 chunked prefill，prompt 必須不超過 `max_num_scheduled_tokens`。
 - Decode 每個 turn 僅分配一個 token。完成當輪後，未完成 request 放回佇列尾端，讓其他活動序列先執行。
-- 每輪只呼叫單一 request；這是公平逐步排程，沒有將多個序列合併成一個 batched GPU forward。
+- `batch_planner.py` 目前規劃同階段 prefill 或 decode 批次，尊重活動序列與 token 預算；`batch_wait_seconds` 給近時到達請求一個短暫合併窗口。
+- 目前不切分 prefill，不混合 prefill 與 decode。批次內 Mage-VL Runner 仍逐 request 執行獨立 forward，未合併成一次 GPU forward。
 - 等待佇列滿時回傳 `429`；取消、模型錯誤及串流中斷均從排程狀態移除 request。
 
-`engine/batch_planner.py` 是供未來批次 Model Runner 接入的純規劃 helper：它以序列進度快照、序列上限、token 預算及可選 prefill chunk 大小建立單輪計畫，decode 工作每序列分配一個 token，prefill 記錄 offset／chunk 長度，並回傳輪轉 cursor。該 helper 尚未被 `InferenceEngine` 或線上 `TokenScheduler` 呼叫；目前仍是一輪一個 request、完整 prompt prefill。
+`engine/batch_planner.py` 由線上 `TokenScheduler.schedule_batch()` 呼叫，輸出 `ScheduledBatch` 並由 Engine Core 傳至 Worker。Runner 目前依序執行批次中的 work items；批次 RPC 與共用 token 規劃已接入，但不代表 tensor-level batched forward、chunked prefill、混合排程或 continuous batching。
 
 ### KV Cache Manager
 
@@ -125,7 +126,7 @@ Runner 的生成狀態以 request ID 保存輸入 IDs、attention mask、`past_k
 
 ## nano-vLLM 參考與本專案候選設計
 
-> 本節是基於目前程式的架構評估，尚未納入已確認需求，也不表示下述批次執行或實體 KV page 已實作。
+> 本節依 nano-vLLM 的 Engine／Scheduler／Runner 協作方式評估本專案現況；已接入線上的同階段批次仍逐 request forward，實體 KV page 尚未實作。
 
 ### 可借鑑的設計
 
@@ -137,13 +138,13 @@ nano-vLLM 的公開範例以文字 prompt 呼叫 Qwen3，並以自訂 attention/
 |---|---|---|
 | API Server | 接收請求、整理輸入、輸出結果 | 保留目前 FastAPI 路由、schema、OpenAI 相容回應和 SSE 契約 |
 | Engine Core | 驅動每輪排程、執行及結果回收 | 統一管理推論請求狀態，協調 Scheduler、Worker 和每請求事件輸出 |
-| Scheduler | 從等待／執行序列選取本輪工作及 token 數 | 先以現有公平策略產生多筆工作計畫；是否採 prefill-first、chunked prefill 需依 SSE 延遲與混合媒體負載決定 |
+| Scheduler | 從等待／執行序列選取本輪工作及 token 數 | 線上已透過 `batch_planner` 產生同階段多筆計畫；chunked prefill／prefill-decode 混合仍待模型 Cache 能力驗證 |
 | KV Cache Manager | 管理可由模型注意力實際索引的 KV blocks | 先保留容量帳本；只有 Runner／attention 能讀寫實體 page 後，才稱為實體 KV block manager |
-| Worker／Model Runner | 批次準備張量、執行模型並管理 GPU cache | Worker 子程序獨佔模型、GPU tensor 和 Transformers Cache；以批次執行介面逐步取代目前單 request RPC |
+| Worker／Model Runner | 批次準備張量、執行模型並管理 GPU cache | Worker 子程序獨佔模型、GPU tensor 和 Transformers Cache；批次 RPC 已接入，但 Runner 目前分別執行各 request 的 forward |
 
 ### 對照目前版本
 
-目前 request 狀態分散在 `InferenceEngine` 協程、`TokenScheduler` 的 `_RequestState`、Worker 內的 `MageVLModelRunner` 生成狀態及 Adapter 任務中。Scheduler 每輪只授權一個 request，Worker RPC 也只處理一個 request；`batch_planner.py` 目前是未接入線上循環的純規劃 helper。`KVCacheManager` 只記錄邏輯容量和 lease，實際 `past_key_values`／Transformers Cache tensor 留在 Worker，尚無供 attention 使用的實體 page table。這與 nano-vLLM 的批次執行和實體 KV block 管理有明確差距。
+Engine Core 背景迴圈管理本輪 Worker 批次與逐 request 事件；request 的準備／adapter task／Runner cache 仍分別由 Engine caller、Adapter 和 Runner 持有。Scheduler 已將 `batch_planner.py` 接在線上同階段 prefill/decode 路徑，Worker RPC 一次可傳多筆 work item；Mage-VL Runner 仍依序呼叫單 request forward。`KVCacheManager` 只記錄邏輯容量和 lease，實際 `past_key_values`／Transformers Cache tensor 留在 Worker，尚無供 attention 使用的實體 page table。這與 nano-vLLM 的融合批次執行和實體 KV block 管理仍有差距。
 
 ### 建議的最小目標形狀
 
@@ -158,17 +159,17 @@ FastAPI routes / 現有 JSON、SSE 序列化
 
 以 `engine/sequence.py`（或同等單一模組）集中定義 `SequenceState`：request ID、來源類型、執行階段、prompt 進度、輸出上限及完成狀態。不要把模型 tensor 或 Transformers Cache 放入 Engine 狀態；它們由 Worker 按 request ID 保管。Live session 的生命週期仍由 `LiveSessionManager` 管理；每次送入模型的影格／片段生成才是可排程工作，不要把長連線 session 本身當作一條持續佔用 Scheduler 的 decode sequence。
 
-Engine 每輪取得 `ScheduledWork[]`，至少描述 request ID、prefill/decode 階段、prompt offset、token budget 和完成／取消資訊；Worker 回傳對應的 per-request step result。Engine 更新序列狀態並將文字增量或完成事件放入該 request 的事件佇列，現有 route 從佇列輸出既有 JSON／SSE 格式。第一階段可令 `schedule_batch()` 回傳多筆工作但仍逐筆執行，以穩定狀態與事件流程；之後再新增 Worker 批次 RPC 和 Model Runner 真正的 batched forward。能力檢查需明確標示模型是否支援批次 prefill、decode 及 chunked prefill；不支援時保留單 request fallback。
+Engine 每輪取得 `ScheduledWork[]`，描述 request ID、prefill/decode 階段、prompt offset 和 token budget；Worker 回傳對應的 per-request step result。Engine 更新序列狀態並將文字增量或完成事件放入該 request 的事件佇列，現有 route 從佇列輸出既有 JSON／SSE 格式。現行 Worker 批次 RPC 及同階段規劃已在線上執行，Mage-VL Runner 仍逐筆 forward。後續須先依多模態 tensor 與 cache 形狀實作、驗證單次多 request forward，再接入 chunked prefill 或混合階段排程；目前各請求仍保留獨立 `past_key_values` 和逐 token SSE。
 
 Worker 已是獨立程序，因此 GPU tensor、cache tensor 及實體 KV page 的所有權必須留在 Worker。Engine 的 KV 管理器可做請求准入與預算，但 reservation 必須與 Worker 實際可用容量協調；不能只在 Engine 配 block ID，就宣稱已取得 GPU page。現有圖片、影片、Live frame 的 IPC 輸入契約可逐步演進，但不可為了批次排程把完整影片或 GPU tensor 搬進 Engine 狀態。
 
 ### KV Cache 與排程的遷移順序
 
-1. 擴充 `scripts/mage_vl_4b/test.py`，在本機權重可用時記錄兩筆以上輸入的批次相容性、各輸入 cache 行為及 GPU 峰值；目前工具只探測單一輸入，不能據此宣稱 Mage-VL 可批次執行。
-2. 集中化 Engine 序列狀態，讓 Scheduler 提供 `schedule_batch()` 和結果回收流程；先維持 batch size 1，使用 Worker mock 驗證併發、取消、錯誤和 SSE 事件順序。
-3. 在模型能力探測及實測證明可行後，新增 Worker 批次 RPC 與 Mage-VL Model Runner 批次執行；不支援批次的路徑保留單筆執行。
-4. 只有在確認 Mage-VL attention/cache 能消費 slot mapping／block table，並能在 Worker 內配置及回收實體 GPU pages 後，才實作實體 KV block pool 或 attention 替換。現有 `past_key_values` 步進能力本身不足以證明這些介面存在。
-5. 以 mixed chat、影片及 Live 負載量測吞吐、SSE 首 token 延遲、後續 token 間隔、取消回收和顯存峰值，再決定 prefill/decode 優先級、chunk 大小及是否需要 prefix cache、CUDA Graph 或多 Worker。nano-vLLM 的 prefill 優先策略不應直接成為本專案預設，因為新請求的首 token 延遲、既有串流的 token 間隔及 Live 片段等待時間需要共同權衡。
+1. 擴充 `scripts/mage_vl_4b/test.py` 或另加不匯入 `src/` 的假模型測試，記錄兩筆以上圖片／影片輸入的 tensor 相容性及各自 Cache 長度；目前能力探測仍以單一輸入為主。
+2. 為形狀相容的輸入實作一次多 request forward，並以 fake model 驗證 batch 維度、結果映射、取消與 Cache 隔離；不相容的輸入明確 fallback。
+3. 多序列 Cache 驗收後，再實作 chunked prefill 與 prefill/decode 混合排程；視覺特徵只能在首次前向處理，不能因文字 chunk 重複編碼。
+4. 讓 KV 管理契約連到 Worker 內每 request 的 Transformers Cache handle／長度／釋放；在 attention 消費 block table 前仍只稱為 Cache lifecycle 管理，不稱實體 paged block。
+5. 以 `EngineClient` 分離 API Server 與 Engine Core，保留現有 Worker 子程序；完成後再量測 mixed chat、影片及 Live 的吞吐、SSE 首 token 延遲、後續 token 間隔、取消回收和顯存峰值。
 
 Prefix cache 應延後評估。多模態快取鍵至少須涵蓋模型與 Processor revision、文字 token、影像／影格內容及預處理設定；只用文字 prompt hash 可能錯誤重用視覺特徵或 KV 狀態。這些是後續驗證項目，不是目前功能或已排定實作承諾。
 

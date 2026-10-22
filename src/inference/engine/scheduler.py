@@ -1,47 +1,53 @@
-"""以公平輪轉方式分配推論請求的 prefill 與 decode token 預算。"""
+"""以等待／執行佇列和 token 預算規劃線上推論批次。"""
 
 from __future__ import annotations
 
 import threading
+import time
 from collections import deque
-from dataclasses import dataclass
+
+from engine.batch_planner import SequenceProgress, plan_batch
+from engine.contracts import ExecutionPhase, ScheduledBatch, ScheduledWorkItem, WorkerResult
 
 
 class SchedulerFullError(RuntimeError):
     """等待佇列及執行序列均已達上限。"""
 
 
-@dataclass(frozen=True)
-class ScheduledTurn:
-    """Scheduler 本輪授予模型執行器的工作與 token 預算。"""
-
-    request_id: str
-    phase: str
-    token_budget: int
-
-
-@dataclass
 class _RequestState:
-    phase: str
-    prompt_tokens: int
-    max_output_tokens: int
-    generated_tokens: int = 0
+    def __init__(self, phase: str, prompt_tokens: int, max_output_tokens: int) -> None:
+        self.phase = phase
+        self.prompt_tokens = prompt_tokens
+        self.max_output_tokens = max_output_tokens
+        self.generated_tokens = 0
 
 
 class TokenScheduler:
-    """限制同時序列數，並逐輪輪轉 prefill 與單 token decode 工作。"""
+    """以 batch planner 從等待／執行佇列選取同階段的 Runner 工作。"""
 
-    def __init__(self, *, max_num_seqs: int, max_waiting_requests: int, max_num_scheduled_tokens: int) -> None:
-        if max_num_seqs < 1 or max_waiting_requests < 0 or max_num_scheduled_tokens < 1:
+    def __init__(
+        self,
+        *,
+        max_num_seqs: int,
+        max_waiting_requests: int,
+        max_num_scheduled_tokens: int,
+        batch_wait_seconds: float = 0.01,
+    ) -> None:
+        if (
+            max_num_seqs < 1 or max_waiting_requests < 0 or max_num_scheduled_tokens < 1
+            or batch_wait_seconds < 0
+        ):
             raise ValueError("Scheduler limits must be positive (waiting requests may be zero).")
         self.max_num_seqs = max_num_seqs
         self.max_waiting_requests = max_waiting_requests
         self.max_num_scheduled_tokens = max_num_scheduled_tokens
+        self.batch_wait_seconds = batch_wait_seconds
         self._condition = threading.Condition()
         self._requests: dict[str, _RequestState] = {}
         self._ready: deque[str] = deque()
+        self._ready_since: float | None = None
+        self._inflight: set[str] = set()
         self._running = False
-        self._current: str | None = None
         self._rounds = 0
 
     def add_request(self, request_id: str, *, prompt_tokens: int, max_output_tokens: int) -> None:
@@ -55,77 +61,146 @@ class TokenScheduler:
         with self._condition:
             if request_id in self._requests:
                 raise ValueError(f"Duplicate scheduler request id: {request_id}")
-            running_count = sum(state.phase != "waiting" for state in self._requests.values())
-            waiting_count = sum(state.phase.startswith("waiting") for state in self._requests.values())
+            running_count = self._running_count()
+            waiting_count = self._waiting_count()
             if running_count >= self.max_num_seqs and waiting_count >= self.max_waiting_requests:
                 raise SchedulerFullError("The inference scheduler is full.")
             phase = "prefill" if running_count < self.max_num_seqs else "waiting_prefill"
             self._requests[request_id] = _RequestState(phase, prompt_tokens, max_output_tokens)
             if phase == "prefill":
+                if not self._ready:
+                    self._ready_since = time.monotonic()
                 self._ready.append(request_id)
             self._condition.notify_all()
 
     def add_atomic_request(self, request_id: str, *, token_budget: int) -> None:
-        """登記尚未拆分為逐 token 呼叫的 Live 工作；仍遵守同一公平執行序列。"""
+        """登記尚未拆分為逐 token 呼叫的 Live 工作。"""
         if token_budget < 1 or token_budget > self.max_num_scheduled_tokens:
             raise ValueError("Atomic request token_budget must fit the per-turn scheduler budget.")
         with self._condition:
             if request_id in self._requests:
                 raise ValueError(f"Duplicate scheduler request id: {request_id}")
             running_count = self._running_count()
-            waiting_count = sum(state.phase.startswith("waiting") for state in self._requests.values())
-            if running_count >= self.max_num_seqs and waiting_count >= self.max_waiting_requests:
+            if running_count >= self.max_num_seqs and self._waiting_count() >= self.max_waiting_requests:
                 raise SchedulerFullError("The inference scheduler is full.")
             phase = "atomic" if running_count < self.max_num_seqs else "waiting_atomic"
             self._requests[request_id] = _RequestState(phase, token_budget, token_budget)
             if phase == "atomic":
+                if not self._ready:
+                    self._ready_since = time.monotonic()
                 self._ready.append(request_id)
             self._condition.notify_all()
 
-    def acquire_turn(self, request_id: str) -> ScheduledTurn:
-        """等待公平輪轉名額，回傳本輪要處理的 token 數。"""
+    def schedule_batch(self) -> ScheduledBatch | None:
+        """以 batch planner 建立一個同階段批次，暫不切分 prompt prefill。"""
         with self._condition:
-            while True:
-                state = self._requests.get(request_id)
-                if state is None:
-                    raise RuntimeError(f"Scheduler request is no longer active: {request_id}")
-                if state.phase.startswith("waiting_") and self._running_count() < self.max_num_seqs:
-                    state.phase = "atomic" if state.phase == "waiting_atomic" else "prefill"
-                    self._ready.append(request_id)
-                if not self._running and self._ready and self._ready[0] == request_id:
-                    self._ready.popleft()
-                    self._running = True
-                    self._current = request_id
-                    self._rounds += 1
-                    tokens = state.prompt_tokens if state.phase == "prefill" else (
-                        state.max_output_tokens if state.phase == "atomic" else 1
-                    )
-                    return ScheduledTurn(request_id, state.phase, tokens)
-                self._condition.wait()
+            if self._running or not self._ready:
+                return None
+            if self.batch_wait_seconds > 0 and self._ready_since is not None:
+                remaining = self.batch_wait_seconds - (time.monotonic() - self._ready_since)
+                if remaining > 0:
+                    self._condition.wait(timeout=remaining)
+                    if self._running or not self._ready:
+                        return None
+            first = self._requests.get(self._ready[0])
+            if first is None:
+                self._ready.popleft()
+                return None
+            phase = first.phase
+            if phase not in {"prefill", "decode"}:
+                return None
+            eligible = [
+                request_id for request_id in self._ready
+                if request_id in self._requests and self._requests[request_id].phase == phase
+            ]
+            progress = [
+                SequenceProgress(
+                    request_id=request_id,
+                    phase=phase,
+                    prompt_tokens_total=self._requests[request_id].prompt_tokens,
+                    prompt_tokens_processed=(
+                        0 if phase == "prefill" else self._requests[request_id].prompt_tokens
+                    ),
+                    generated_tokens=self._requests[request_id].generated_tokens,
+                )
+                for request_id in eligible
+            ]
+            plan = plan_batch(
+                progress,
+                max_num_seqs=self.max_num_seqs,
+                max_num_scheduled_tokens=self.max_num_scheduled_tokens,
+            )
+            # 若 token 預算只容許部分 prefill，延後該 request，避免假裝 Runner 已支援 chunked prefill。
+            selected_ids = {
+                item.request_id
+                for item in plan.sequences
+                if item.phase == "decode"
+                or item.token_budget == self._requests[item.request_id].prompt_tokens
+            }
+            if not selected_ids:
+                return None
+            selected = [item for item in plan.sequences if item.request_id in selected_ids]
+            scheduled = tuple(
+                ScheduledWorkItem(
+                    request_id=item.request_id,
+                    phase=ExecutionPhase(item.phase),
+                    token_budget=item.token_budget,
+                    prompt_offset=item.prompt_offset,
+                )
+                for item in selected
+            )
+            total_tokens = sum(item.token_budget for item in scheduled)
+            batch = ScheduledBatch(scheduled, total_tokens)
+            self._ready = deque(request_id for request_id in self._ready if request_id not in selected_ids)
+            self._ready_since = time.monotonic() if self._ready else None
+            self._inflight = set(selected_ids)
+            self._running = True
+            self._rounds += 1
+            return batch
 
-    def complete_turn(self, request_id: str, *, generated_tokens: int = 0, finished: bool = False) -> None:
+    def complete_batch(self, results: tuple[WorkerResult, ...] | list[WorkerResult]) -> None:
+        """套用批次結果，將未完成 request 放回 decode 佇列。"""
+        result_ids = [result.request_id for result in results]
         with self._condition:
-            if not self._running or self._current != request_id:
-                raise RuntimeError("Only the request holding the current scheduler turn can complete it.")
-            state = self._requests[request_id]
-            state.generated_tokens += generated_tokens
+            if not self._running or len(result_ids) != len(set(result_ids)) or set(result_ids) != self._inflight:
+                raise RuntimeError("Worker batch results do not match the in-flight scheduler batch.")
             self._running = False
-            self._current = None
-            if finished or state.generated_tokens >= state.max_output_tokens:
-                del self._requests[request_id]
-                self._promote_waiting()
-            else:
-                state.phase = "decode"
-                self._ready.append(request_id)
+            self._inflight.clear()
+            for result in results:
+                state = self._requests.get(result.request_id)
+                if state is None:
+                    continue
+                state.generated_tokens += result.generated_tokens
+                if result.finished or state.generated_tokens >= state.max_output_tokens:
+                    del self._requests[result.request_id]
+                else:
+                    state.phase = "decode"
+                    if not self._ready:
+                        self._ready_since = time.monotonic()
+                    self._ready.append(result.request_id)
+            self._promote_waiting()
+            self._condition.notify_all()
+
+    def abort_batch(self, request_ids: set[str]) -> None:
+        """Worker 批次失敗時清除本輪排程狀態，等待 Engine 統一釋放各請求資源。"""
+        with self._condition:
+            if not self._running or request_ids != self._inflight:
+                raise RuntimeError("Only the active Worker batch can be aborted.")
+            self._running = False
+            self._inflight.clear()
+            for request_id in request_ids:
+                self._requests.pop(request_id, None)
+            self._ready = deque(request_id for request_id in self._ready if request_id not in request_ids)
+            self._ready_since = time.monotonic() if self._ready else None
+            self._promote_waiting()
             self._condition.notify_all()
 
     def cancel_request(self, request_id: str) -> None:
         with self._condition:
-            if self._current == request_id:
-                self._running = False
-                self._current = None
             self._requests.pop(request_id, None)
             self._ready = deque(item for item in self._ready if item != request_id)
+            self._ready_since = time.monotonic() if self._ready else None
+            # In-flight work remains registered until complete_batch/abort_batch releases the batch lock.
             self._promote_waiting()
             self._condition.notify_all()
 
@@ -137,12 +212,15 @@ class TokenScheduler:
         with self._condition:
             return {
                 "running": self._running_count(),
-                "waiting": sum(state.phase.startswith("waiting") for state in self._requests.values()),
+                "waiting": self._waiting_count(),
                 "scheduled_rounds": self._rounds,
             }
 
     def _running_count(self) -> int:
         return sum(not state.phase.startswith("waiting") for state in self._requests.values())
+
+    def _waiting_count(self) -> int:
+        return sum(state.phase.startswith("waiting") for state in self._requests.values())
 
     def _promote_waiting(self) -> None:
         slots = self.max_num_seqs - self._running_count()
@@ -151,5 +229,7 @@ class TokenScheduler:
                 break
             if state.phase.startswith("waiting_"):
                 state.phase = "atomic" if state.phase == "waiting_atomic" else "prefill"
+                if not self._ready:
+                    self._ready_since = time.monotonic()
                 self._ready.append(request_id)
                 slots -= 1

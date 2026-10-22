@@ -71,27 +71,32 @@ class MageVLModelRunner:
         return self._stepwise.decode(request_id)
 
     def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> tuple[WorkerResult, ...]:
-        """執行 Runner 批次入口；目前固定接受單請求，待多模態拼批驗證後擴充。"""
-        if len(requests) != 1:
-            raise ValueError("Mage-VL batch execution currently requires exactly one request.")
-        request = requests[0]
-        if request.phase is ExecutionPhase.PREFILL:
-            step = self.prefill_generation(request.request_id)
-        elif request.phase is ExecutionPhase.DECODE:
-            if request.token_budget != 1:
-                raise ValueError("Mage-VL decode execution requires a one-token budget.")
-            step = self.decode_generation_step(request.request_id)
-        else:
-            raise ValueError(f"Mage-VL does not support execution phase: {request.phase.value}")
-        return (
-            WorkerResult(
-                request_id=request.request_id,
-                text_delta=str(step.get("text", "")),
-                generated_tokens=int(step.get("generated_tokens", 0)),
-                finished=bool(step.get("done", False)),
-                finish_reason=step.get("finish_reason"),
-            ),
-        )
+        """逐請求執行一個同階段批次；張量級多序列單次 forward 尚未啟用。"""
+        if not requests:
+            raise ValueError("Mage-VL batch execution requires at least one request.")
+        request_ids = [request.request_id for request in requests]
+        if len(request_ids) != len(set(request_ids)):
+            raise ValueError("Mage-VL batch request IDs must be unique.")
+        results: list[WorkerResult] = []
+        for request in requests:
+            if request.phase is ExecutionPhase.PREFILL:
+                step = self.prefill_generation(request.request_id)
+            elif request.phase is ExecutionPhase.DECODE:
+                if request.token_budget != 1:
+                    raise ValueError("Mage-VL decode execution requires a one-token budget.")
+                step = self.decode_generation_step(request.request_id)
+            else:
+                raise ValueError(f"Mage-VL does not support execution phase: {request.phase.value}")
+            results.append(
+                WorkerResult(
+                    request_id=request.request_id,
+                    text_delta=str(step.get("text", "")),
+                    generated_tokens=int(step.get("generated_tokens", 0)),
+                    finished=bool(step.get("done", False)),
+                    finish_reason=step.get("finish_reason"),
+                )
+            )
+        return tuple(results)
 
     def finish_generation(self, request_id: str) -> tuple[Any, str]:
         return self._stepwise.finish(request_id)

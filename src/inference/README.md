@@ -28,13 +28,13 @@
 | 模型元件 | `models/mage_vl_4b/components/` | 固定 revision 的模型設定、視覺塔、多模態組裝、生成頭、逐步生成狀態及替換登記 |
 | 通用媒體／Live session | `media/video.py`、`media/live_sessions.py` | 上傳影片暫存、通用 metadata／影格讀取及即時 session 生命週期 |
 
-Scheduler 為活動 chat、影片及 Live 工作每輪分配 token 預算；滿載時等待佇列耗盡後回 `429`。prefill 不切塊，完整 prompt 必須不大於 `engine.max_num_scheduled_tokens`。每輪只執行一個 request，尚無 batched forward 或 continuous batching。
+Scheduler 為活動 chat、影片及 Live 工作維護等待／執行佇列，依 `max_num_seqs` 和 `max_num_scheduled_tokens` 建立同階段的 prefill 或 decode 批次；滿載時等待佇列耗盡後回 `429`。prefill 不切塊，完整 prompt 必須不大於 `engine.max_num_scheduled_tokens`。`batch_wait_seconds` 提供短暫請求合併窗口。
 
-Engine 已將每輪工作經 `Worker.execute_batch(requests)` 傳到 Mage-VL `ModelRunner.execute_batch(requests)`；目前 Runner 明確限制每批一個 request，這是穩定介面，不代表多請求共用一次模型 forward。文字 SSE 仍由逐 token `text` 事件輸出。
+Engine Core 背景迴圈取得 Scheduler 批次、一次呼叫 Worker，依每個 request ID 更新狀態並把 token 事件送回對應串流。Mage-VL `ModelRunner.execute_batch(requests)` 目前逐項執行獨立模型 forward，因此已有線上多請求排程與批次 IPC，但尚未做到一次 forward 處理多個 request。文字 SSE 仍由逐 token `text` 事件輸出。
 
 Engine 對每個生成請求依序執行輸入準備、KV 容量預留、Scheduler 准入、Worker prefill／decode、狀態更新及事件發布。成功、拒絕、取消、Worker 逾時或異常均經同一個 `finally` 收尾，回收 Scheduler 名額與邏輯 KV reservation，並取消可能部分建立的 Runner 狀態。`stream_chat()` 逐個 token 發出文字事件；API 路由將其序列化為 OpenAI SSE chunk，取消 HTTP 串流時會關閉生成 iterator 以觸發收尾。
 
-`engine/batch_planner.py` 提供可單獨測試的批次規劃邏輯，能依 decode／prefill token 預算、序列上限、chunk 大小及輪轉 cursor 建立純資料計畫；`KVCacheManager.reserve_batch()` 能原子預留一組邏輯 lease。兩者目前均未接入線上 Engine／Worker，不能據此宣稱服務已支援 chunked prefill 或 batched inference。
+`engine/batch_planner.py` 已由線上 Scheduler 呼叫，規劃同階段 prefill/decode 工作並驅動 Worker；目前不做 chunked prefill 或 prefill/decode 混合批次。Runner 對批次內各序列仍分別 forward，不能稱為 fused batched forward 或 continuous batching。`KVCacheManager.reserve_batch()` 仍是未接入線上的原子邏輯 lease helper。
 
 KV Cache Manager 追蹤邏輯 block 容量與 request-to-block table，完成、取消或失敗時回收 block ID。HF Cache tensor 仍由 Runner 動態配置；邏輯 reservation 不等於實體 GPU 分頁，不支援 prefix cache 或 VRAM pool。`/health` 的 bytes 是根據模型層數、KV heads、head dimension 和 dtype 估算，並非 CUDA 記憶體實測。
 

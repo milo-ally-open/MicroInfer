@@ -12,7 +12,9 @@ INFERENCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "inference"
 sys.path.insert(0, str(INFERENCE_ROOT))
 
 from engine.engine import InferenceEngine, InferenceResult
+from engine.contracts import ExecutionPhase, WorkerResult
 from engine.errors import InferenceError
+from engine.scheduler import TokenScheduler
 from engine.worker import InProcessModelWorker
 
 
@@ -164,6 +166,35 @@ class EngineContractTests(unittest.TestCase):
         self.assertEqual(runner.loaded, 1)
         self.assertEqual(runner.closed, 1)
 
+    def test_scheduler_builds_prefill_and_decode_batches_with_token_budget(self) -> None:
+        scheduler = TokenScheduler(
+            max_num_seqs=4,
+            max_waiting_requests=4,
+            max_num_scheduled_tokens=8,
+            batch_wait_seconds=0,
+        )
+        scheduler.add_request("A", prompt_tokens=3, max_output_tokens=2)
+        scheduler.add_request("B", prompt_tokens=4, max_output_tokens=2)
+        prefill = scheduler.schedule_batch()
+        self.assertIsNotNone(prefill)
+        assert prefill is not None
+        self.assertEqual([item.phase for item in prefill.work_items], [ExecutionPhase.PREFILL, ExecutionPhase.PREFILL])
+        self.assertEqual(prefill.total_scheduled_tokens, 7)
+        scheduler.complete_batch([
+            WorkerResult("A", text_delta="a", generated_tokens=1),
+            WorkerResult("B", text_delta="b", generated_tokens=1),
+        ])
+        decode = scheduler.schedule_batch()
+        self.assertIsNotNone(decode)
+        assert decode is not None
+        self.assertEqual([item.phase for item in decode.work_items], [ExecutionPhase.DECODE, ExecutionPhase.DECODE])
+        self.assertEqual(decode.total_scheduled_tokens, 2)
+        scheduler.complete_batch([
+            WorkerResult("A", text_delta="x", generated_tokens=1, finished=True),
+            WorkerResult("B", text_delta="y", generated_tokens=1, finished=True),
+        ])
+        self.assertEqual(scheduler.snapshot()["running"], 0)
+
     def test_chat_uses_prefill_decode_and_releases_cache_blocks(self) -> None:
         engine, _, adapter = self.make_engine()
         engine.start()
@@ -214,7 +245,7 @@ class EngineContractTests(unittest.TestCase):
         self.assertFalse(first.is_alive())
         self.assertFalse(second.is_alive())
         self.assertEqual(adapter.turns[:2], [("A", "prefill"), ("B", "prefill")])
-        self.assertEqual(engine.scheduler.snapshot()["scheduled_rounds"], 4)
+        self.assertEqual(engine.scheduler.snapshot()["scheduled_rounds"], 3)
         engine.close()
 
     def test_scheduler_rejects_when_sequence_and_waiting_limits_are_full(self) -> None:

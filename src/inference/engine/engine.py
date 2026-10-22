@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import queue
 import threading
 import time
 import uuid
@@ -11,7 +12,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from engine.contracts import ExecutionPhase, ScheduledWorkItem
 from engine.errors import InferenceError
 from engine.kv_cache import KVCacheManager
 from engine.scheduler import SchedulerFullError, TokenScheduler
@@ -42,6 +42,17 @@ class InferenceStreamEvent:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class _GenerationContext:
+    """由 Engine Core 排程、並將結果送至單一 API stream 的請求狀態。"""
+
+    request_id: str
+    finish_operation: str
+    events: queue.Queue[Any] = field(default_factory=queue.Queue)
+    terminal: bool = False
+    cancelled: bool = False
+
+
 class InferenceEngine:
     """在 API Server 與模型 Worker 之間執行排程、快取預留及結果協調。"""
 
@@ -53,6 +64,7 @@ class InferenceEngine:
         max_concurrent_requests: int,
         max_waiting_requests: int = 16,
         max_num_scheduled_tokens: int = 8192,
+        batch_wait_seconds: float = 0.01,
         kv_cache_block_size_tokens: int = 16,
         kv_cache_capacity_tokens: int = 32768,
         max_video_bytes: int = 209715200,
@@ -63,6 +75,7 @@ class InferenceEngine:
             max_num_seqs=max_concurrent_requests,
             max_waiting_requests=max_waiting_requests,
             max_num_scheduled_tokens=max_num_scheduled_tokens,
+            batch_wait_seconds=batch_wait_seconds,
         )
         self.kv_cache = KVCacheManager(
             block_size_tokens=kv_cache_block_size_tokens,
@@ -72,6 +85,11 @@ class InferenceEngine:
         self._state = "new"
         self._state_lock = threading.Lock()
         self._live_sessions: Any = None
+        self._contexts: dict[str, _GenerationContext] = {}
+        self._contexts_lock = threading.RLock()
+        self._dispatcher_stop = threading.Event()
+        self._scheduler_wakeup = threading.Event()
+        self._dispatcher: threading.Thread | None = None
 
     @property
     def state(self) -> str:
@@ -99,6 +117,11 @@ class InferenceEngine:
             raise
         with self._state_lock:
             self._state = "ready"
+        self._dispatcher_stop.clear()
+        self._dispatcher = threading.Thread(
+            target=self._dispatch_batches, name="inference-engine-core", daemon=True
+        )
+        self._dispatcher.start()
 
     def close(self) -> None:
         with self._state_lock:
@@ -108,6 +131,10 @@ class InferenceEngine:
         if self._live_sessions is not None:
             self._live_sessions.stop_all()
         self.scheduler.wait_idle()
+        self._dispatcher_stop.set()
+        self._scheduler_wakeup.set()
+        if self._dispatcher is not None:
+            self._dispatcher.join(timeout=30)
         try:
             self.worker.close()
         finally:
@@ -132,13 +159,12 @@ class InferenceEngine:
         *,
         on_admitted: Any = None,
     ) -> Iterator[InferenceStreamEvent]:
-        """執行可由 Worker 分步生成的工作，並逐輪讓出 Token Scheduler。"""
+        """準備並登記請求；Engine Core 背景迴圈負責排程、執行及逐事件回傳。"""
         self._require_ready()
         request_id = uuid.uuid4().hex
         prepared = False
-        scheduled = False
-        finished = False
         lease_created = False
+        context: _GenerationContext | None = None
         try:
             # prepare 可能在內部建立部分狀態後失敗；之後一律執行冪等取消清理。
             prepared = True
@@ -152,6 +178,9 @@ class InferenceEngine:
                 raise InferenceError(429, "The KV cache token capacity is exhausted; retry after active requests finish.")
             lease_created = True
             self.worker.invoke("bind_generation_cache", request_id, lease.block_ids)
+            context = _GenerationContext(request_id=request_id, finish_operation=finish_operation)
+            with self._contexts_lock:
+                self._contexts[request_id] = context
             try:
                 self.scheduler.add_request(
                     request_id, prompt_tokens=prompt_tokens, max_output_tokens=max_output_tokens
@@ -160,56 +189,109 @@ class InferenceEngine:
                 raise InferenceError(429, "The inference scheduler is full; retry after active requests finish.") from exc
             except ValueError as exc:
                 raise InferenceError(413, "The prompt exceeds the scheduler's per-turn token budget.") from exc
-            scheduled = True
             if on_admitted is not None:
                 on_admitted()
-            yield InferenceStreamEvent("start", prompt_tokens=prompt_tokens)
-
+            context.events.put(InferenceStreamEvent("start", prompt_tokens=prompt_tokens))
+            self._scheduler_wakeup.set()
             while True:
-                turn = self.scheduler.acquire_turn(request_id)
-                try:
-                    work_item = ScheduledWorkItem(
-                        request_id=request_id,
-                        phase=ExecutionPhase(turn.phase),
-                        token_budget=turn.token_budget,
-                    )
-                    results = self.worker.execute_batch((work_item,))
-                    if len(results) != 1 or results[0].request_id != request_id:
-                        raise RuntimeError("Model Worker returned an invalid single-request batch result.")
-                    step = results[0]
-                    generated_tokens = step.generated_tokens
-                    done = step.finished
-                    self.scheduler.complete_turn(
-                        request_id, generated_tokens=generated_tokens, finished=done
-                    )
-                except BaseException:
-                    self.scheduler.cancel_request(request_id)
-                    scheduled = False
-                    raise
-                if step.text_delta:
-                    yield InferenceStreamEvent("text", text=step.text_delta)
-                if done:
-                    result = self.worker.invoke(finish_operation, request_id)
-                    finished = True
-                    yield InferenceStreamEvent(
-                        "finish",
-                        text=result.content,
-                        prompt_tokens=result.prompt_tokens,
-                        completion_tokens=result.completion_tokens,
-                        finish_reason=result.finish_reason,
-                        metadata=result.metadata,
-                    )
+                event = context.events.get()
+                if isinstance(event, BaseException):
+                    raise event
+                yield event
+                if event.kind == "finish":
                     return
         finally:
-            if scheduled:
-                self.scheduler.cancel_request(request_id)
-            if lease_created:
-                self.kv_cache.release(request_id)
-            if prepared and not finished:
-                try:
-                    self.worker.invoke("cancel_generation", request_id)
-                except BaseException:
-                    pass
+            if context is not None:
+                self._cancel_context(context)
+            else:
+                if lease_created:
+                    self.kv_cache.release(request_id)
+                if prepared:
+                    self._cancel_worker_generation(request_id)
+
+    def _dispatch_batches(self) -> None:
+        """集中執行 Scheduler 批次，並把每個結果送回對應的請求 stream。"""
+        while not self._dispatcher_stop.is_set():
+            batch = self.scheduler.schedule_batch()
+            if batch is None:
+                self._scheduler_wakeup.wait(timeout=0.1)
+                self._scheduler_wakeup.clear()
+                continue
+            request_ids = {item.request_id for item in batch.work_items}
+            try:
+                results = tuple(self.worker.execute_batch(batch.work_items))
+                self.scheduler.complete_batch(results)
+            except BaseException as exc:
+                self.scheduler.abort_batch(request_ids)
+                for request_id in request_ids:
+                    context = self._get_context(request_id)
+                    if context is not None:
+                        self._fail_context(context, exc)
+                continue
+
+            for result in results:
+                context = self._get_context(result.request_id)
+                if context is None or context.terminal or context.cancelled:
+                    continue
+                if result.text_delta:
+                    context.events.put(InferenceStreamEvent("text", text=result.text_delta))
+                if result.finished:
+                    try:
+                        final = self.worker.invoke(context.finish_operation, context.request_id)
+                        self._finish_context(context, final)
+                    except BaseException as exc:
+                        self._fail_context(context, exc)
+            self._scheduler_wakeup.set()
+
+    def _get_context(self, request_id: str) -> _GenerationContext | None:
+        with self._contexts_lock:
+            return self._contexts.get(request_id)
+
+    def _finish_context(self, context: _GenerationContext, result: InferenceResult) -> None:
+        with self._contexts_lock:
+            if context.terminal or context.cancelled:
+                return
+            context.terminal = True
+            self._contexts.pop(context.request_id, None)
+        self.kv_cache.release(context.request_id)
+        context.events.put(
+            InferenceStreamEvent(
+                "finish",
+                text=result.content,
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+                finish_reason=result.finish_reason,
+                metadata=result.metadata,
+            )
+        )
+
+    def _fail_context(self, context: _GenerationContext, error: BaseException) -> None:
+        with self._contexts_lock:
+            if context.terminal:
+                return
+            context.terminal = True
+            self._contexts.pop(context.request_id, None)
+        self.scheduler.cancel_request(context.request_id)
+        self.kv_cache.release(context.request_id)
+        self._cancel_worker_generation(context.request_id)
+        context.events.put(error)
+
+    def _cancel_context(self, context: _GenerationContext) -> None:
+        with self._contexts_lock:
+            if context.terminal:
+                return
+            context.terminal = True
+            context.cancelled = True
+            self._contexts.pop(context.request_id, None)
+        self.scheduler.cancel_request(context.request_id)
+        self.kv_cache.release(context.request_id)
+        self._cancel_worker_generation(context.request_id)
+
+    def _cancel_worker_generation(self, request_id: str) -> None:
+        try:
+            self.worker.invoke("cancel_generation", request_id)
+        except BaseException:
+            pass
 
     def generate_chat(self, request_body: dict[str, Any]) -> InferenceResult:
         result = self._collect_result(
