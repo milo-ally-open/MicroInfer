@@ -19,6 +19,8 @@ import yaml
 INFERENCE_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = INFERENCE_ROOT.parents[1]
 REGISTRY_PATH = INFERENCE_ROOT / "model_registry.yaml"
+if str(INFERENCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(INFERENCE_ROOT))
 PROTECTED_ENV = {
     "CUDA_VISIBLE_DEVICES",
     "HF_HOME",
@@ -162,7 +164,7 @@ def _set_runtime_environment(config_path: Path, network_config_path: Path, confi
 
 
 def _load_service_app(app_path: Path, model_alias: str, backend: str) -> Any:
-    """透過臨時套件名稱載入含連字號的後端目錄及服務入口。"""
+    """透過臨時套件名稱載入模型套件及其 API app。"""
     backend_dir = app_path.parent
     package_name = "inference_runtime_" + re.sub(r"[^A-Za-z0-9_]", "_", f"{model_alias}_{backend}")
     init_path = backend_dir / "__init__.py"
@@ -241,6 +243,11 @@ def main() -> None:
     port = int(api_network.get("port", 8001))
     if not 1 <= port <= 65535:
         raise ValueError("network.api.port must be between 1 and 65535.")
+    api_workers = int(runtime.get("uvicorn_workers", 1))
+    if api_workers != 1:
+        raise ValueError(
+            "runtime.uvicorn_workers must be 1 while each API Server owns one dedicated Model Worker process."
+        )
 
     print(
         f"Starting model '{model_alias}' with backend '{backend}' using inference config {config_path}, "
@@ -253,7 +260,7 @@ def main() -> None:
         _load_service_app(app_path, model_alias, backend),
         host=host,
         port=port,
-        workers=int(runtime.get("uvicorn_workers", 1)),
+        workers=api_workers,
         log_level=str(runtime.get("uvicorn_log_level", "info")),
         access_log=bool(runtime.get("uvicorn_access_log", True)),
         timeout_keep_alive=int(runtime.get("uvicorn_timeout_keep_alive_seconds", 5)),

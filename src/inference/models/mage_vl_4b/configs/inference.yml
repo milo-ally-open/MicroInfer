@@ -1,5 +1,5 @@
 hardware:
-  expected_gpu: NVIDIA GeForce RTX 4090
+  expected_gpu: NVIDIA GeForce RTX 4060 Laptop GPU
 
 model:
   # id 是 Hugging Face 上游模型識別碼，與本專案的 mage-vl-4b 別名不同，請勿改寫。
@@ -17,11 +17,14 @@ model:
   weights_only: true
   offload_buffers: false
   disable_mmap: null
+  components:
+    # 僅可選用 Mage-VL 模型包內已登記的模組替換；空對應表保留上游 Transformers 架構。
+    replacements: {}
   # Accelerate 選用卸載目錄；若模型完全常駐 GPU，請維持 null。
   offload_folder: null
   quantization:
     # 可選 none、nf4、int8 或 prequantized；後者使用模型權重內附的量化中繼資料。
-    method: none
+    method: nf4
     quant_type: nf4
     double_quant: true
     compute_dtype: bfloat16
@@ -30,8 +33,8 @@ model:
     llm_int8_threshold: 6.0
     llm_int8_has_fp16_weight: false
     llm_int8_skip_modules: null
-    gpu_max_memory: 22GiB
-    cpu_max_memory: null
+    gpu_max_memory: 6GiB
+    cpu_max_memory: 4GiB
 
 processor:
   # 除非已確認快速處理器可用，否則交由 Transformers 選擇處理器實作。
@@ -42,8 +45,10 @@ backend:
 
 runtime:
   hf_home: checkpoints
+  # 使用已下載的固定 revision 快照，避免啟動時查詢 Hub 或重新下載權重。
+  local_model_path: checkpoints/microsoft-Mage-VL-d88b153
   hf_endpoint: https://huggingface.co
-  local_files_only: false
+  local_files_only: true
   hf_hub_disable_xet: true
   hf_hub_download_timeout_seconds: 120
   environment: {}
@@ -58,6 +63,8 @@ runtime:
   startup_poll_interval_seconds: 2
   startup_log_file: logs/transformers-startup.log
   startup_result_file: logs/transformers-startup.json
+  worker_startup_timeout_seconds: 2400
+  worker_request_timeout_seconds: 1800
 
 api:
   image_resampling: lanczos
@@ -94,9 +101,18 @@ api:
 
   max_context_tokens: 8192
   max_new_tokens: 512
-  max_concurrent_requests: 4
   image_url_timeout_seconds: 10
   stream_timeout_seconds: 300
+
+engine:
+  # 單一 Model Worker 上的輪轉序列數與等待佇列上限。
+  max_num_seqs: 4
+  max_waiting_requests: 16
+  # 每輪 token 上限；prefill 暫不切塊，需不小於 max_context_tokens。
+  max_num_scheduled_tokens: 8192
+  kv_cache:
+    block_size_tokens: 16
+    capacity_tokens: 32768
 
 generation:
   max_tokens_default: 128
@@ -106,13 +122,13 @@ generation:
   min_p: null
   repetition_penalty: 1.0
   no_repeat_ngram_size: 0
+  # Token Scheduler 的逐步生成目前要求单 beam。
   num_beams: 1
   use_cache: true
-  # HF 快取實作為選用設定；模型支援時可選 dynamic、static、offloaded、offloaded_static、quantized、
-  # hybrid、hybrid_chunked、offloaded_hybrid 或 offloaded_hybrid_chunked。
+  # 逐步生成使用模型預設 DynamicCache；獨立 KV block 管理器先負責容量預留與釋放。
   cache_implementation: null
   cache_config: null
-  # 進階實驗可在此加入 GenerationMixin 參數；API 安全限制仍會生效。
+  # 逐步 Runner 尚未支援自訂 GenerationMixin 參數，維持空對應表。
   advanced_kwargs: {}
 
 optimization:

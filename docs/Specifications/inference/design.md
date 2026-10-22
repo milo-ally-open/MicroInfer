@@ -1,138 +1,177 @@
-# 技術設計：推論服務現況基線
+# 技術設計：五元件最小 Inference Engine
 
-> 關聯規格：[spec.md](spec.md)  
-> 關聯提案：[proposal.md](proposal.md)  
-> 任務追蹤：[tasks.md](tasks.md)  
-> 狀態：現況描述，非新功能設計。
+> 提案：[proposal.md](proposal.md)｜行為規格：[spec.md](spec.md)｜任務／驗收：[tasks.md](tasks.md)
+> 本機可驗收範圍：Python 契約測試、子程序 IPC、Scheduler、cache reservation、模型元件 registry mock 和語法；固定 revision 程式、設定及權重快照已在本機，模型定義已拆入模型包；未載入權重或驗證 CUDA 行為。
 
-## 當前實作與責任邊界
+## 調研依據與已知邊界
 
-| 元件 | 當前責任 |
+vLLM 官方架構將 API Server、Engine Core、GPU Worker 分程序運行；Engine Core 執行 Scheduler、管理 KV cache 並驅動 Worker。其 V1 Scheduler 為每輪分配 token budget，並由 cache manager 管理 KV block。參考：[Architecture Overview](https://docs.vllm.ai/en/latest/design/arch_overview/)、[V1 Scheduler API](https://docs.vllm.ai/en/latest/api/vllm/v1/core/sched/scheduler/)。本專案採用職責分離與逐輪排程概念，不移植 vLLM 的 executor、IPC、attention kernel、block table 或宣稱相容。
+
+Mage-VL 固定 revision 的官方配置將 `MageVLForConditionalGeneration`、`MageVLProcessor` 和 `MageVLVideoProcessor` 登記為自訂程式；視覺編碼器有 24 層，文字端是 36 層 Qwen3，使用 8 個 KV heads、head dimension 128。模型有獨立視覺 patch embedding／attention／MLP／merger，語言 attention／MLP／embedding 及輸出 head；程式提供 `prepare_inputs_for_generation` 與 `past_key_values`。依據：[固定 revision config](https://huggingface.co/microsoft/Mage-VL/blob/d88b153285f1633a61b2f693c59c8576693af185/config.json)、[官方模型程式](https://huggingface.co/microsoft/Mage-VL/blob/d88b153285f1633a61b2f693c59c8576693af185/modeling_mage_vl.py)、[權重索引](https://huggingface.co/microsoft/Mage-VL/blob/d88b153285f1633a61b2f693c59c8576693af185/model.safetensors.index.json)。本機固定 revision 的程式、配置及權重檔均存在，模型類別已按職責拆至 Mage-VL 模型包；本次未匯入或載入模型，也未把靜態結果當成 GPU 驗證。
+
+既有線上使用方式為 Transformers `AutoProcessor`／`AutoModelForCausalLM` 與完整 `generate()`。本次將同一固定 revision 的模型程式拆進 Mage-VL 包，Worker 改為直接載入本地 `MageVLForConditionalGeneration`；Processor 仍從同一快照透過 `AutoProcessor` 載入。唯一登錄別名為 `mage-vl-4b`，上游識別碼為 `microsoft/Mage-VL`。既有 `service.py` 已拆到 API、Engine、模型 Adapter／Runner 和 Media 模組。
+
+### Mage-VL 模型元件邊界
+
+```text
+models/mage_vl_4b/
+├── model_runner.py                 # 模型載入與 generation facade
+└── components/
+    ├── configuration_mage_vl.py    # 固定 revision 模型設定類別
+    ├── MAGE_VL_UPSTREAM_LICENSE.txt # 上游模型程式的 Apache-2.0 授權
+    ├── model_outputs.py            # Transformers ModelOutput 資料結構
+    ├── vision_encoder.py           # Vision RoPE、patch embedding／merger、attention、encoder
+    ├── vision_tower.py             # 視覺塔及 MageVL pretrained model 基底
+    ├── multimodal_model.py         # 視覺特徵與 Qwen3 語言模型的組裝
+    ├── conditional_generation.py  # 對外模型類別、logits 與生成介面
+    ├── streammind_gate.py          # 官方可選 Gate 元件；預設服務路徑不載入
+    ├── model_loader.py             # 本地模型類別、AutoProcessor 和 HF 載入選項
+    ├── stepwise_generation.py      # 每個 request 的 prefill、decode、sampling、Cache 狀態
+    └── component_registry.py       # 固定 revision module slots 與本地替換 factory 登記
+```
+
+上述模型類別由固定 revision 上游程式拆分而來，保留原始 module attribute 與預期 state-dict 路徑；來源 revision 寫入每個模型檔案，載入器在載入權重前確認 YAML revision 相符。上游程式檔及設定為 Apache-2.0，授權文本隨模型包保存。模型類別及設定直接從模型包載入，只有 Processor 繼續使用 `AutoProcessor` 和快照中的模型專屬程式。Qwen3 語言骨幹仍由 Transformers `AutoModel.from_config()` 建立。此做法將模型架構程式放回模型包，方便在局部檔案中演進，不改共用 Engine。權重能否與拆分後類別完全相容仍須後續在 CPU／GPU 整合環境驗收。
+
+Registry 以已檢視的 `named_modules()` 路徑登記 vision／language 元件群，並在載入後比對實際模組樹。`inference.yml` 僅選取已由模型包 Python 程式登記的 slot／implementation，不允許 YAML 動態匯入任意程式碼。空的 `model.components.replacements` 是預設值，表示不做替換；本地上游模型定義不等於已實作最佳化。
+
+設定錯誤或未登記的替換在下載／載入大型權重前失敗。合法替換須由 factory 建立 `torch.nn.Module`，並提供完全相容的 state dict 複製或明確權重轉換；所有候選模組準備完成後才改動模型樹，套用失敗會回復已變更路徑。此機制只提供本地擴充點，不等於最佳化已實作。
+
+優先採用 Transformers 載入前已有的設定，例如 `model.attn_implementation`、量化、`device_map` 和 offload；它們在 `from_pretrained()` 前傳入。Registry 的模組替換發生在權重載入後，需要先建立原模型，故不能降低模型載入峰值顯存，權重轉換也可能暫時增加顯存。若未來優化需降低載入峰值，應將替換 factory 前移至本地模型建構／權重載入流程，而非宣稱 post-load replacement 能達成。
+
+## 程序與元件
+
+```text
+API Server process
+  FastAPI routes / schema / SSE serializer
+  Engine Core
+    TokenScheduler ── 公平輪轉 prefill/decode turn
+    KVCacheManager ── 邏輯 block 預留、統計與回收
+    IPC client ────── Pipe RPC
+                         │
+                         ▼
+                   Model Worker process
+                     MageVLModelAdapter
+                     MageVLModelRunner
+                       model + processor + past_key_values
+```
+
+此為最小兩程序拓樸：Engine Core 與 API Server 同進程，只有一個獨立 Worker 子進程。`launcher.py` 保持現有命令；`runtime.uvicorn_workers` 固定為 `1`，避免 API 複製時重複佔用 GPU。Worker 透過 multiprocessing `spawn` 啟動，`models.mage_vl_4b.app:create_model_worker` 延後匯入 Runner，避免 API Server import 時載入 Torch 或權重。Worker 啟動握手回報模型健康資訊；錯誤、逾時、程序退出及關閉均經 Pipe 處理。
+
+### API Server
+
+`api/` 維持現有路由、Pydantic schema、request body 限制、JSON/OpenAI response 與 SSE 序列化。上傳影片由 Engine 分塊寫入本機暫存檔，再傳路徑給 Worker，不經 Pipe 傳送整段影片 bytes。Live 影格透過本機 IPC 傳送；媒體 URL 與 Gateway API Key 邏輯不變。
+
+### Engine Core
+
+`engine/engine.py` 擁有 Worker lifecycle、推論操作、Scheduler／KV 管理與 Live session 關閉順序。API route 不直接呼叫模型 Adapter／Runner。一般 chat、SSE、影片與 Live 生成走同一個逐步排程迴圈；Worker RPC 每次只執行 prefill 或一個 decode step。
+
+### Token Scheduler
+
+`engine/scheduler.py` 維護活動序列、等待數及輪轉佇列：
+
+- `engine.max_num_seqs` 限制同時保留生成狀態的序列數；`max_waiting_requests` 限制等待佇列。
+- Prefill 是完整 prompt 的單一 turn，Scheduler 將 `prompt_tokens` 作為該輪預算。由於尚未實作 chunked prefill，prompt 必須不超過 `max_num_scheduled_tokens`。
+- Decode 每個 turn 僅分配一個 token。完成當輪後，未完成 request 放回佇列尾端，讓其他活動序列先執行。
+- 每輪只呼叫單一 request；這是公平逐步排程，沒有將多個序列合併成一個 batched GPU forward。
+- 等待佇列滿時回傳 `429`；取消、模型錯誤及串流中斷均從排程狀態移除 request。
+
+`engine/batch_planner.py` 是供未來批次 Model Runner 接入的純規劃 helper：它以序列進度快照、序列上限、token 預算及可選 prefill chunk 大小建立單輪計畫，decode 工作每序列分配一個 token，prefill 記錄 offset／chunk 長度，並回傳輪轉 cursor。該 helper 尚未被 `InferenceEngine` 或線上 `TokenScheduler` 呼叫；目前仍是一輪一個 request、完整 prompt prefill。
+
+### KV Cache Manager
+
+`engine/kv_cache.py` 依 `ceil((prompt_tokens + max_new_tokens) / block_size_tokens)` 預留邏輯 block，產生 request-to-block table，並回收 block ID 供下一個 request 使用。啟動後由 Runner 回報模型層數、KV heads、head dimension 和 dtype，Manager 據此估算 bytes/token 及在用 reservation bytes。
+
+Worker 內的模型保留 Transformers Cache tensor；Engine 的 block table用於容量准入與生命週期追蹤，尚未映射成 attention 層可直接索引的實體 GPU page。因此目前不支援物理 block 重排、prefix/prompt cache reuse、KV eviction 或 VRAM 池化。`/health` 的 `kv_cache.estimated_bytes` 是估算預留量，不等於 CUDA 實際配置。
+
+`KVCacheManager.reserve_batch()` 為規劃中的批次排程提供全有或全無的邏輯 block 預留；容量不足時不會留下部分 lease。這是容量帳本操作，不會把多個 request 的 Transformers Cache tensor 合併，也不會改變線上 Engine 目前逐 request 的 `reserve()` 呼叫。
+
+### Worker／Model Runner
+
+`engine/worker.py` 定義 `ModelWorker`、保留供單元測試使用的 `InProcessModelWorker`，並由線上 app 使用 `MultiprocessModelWorker`。Worker 子程序在啟動時載入 Adapter／Runner；父程序不持有模型權重。
+
+Runner 的生成狀態以 request ID 保存輸入 IDs、attention mask、`past_key_values`、抽樣設定和產生 token。`prefill_generation()` 首次送入多模態輸入並得到首 token；後續 `decode_generation_step()` 使用 cache，只餵新 token，避免重跑視覺 Encoder。每個 request 完成或取消時釋放生成狀態。
+
+目前 sampler 僅接受單序列、`num_beams=1`、`use_cache=true`，及 greedy／temperature／top-k／top-p／min-p／repetition penalty／no-repeat n-gram。自訂 generation kwargs、不同 Cache implementation、beam search 不可用；模型不支援 cache step 接口時 Worker 啟動／請求會以明確錯誤失敗。
+
+## Mage-VL 離線能力探測
+
+`scripts/mage_vl_4b/test.py` 是開發者手動執行的 Mage-VL 專屬探索範例。每次呼叫都必須明確提供 `--config`、`--model-path`、本機圖片或影片、`--question` 和 `--output`；沒有腳本同目錄 YAML 預設，也不依 `__file__` 推導專案根目錄。所有相對路徑均以啟動命令時的目前工作目錄解析。每個模型的探索腳本及其 YAML 依別名放在 `scripts/{alias}/`。YAML 沿用正式推論設定的 model／processor／runtime／api／generation／optimization 分層，輸出 token 預設讀取明確指定 YAML 的 `generation.max_tokens_default`；工具不把 `src/` 加入 import path，也不匯入推論服務模組，模型與 Processor 由腳本直接透過已安裝的 `transformers` 載入。腳本在載入 Hugging Face 套件前設定 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`，並對 Processor 和 Model 強制 `local_files_only=True`。指定的本機快照路徑無效時立即失敗，不搜尋快取或下載模型。
+
+探測支援本機圖片及影片，按目前 YAML 的尺寸／影格上限準備輸入，進行 greedy prefill/decode，輸出模型與 attention 模組概況、tensor shape／dtype／bytes、每層 KV cache shape／bytes、GPU 記憶體及載入／生成計時。JSON 不輸出媒體 bytes 或生成文字，只保留生成字元數；錯誤報告會包含 traceback。這些計時是單機診斷資料，不是正式性能基線。腳本尚未在真實權重／GPU 執行；後續接入或更換 Runner 時可比較其實測介面和 cache 行為。
+
+## 配置
+
+`src/inference/models/mage_vl_4b/configs/inference.yml`：
+
+| 路徑 | 職責 |
 |---|---|
-| src/inference/launcher.py | 讀取模型登錄表，解析路徑、套用 runtime 環境及命令列覆寫，動態載入服務 app 並啟動 Uvicorn |
-| src/inference/model_registry.yaml | 提供 default_model、default_backend 與每模型 inference/network/media 設定路徑及 service_entrypoint |
-| src/inference/mage_vl_4b/main.py | FastAPI 路由、請求 schema 綁定及 Content-Length middleware |
-| src/inference/mage_vl_4b/service.py | 模型載入／生成、輸入整理、圖片／影片前處理、live session 與 MediaMTX auth |
-| configs/inference.yml | 模型 repo/revision、權重載入、執行環境、API 限制、影片前處理、生成預設及最佳化 |
-| configs/network.yml | API host/port、MediaMTX RTSP／RTMP 內部位址與公開 host |
-| configs/mediamtx.yml | RTSP／RTMP listener、HTTP auth callback 及停用的 sidecar 功能 |
-| requirements/requirements-lock.txt | 固定 Transformers 推論環境依賴 |
+| `engine.max_num_seqs` | 活動 request 序列上限 |
+| `engine.max_waiting_requests` | Scheduler 等待佇列上限 |
+| `engine.max_num_scheduled_tokens` | 線上完整 prompt prefill turn 上限；純批次規劃 helper 的 token 預算由呼叫方傳入 |
+| `engine.kv_cache.block_size_tokens` | 邏輯 cache block 的 token 數 |
+| `engine.kv_cache.capacity_tokens` | 邏輯 cache 總容量 |
+| `runtime.worker_startup_timeout_seconds` | Worker 模型載入握手逾時 |
+| `runtime.worker_request_timeout_seconds` | Worker RPC 回應逾時 |
 
-推論服務不提供 API Key 或租戶驗證。預設綁定 loopback，面向外部客戶端的認證與限流屬於 Gateway 責任。
+`network.yml` 仍只管理 API／MediaMTX 網路端點；模型識別碼、revision、精度、Processor、影片與生成選項仍放模型 `inference.yml`。API host/port、CLI、model registry 路徑保持不變。
 
-## 啟動與設定解析
+## 錯誤與資源回收
 
-1. 從專案根目錄執行 launcher.py list 或 start。
-2. 啟動器讀取 src/inference/model_registry.yaml；相對路徑以專案根目錄解析，路徑必須存在。
-3. start 以 --model 或 default_model 選擇別名，取用登錄表 default_backend；命令列的 --inference-config、--network-config、--media-config 分別覆寫對應設定路徑。
-4. 推論 YAML 載入後，runtime.environment 套用一般環境變數；受保護環境變數必須用專屬設定。runtime.cuda_visible_devices、CLI --cuda-visible-devices 用於限制 GPU 可見裝置。
-5. launcher 將 INFERENCE_CONFIG 與 INFERENCE_NETWORK_CONFIG 設為絕對路徑，服務模組讀取兩份 YAML。network.api.host/port 可由 CLI --host/--port 覆寫。
-6. 模型服務 app 動態載入後交由 Uvicorn 常駐執行。現在設定 workers 為 1、host 127.0.0.1、port 8001。
-7. 模型快照路徑於服務模組載入時解析；模型與 processor 在 FastAPI lifespan 啟動時載入。首次快取缺少時可能先下載，下載／載入完成前 API 尚未就緒。
+- Scheduler 滿載或 KV block 容量不足：HTTP／SSE 以既有推論錯誤管道回報 `429`。
+- Worker 啟動失敗：Engine 不進入 ready；`/health` 不回報 ready。
+- Runner step 失敗、請求取消或 SSE 關閉：取消 Worker generation state，移除 scheduler request，回收 KV lease。
+- Worker RPC 逾時或程序退出：回報執行錯誤並允許 Engine 關閉／重啟；本版不自動重載模型、不做請求重播。
+- Engine 關閉：停止 Live sessions、等待 Scheduler 無活動 request、關閉 Worker 子程序。
 
-launcher.py 的 list 只檢查登錄表所指檔案是否存在，不檢查權重快取、CUDA、模型載入或 API 可用性。inference.yml 內 expected_gpu、conda_env、python_venv 及 startup_* 欄位目前未被 launcher.py／service.py 消費。
+## nano-vLLM 參考與本專案候選設計
 
-## API 契約與回應
+> 本節是基於目前程式的架構評估，尚未納入已確認需求，也不表示下述批次執行或實體 KV page 已實作。
 
-| 方法與路徑 | 當前行為 |
-|---|---|
-| GET /health | 回報 starting／ok、backend、模型 repo_id、revision、量化方式、live 工作階段數與功能旗標；模型就緒且 CUDA 可用時回報 GPU 與 VRAM |
-| GET /v1/models | 回傳一張 id=microsoft/Mage-VL 的模型卡；此 API 不回傳專案別名 |
-| POST /v1/chat/completions | 接受 ChatCompletionRequest；model 可缺省或等於 microsoft/Mage-VL；支援一般 JSON 或 stream=true SSE |
-| POST /v1/videos/understand | 接收 multipart video、question、video_backend、codec_engine、max_tokens、temperature、top_p；回傳一次性理解 JSON |
-| POST /v1/live/sessions | 建立短期工作階段並回傳 publish、events_url、stop_url 與處理設定 |
-| GET /v1/live/sessions/{session_id}/events | SSE 傳送工作階段 status、analysis、error、completed 事件，支援 Last-Event-ID |
-| DELETE /v1/live/sessions/{session_id} | 發出停止訊號並回傳 stopping 狀態 |
-| POST /v1/live/mediamtx/auth | 僅供 MediaMTX HTTP auth callback；驗證 action、protocol 與作用中路徑 |
+### 可借鑑的設計
 
-Inference API 的聊天 model 欄位使用上游 repo_id；Gateway 規格定義的公開別名映射屬於 Gateway 行為，不應反寫為 Inference 現況。除 MediaMTX callback 外，live client routes 目前沒有 API Key 認證。
+nano-vLLM 的 Engine 每輪依序執行 `schedule`、Model Runner `run`、Scheduler `postprocess`，讓排程決策與模型執行形成單一明確循環；Scheduler 管理 waiting/running sequences，按 token 預算產生 prefill 或 decode 工作。其 BlockManager 追蹤 block、引用計數及可重用 prefix；Model Runner 建立實體 KV tensor、slot mapping 和 block table。參考：[LLMEngine](https://github.com/GeeeekExplorer/nano-vllm/blob/main/nanovllm/engine/llm_engine.py)、[Scheduler](https://github.com/GeeeekExplorer/nano-vllm/blob/main/nanovllm/engine/scheduler.py)、[BlockManager](https://github.com/GeeeekExplorer/nano-vllm/blob/main/nanovllm/engine/block_manager.py)、[ModelRunner](https://github.com/GeeeekExplorer/nano-vllm/blob/main/nanovllm/engine/model_runner.py)。
 
-## 模型載入與推論資源
+nano-vLLM 的公開範例以文字 prompt 呼叫 Qwen3，並以自訂 attention/cache 執行路徑支援上述實體 block 管理；因此可借鑑 Engine、Scheduler、Cache、Worker 的協作方式，但不能把它的 cache tensor、attention 實作或文字批次假設直接套到 Mage-VL。參考：[nano-vLLM README](https://github.com/GeeeekExplorer/nano-vllm)。
 
-- 使用 model.id 與固定 model.revision 從 Hugging Face 準備快照，快取根目錄為 runtime.hf_home/hub；runtime.local_files_only 控制是否可下載。
-- AutoProcessor 與 AutoModelForCausalLM 以相同 revision 載入，trust_remote_code 為 true，模型進入 eval 狀態。
-- CUDA 不可用時 lifespan 啟動失敗。當前 YAML 指定 bfloat16、device_map auto、quantization.method none、gpu_max_memory 22GiB，expected_gpu 欄位目前不會檢查實際裝置。
-- 設定可選 nf4、int8、prequantized 等量化方式；可選 offload、kernel、attention implementation 與 torch.compile。當前 torch.compile.enabled 為 false。
-- generation_lock 由 api.max_concurrent_requests 建立，聊天、視訊與 live 分析共用；一般聊天及視訊採非阻塞取得，名額滿時回 429。
-- lifespan 關閉先停止 live session，再解除 model／processor 引用；CUDA 可用時呼叫 empty_cache。
+| 元件 | nano-vLLM 中的責任 | 本專案的適用方向 |
+|---|---|---|
+| API Server | 接收請求、整理輸入、輸出結果 | 保留目前 FastAPI 路由、schema、OpenAI 相容回應和 SSE 契約 |
+| Engine Core | 驅動每輪排程、執行及結果回收 | 統一管理推論請求狀態，協調 Scheduler、Worker 和每請求事件輸出 |
+| Scheduler | 從等待／執行序列選取本輪工作及 token 數 | 先以現有公平策略產生多筆工作計畫；是否採 prefill-first、chunked prefill 需依 SSE 延遲與混合媒體負載決定 |
+| KV Cache Manager | 管理可由模型注意力實際索引的 KV blocks | 先保留容量帳本；只有 Runner／attention 能讀寫實體 page 後，才稱為實體 KV block manager |
+| Worker／Model Runner | 批次準備張量、執行模型並管理 GPU cache | Worker 子程序獨佔模型、GPU tensor 和 Transformers Cache；以批次執行介面逐步取代目前單 request RPC |
 
-## 聊天與圖片處理
+### 對照目前版本
 
-- Pydantic ChatCompletionRequest 至少要求一筆 messages；role 僅 system、user、assistant；content 可為字串或 text／image_url parts。額外欄位忽略。
-- 路由只接受 model 為 null 或 microsoft/Mage-VL；傳入 mage-vl-4b 會被判定為 Unknown model。
-- 目前 normalize_messages 要求至少一個 image_url，故純文字對話會在服務層回 400。README 說明與此處不同，待產品負責人確認預期契約。
-- image_url 支援嚴格 base64 data URL 或由服務端 GET 的 HTTP／HTTPS URL。圖片位元組、像素、數量、最大邊長及重採樣方法由 inference.yml 控制。
-- 目前有效設定：單一請求最多 1 張圖、每圖 10 MiB、最多 16,777,216 像素、縮放最大邊長 896、遠端 URL timeout 10 秒。
-- 圖片使用 Pillow 解碼並轉 RGB；無效格式回 400，大小／像素／數量限制回 413。遠端 URL 不設來源主機或 IP allowlist，這是對外暴露前需評估的安全缺口。
+目前 request 狀態分散在 `InferenceEngine` 協程、`TokenScheduler` 的 `_RequestState`、Worker 內的 `MageVLModelRunner` 生成狀態及 Adapter 任務中。Scheduler 每輪只授權一個 request，Worker RPC 也只處理一個 request；`batch_planner.py` 目前是未接入線上循環的純規劃 helper。`KVCacheManager` 只記錄邏輯容量和 lease，實際 `past_key_values`／Transformers Cache tensor 留在 Worker，尚無供 attention 使用的實體 page table。這與 nano-vLLM 的批次執行和實體 KV block 管理有明確差距。
 
-## 生成參數與 SSE
+### 建議的最小目標形狀
 
-- max_tokens 優先於 max_completion_tokens；兩者皆缺省時使用 generation.max_tokens_default。API 上限為 api.max_new_tokens。
-- temperature、top_p、top_k、min_p、repetition_penalty、no_repeat_ngram_size、num_beams 與 cache 行為由請求及 generation YAML 合併；各參數的實際界限見 REQ-07。
-- prompt tokens 加預計輸出 tokens 不可超過 api.max_context_tokens。
-- 一般完成回應包含 chat.completion、repo_id、choices、finish_reason 與 usage。
-- SSE 使用 TextIteratorStreamer，由背景執行緒生成；每次輸出 JSON chunk，成功時附最終 usage chunk 及 data: [DONE]。
-- SSE 開始後發生 HTTPException 或模型工作者錯誤時，服務將 error JSON 作為 data 事件傳送，再送 [DONE]；此錯誤不再改變已送出的 HTTP 狀態。
+```text
+FastAPI routes / 現有 JSON、SSE 序列化
+  └─ InferenceEngine：接收請求、維護序列狀態、輸出每請求事件
+       ├─ TokenScheduler.schedule_batch() / postprocess()
+       ├─ KVCacheManager：准入容量帳本（初期仍是邏輯容量）
+       └─ MultiprocessModelWorker.execute_batch(work_items)
+            └─ MageVLModelRunner：模型專屬輸入處理、批次 prefill/decode、GPU cache
+```
 
-## 視訊理解流程
+以 `engine/sequence.py`（或同等單一模組）集中定義 `SequenceState`：request ID、來源類型、執行階段、prompt 進度、輸出上限及完成狀態。不要把模型 tensor 或 Transformers Cache 放入 Engine 狀態；它們由 Worker 按 request ID 保管。Live session 的生命週期仍由 `LiveSessionManager` 管理；每次送入模型的影格／片段生成才是可排程工作，不要把長連線 session 本身當作一條持續佔用 Scheduler 的 decode sequence。
 
-1. API middleware 依 Content-Length 在解析本文前拒絕缺少長度、無效長度或超過本文上限的 POST。
-2. FastAPI 接收 multipart 上傳；服務檢查非空 question，取用設定或請求指定的 backend／codec。
-3. 上傳先以 1 MiB 區塊寫入唯一 TemporaryDirectory；檔案大小上限為 200 MiB。finally 路徑關閉上傳檔並釋放推論名額，臨時目錄離開作用域後清理。
-4. frames 模式以 OpenCV 讀取 fps、影格數、尺寸與時長；均勻涵蓋影片抽取最多 16 張影格，每張縮放至最大邊長 896。
-5. codec 模式先用 ffprobe 讀中繼資料，再由 codec-video-prep/FFmpeg 路徑建立模型輸入；目前允許 hevc 與 dcvc-rt。
-6. 成功回應含 magevl4b.video.understanding、回答文字、token usage、來源及採樣／codec metadata、staging_and_decode／processor／generation／server_total 時間與 GPU peak allocated/reserved bytes。
+Engine 每輪取得 `ScheduledWork[]`，至少描述 request ID、prefill/decode 階段、prompt offset、token budget 和完成／取消資訊；Worker 回傳對應的 per-request step result。Engine 更新序列狀態並將文字增量或完成事件放入該 request 的事件佇列，現有 route 從佇列輸出既有 JSON／SSE 格式。第一階段可令 `schedule_batch()` 回傳多筆工作但仍逐筆執行，以穩定狀態與事件流程；之後再新增 Worker 批次 RPC 和 Model Runner 真正的 batched forward。能力檢查需明確標示模型是否支援批次 prefill、decode 及 chunked prefill；不支援時保留單 request fallback。
 
-目前限制：檔案 209,715,200 bytes，總請求 210,763,776 bytes，live 建立及 MediaMTX callback 本文各 65,536 bytes，時長 120 秒；這些上限與 frames/codec 前處理參數均在 inference.yml。影片 API 是單次 JSON 回應，不是 SSE。
+Worker 已是獨立程序，因此 GPU tensor、cache tensor 及實體 KV page 的所有權必須留在 Worker。Engine 的 KV 管理器可做請求准入與預算，但 reservation 必須與 Worker 實際可用容量協調；不能只在 Engine 配 block ID，就宣稱已取得 GPU page。現有圖片、影片、Live frame 的 IPC 輸入契約可逐步演進，但不可為了批次排程把完整影片或 GPU tensor 搬進 Engine 狀態。
 
-## 即時視訊工作階段
+### KV Cache 與排程的遷移順序
 
-- 工作階段資料、事件環形佇列及擷取／推論執行緒均存在推論程序記憶體；session ID 使用 secrets.token_urlsafe(24)。
-- 建立請求含 question、生成參數及可覆寫的 video_backend、codec_engine、sample_interval_seconds、window_seconds、max_duration_seconds。question 長度不超過 2000；採樣間隔 0.25 至 60 秒，視窗 1 至 60 秒，frames 模式視窗需至少等於採樣間隔。
-- 預設最大工作階段數為 1、最長 3600 秒；發起新工作階段前會清除已完成超過 900 秒的工作階段。
-- frames 模式使用 OpenCV 從 MediaMTX RTSP/TCP 擷取並縮放影格；codec 模式使用 FFmpeg 切段並維持有限 pending segment queue。串流中斷時依設定重連。
-- 即時事件包含 status、analysis、error、completed；事件 ID 遞增，單一工作階段最多保留 256 筆。SSE 每 15 秒 keep-alive，離線客戶端可用 Last-Event-ID 續讀尚保留事件。
-- POST /v1/live/mediamtx/auth 接受 publish/read 與 rtsp/rtmp 組合，只授權仍作用中的 session path，成功回 HTTP 204。
-- live 建立及 MediaMTX callback 共用 api.max_live_request_bytes；目前 inference.yml 設為 65,536 bytes。
-- API 關閉時 stop_all 發出停止訊號並等待推論執行緒完成，再卸載模型。程序中斷會丟失 live session 與未讀事件。
+1. 擴充 `scripts/mage_vl_4b/test.py`，在本機權重可用時記錄兩筆以上輸入的批次相容性、各輸入 cache 行為及 GPU 峰值；目前工具只探測單一輸入，不能據此宣稱 Mage-VL 可批次執行。
+2. 集中化 Engine 序列狀態，讓 Scheduler 提供 `schedule_batch()` 和結果回收流程；先維持 batch size 1，使用 Worker mock 驗證併發、取消、錯誤和 SSE 事件順序。
+3. 在模型能力探測及實測證明可行後，新增 Worker 批次 RPC 與 Mage-VL Model Runner 批次執行；不支援批次的路徑保留單筆執行。
+4. 只有在確認 Mage-VL attention/cache 能消費 slot mapping／block table，並能在 Worker 內配置及回收實體 GPU pages 後，才實作實體 KV block pool 或 attention 替換。現有 `past_key_values` 步進能力本身不足以證明這些介面存在。
+5. 以 mixed chat、影片及 Live 負載量測吞吐、SSE 首 token 延遲、後續 token 間隔、取消回收和顯存峰值，再決定 prefill/decode 優先級、chunk 大小及是否需要 prefix cache、CUDA Graph 或多 Worker。nano-vLLM 的 prefill 優先策略不應直接成為本專案預設，因為新請求的首 token 延遲、既有串流的 token 間隔及 Live 片段等待時間需要共同權衡。
 
-## 設定檔分工與目前注意事項
+Prefix cache 應延後評估。多模態快取鍵至少須涵蓋模型與 Processor revision、文字 token、影像／影格內容及預處理設定；只用文字 prompt hash 可能錯誤重用視覺特徵或 KV 狀態。這些是後續驗證項目，不是目前功能或已排定實作承諾。
 
-| 檔案 | 現況責任 |
-|---|---|
-| model_registry.yaml | 模型別名、default_model、default_backend、推論／網路／媒體設定路徑、服務入口 |
-| inference.yml | 固定模型 revision、載入與量化、生成、請求限制、圖片／視訊／live 參數、PyTorch 最佳化 |
-| network.yml | API host 127.0.0.1、port 8001、MediaMTX 主機／連接埠及 public_host |
-| mediamtx.yml | HTTP auth callback 指向 http://127.0.0.1:8001/v1/live/mediamtx/auth；啟用 RTSP/TCP 與 RTMP，停用 HLS、WebRTC、SRT 等 |
+## 追蹤
 
-目前 network.yml 是網路位址唯一來源；調整時須同步檢視 MediaMTX callback 與外部推流 URL。模型推論參數留在 inference.yml，勿搬到 Gateway。model_registry 頂層 default_backend 目前是 transformers，不代表其他 backend 已存在。
-
-## 安全、失敗及相容風險
-
-- inference API 沒有客戶端認證；預設 loopback 綁定是目前的網路隔離，對外暴露必須經受控 Gateway／網路政策。
-- 任意 HTTP(S) image_url 由服務端下載，未實作 SSRF allowlist；遠端圖片需 timeout 與大小上限，但這不足以替代來源限制。
-- trust_remote_code 允許載入固定 revision 中的模型程式碼；改 revision 前須審查程式來源與相依版本。
-- API 錯誤一般採 FastAPI detail JSON；SSE 例外採 data 中 error JSON。Gateway 若代理，需按 Gateway 規格轉換，而不應聲稱推論 API 本身已提供 OpenAI error envelope。
-- GPU、codec 套件、ffmpeg／ffprobe、CUDA 與權重快取缺失會導致啟動或特定 video backend 失敗；health 只回報模型引用是否就緒，並非所有 codec／MediaMTX 依賴的完整探測。
-- hardware.expected_gpu 與 runtime 的部分環境／啟動紀錄欄位目前未被程式使用，文件不可把它們表述為已驗證能力。
-
-## 驗收與回復策略
-
-- 靜態規格驗收只證明文件結構及 ID 追蹤，不證明程式行為或真機結果。
-- 單元／API 測試置於 tests/inference/，以 mock model、mock downloader、synthetic image/video fixture 驗證，不下載大型權重。
-- 有權重與 GPU 的載入／真機驗證另行標明硬體、CUDA、套件版本及模型 revision；未執行時不得標記通過。
-- 即時端到端流程需要 inference API 與 MediaMTX；不得將該依賴放入一般 unit test。
-- 推論程式可回退至上一版程式及 YAML；權重 revision 若需恢復，使用原固定 revision 與既有 checkpoints cache。任何清理 cache 的操作須先核對目標目錄。
-
-## 未決項
-
-- 純文字聊天是否屬於預期 API 能力。
-- image_url 是否增加 host/IP allowlist 或網路出口限制。
-- unused hardware/runtime 欄位應清理、實作或保留作為人工註記。
-
-## 變更記錄
-
-| 日期 | 變更 |
-|---|---|
-| 2026-10-20 | 建立推論服務現況技術設計 |
-
+需求／驗收見 [spec.md](spec.md)；實作任務、證據及 GPU 驗收缺口見 [tasks.md](tasks.md)。

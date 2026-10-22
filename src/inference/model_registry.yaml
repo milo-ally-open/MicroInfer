@@ -4,7 +4,7 @@ default_backend: transformers
 models:
   mage-vl-4b:
     display_name: Mage-VL-4B
-    inference_config: src/inference/mage_vl_4b/configs/inference.yml
-    network_config: src/inference/mage_vl_4b/configs/network.yml
-    media_config: src/inference/mage_vl_4b/configs/mediamtx.yml
-    service_entrypoint: src/inference/mage_vl_4b/main.py
+    inference_config: src/inference/models/mage_vl_4b/configs/inference.yml
+    network_config: src/inference/models/mage_vl_4b/configs/network.yml
+    media_config: src/inference/models/mage_vl_4b/configs/mediamtx.yml
+    service_entrypoint: src/inference/models/mage_vl_4b/app.py

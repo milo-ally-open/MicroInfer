@@ -21,7 +21,7 @@ def yaml_integer(path: Path, key: str) -> int:
 class GatewayInferenceConfigCompatibilityTests(unittest.TestCase):
     def test_gateway_body_limits_do_not_exceed_inference_limits(self) -> None:
         gateway = ROOT / "src/gateway/configs/gateway.yml"
-        inference = ROOT / "src/inference/mage_vl_4b/configs/inference.yml"
+        inference = ROOT / "src/inference/models/mage_vl_4b/configs/inference.yml"
         pairs = (
             ("chat_request_bytes", "max_chat_request_bytes"),
             ("video_request_bytes", "max_video_request_bytes"),

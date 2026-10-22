@@ -1,0 +1,320 @@
+"""Engine Core：協調推論請求、Token Scheduler、KV 預留與 Worker 執行。"""
+
+from __future__ import annotations
+
+import tempfile
+import threading
+import time
+import uuid
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, BinaryIO
+
+from engine.errors import InferenceError
+from engine.kv_cache import KVCacheManager
+from engine.scheduler import SchedulerFullError, TokenScheduler
+from engine.worker import ModelWorker
+from media.video import save_upload, uploaded_video_path
+
+
+@dataclass(frozen=True)
+class InferenceResult:
+    """不依賴 HTTP 協定的單次推論結果。"""
+
+    content: str
+    prompt_tokens: int
+    completion_tokens: int
+    finish_reason: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class InferenceStreamEvent:
+    """不依賴 SSE／OpenAI schema 的生成事件。"""
+
+    kind: str
+    text: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    finish_reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class InferenceEngine:
+    """在 API Server 與模型 Worker 之間執行排程、快取預留及結果協調。"""
+
+    def __init__(
+        self,
+        worker: ModelWorker,
+        *,
+        model_id: str,
+        max_concurrent_requests: int,
+        max_waiting_requests: int = 16,
+        max_num_scheduled_tokens: int = 8192,
+        kv_cache_block_size_tokens: int = 16,
+        kv_cache_capacity_tokens: int = 32768,
+        max_video_bytes: int = 209715200,
+    ) -> None:
+        self.worker = worker
+        self.model_id = model_id
+        self.scheduler = TokenScheduler(
+            max_num_seqs=max_concurrent_requests,
+            max_waiting_requests=max_waiting_requests,
+            max_num_scheduled_tokens=max_num_scheduled_tokens,
+        )
+        self.kv_cache = KVCacheManager(
+            block_size_tokens=kv_cache_block_size_tokens,
+            capacity_tokens=kv_cache_capacity_tokens,
+        )
+        self.max_video_bytes = max_video_bytes
+        self._state = "new"
+        self._state_lock = threading.Lock()
+        self._live_sessions: Any = None
+
+    @property
+    def state(self) -> str:
+        with self._state_lock:
+            return self._state
+
+    @property
+    def ready(self) -> bool:
+        return self.state == "ready"
+
+    def start(self) -> None:
+        with self._state_lock:
+            if self._state == "ready":
+                return
+            if self._state in {"loading", "closing", "closed"}:
+                raise RuntimeError(f"Cannot start inference engine in state {self._state}.")
+            self._state = "loading"
+        try:
+            self.worker.start()
+            profile = self.worker.health_info().get("kv_cache_profile", {})
+            self.kv_cache.set_bytes_per_token(int(profile.get("bytes_per_token", 0)))
+        except BaseException:
+            with self._state_lock:
+                self._state = "failed"
+            raise
+        with self._state_lock:
+            self._state = "ready"
+
+    def close(self) -> None:
+        with self._state_lock:
+            if self._state == "closed":
+                return
+            self._state = "closing"
+        if self._live_sessions is not None:
+            self._live_sessions.stop_all()
+        self.scheduler.wait_idle()
+        try:
+            self.worker.close()
+        finally:
+            with self._state_lock:
+                self._state = "closed"
+
+    def attach_live_sessions(self, manager: Any) -> None:
+        """將 Live manager 納入 Engine 生命週期。"""
+        if self._live_sessions is not None:
+            raise RuntimeError("A live session manager is already attached.")
+        self._live_sessions = manager
+
+    def _require_ready(self) -> None:
+        if not self.ready:
+            raise InferenceError(503, "The inference engine is not ready.")
+
+    def _run_generation(
+        self,
+        prepare_operation: str,
+        prepare_args: tuple[Any, ...],
+        finish_operation: str,
+        *,
+        on_admitted: Any = None,
+    ) -> Iterator[InferenceStreamEvent]:
+        """執行可由 Worker 分步生成的工作，並逐輪讓出 Token Scheduler。"""
+        self._require_ready()
+        request_id = uuid.uuid4().hex
+        prepared = False
+        scheduled = False
+        finished = False
+        lease_created = False
+        try:
+            # prepare 可能在內部建立部分狀態後失敗；之後一律執行冪等取消清理。
+            prepared = True
+            descriptor = self.worker.invoke(prepare_operation, request_id, *prepare_args)
+            prompt_tokens = int(descriptor["prompt_tokens"])
+            max_output_tokens = int(descriptor["max_new_tokens"])
+            lease = self.kv_cache.reserve(
+                request_id, prompt_tokens=prompt_tokens, max_output_tokens=max_output_tokens
+            )
+            if lease is None:
+                raise InferenceError(429, "The KV cache token capacity is exhausted; retry after active requests finish.")
+            lease_created = True
+            self.worker.invoke("bind_generation_cache", request_id, lease.block_ids)
+            try:
+                self.scheduler.add_request(
+                    request_id, prompt_tokens=prompt_tokens, max_output_tokens=max_output_tokens
+                )
+            except SchedulerFullError as exc:
+                raise InferenceError(429, "The inference scheduler is full; retry after active requests finish.") from exc
+            except ValueError as exc:
+                raise InferenceError(413, "The prompt exceeds the scheduler's per-turn token budget.") from exc
+            scheduled = True
+            if on_admitted is not None:
+                on_admitted()
+            yield InferenceStreamEvent("start", prompt_tokens=prompt_tokens)
+
+            while True:
+                turn = self.scheduler.acquire_turn(request_id)
+                try:
+                    operation = "prefill_generation" if turn.phase == "prefill" else "decode_generation_step"
+                    step = self.worker.invoke(operation, request_id, turn.token_budget)
+                    generated_tokens = int(step.get("generated_tokens", 0))
+                    done = bool(step.get("done", False))
+                    self.scheduler.complete_turn(
+                        request_id, generated_tokens=generated_tokens, finished=done
+                    )
+                except BaseException:
+                    self.scheduler.cancel_request(request_id)
+                    scheduled = False
+                    raise
+                if step.get("text"):
+                    yield InferenceStreamEvent("text", text=str(step["text"]))
+                if done:
+                    result = self.worker.invoke(finish_operation, request_id)
+                    finished = True
+                    yield InferenceStreamEvent(
+                        "finish",
+                        text=result.content,
+                        prompt_tokens=result.prompt_tokens,
+                        completion_tokens=result.completion_tokens,
+                        finish_reason=result.finish_reason,
+                        metadata=result.metadata,
+                    )
+                    return
+        finally:
+            if scheduled:
+                self.scheduler.cancel_request(request_id)
+            if lease_created:
+                self.kv_cache.release(request_id)
+            if prepared and not finished:
+                try:
+                    self.worker.invoke("cancel_generation", request_id)
+                except BaseException:
+                    pass
+
+    def generate_chat(self, request_body: dict[str, Any]) -> InferenceResult:
+        result = self._collect_result(
+            self._run_generation("prepare_chat_generation", (request_body,), "finish_chat_generation")
+        )
+        return result
+
+    def stream_chat(self, request_body: dict[str, Any]) -> Iterator[InferenceStreamEvent]:
+        yield from self._run_generation("prepare_chat_generation", (request_body,), "finish_chat_generation")
+
+    def understand_video(
+        self, upload_stream: BinaryIO, filename: str | None, request_body: dict[str, Any]
+    ) -> InferenceResult:
+        with tempfile.TemporaryDirectory(prefix="inference-video-upload-") as temp_dir:
+            destination = uploaded_video_path(filename, temp_dir)
+            started = time.perf_counter()
+            upload_bytes = save_upload(upload_stream, destination, self.max_video_bytes)
+            staging_seconds = time.perf_counter() - started
+            result = self._collect_result(self._run_generation(
+                "prepare_video_generation",
+                (str(destination), filename, request_body, upload_bytes, staging_seconds),
+                "finish_video_generation",
+            ))
+            return result
+
+    @staticmethod
+    def _collect_result(events: Iterator[InferenceStreamEvent]) -> InferenceResult:
+        answer: list[str] = []
+        final: InferenceStreamEvent | None = None
+        for event in events:
+            if event.kind == "text" and event.text:
+                answer.append(event.text)
+            elif event.kind == "finish":
+                final = event
+        if final is None:
+            raise RuntimeError("Model Worker completed without a finish event.")
+        return InferenceResult(
+            content=final.text if final.text is not None else "".join(answer).strip(),
+            prompt_tokens=int(final.prompt_tokens or 0),
+            completion_tokens=int(final.completion_tokens or 0),
+            finish_reason=final.finish_reason or "stop",
+            metadata=final.metadata,
+        )
+
+    def generation_options(self, request_body: dict[str, Any]) -> dict[str, Any]:
+        self._require_ready()
+        return self.worker.invoke("generation_options", request_body)
+
+    def validate_live_video_backend(self, backend: str, codec_engine: str | None) -> None:
+        self._require_ready()
+        self.worker.invoke("validate_live_video_backend", backend, codec_engine)
+
+    def try_live_inference(
+        self, operation: str, *args: Any, on_admitted: Any = None
+    ) -> tuple[bool, Any]:
+        """讓 Live 分析共用公平 Token Scheduler 與 KV block 預留。"""
+        self._require_ready()
+        prepare_operations = {
+            "analyze_live_frames": "prepare_live_frames_generation",
+            "analyze_live_video": "prepare_live_video_generation",
+        }
+        prepare_operation = prepare_operations.get(operation)
+        if prepare_operation is None:
+            raise ValueError(f"Unsupported live inference operation: {operation}")
+        try:
+            result = self._collect_result(self._run_generation(
+                prepare_operation,
+                args,
+                "finish_live_generation",
+                on_admitted=on_admitted,
+            ))
+        except InferenceError as exc:
+            if exc.status_code == 429:
+                return False, None
+            raise
+        return True, {
+            "answer": result.content,
+            "prompt_tokens": result.prompt_tokens,
+            "completion_tokens": result.completion_tokens,
+            **result.metadata,
+        }
+
+    def health(self) -> dict[str, Any]:
+        data = self.worker.health_info()
+        data.update(
+            status="ok" if self.ready else "starting",
+            live_sessions=self.live_session_count(),
+            scheduler=self.scheduler.snapshot(),
+            kv_cache=self.kv_cache.snapshot(),
+            worker_pid=getattr(self.worker, "pid", None),
+        )
+        if self.ready:
+            data.update(self.worker.gpu_status())
+        return data
+
+    def live_settings(self) -> Any:
+        return self._require_live_sessions().settings
+
+    def live_session_count(self) -> int:
+        if self._live_sessions is None:
+            return 0
+        return self._live_sessions.active_count()
+
+    def start_live_session(self, **kwargs: Any) -> Any:
+        return self._require_live_sessions().start_session(**kwargs)
+
+    def get_live_session(self, session_id: str) -> Any:
+        return self._require_live_sessions().get_session(session_id)
+
+    def stop_live_session(self, session_id: str) -> None:
+        self.get_live_session(session_id).request_stop()
+
+    def _require_live_sessions(self) -> Any:
+        if self._live_sessions is None:
+            raise InferenceError(503, "Live video sessions are not configured.")
+        return self._live_sessions
