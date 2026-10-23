@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "test": "live-video-gateway-smoke",
+  "timestamp_utc": "2026-10-22T06:48:05.859715+00:00",
+  "model": "mage-vl-4b",
+  "input": "FFmpeg lavfi testsrc 320x240 at 2 fps, H.264 over RTSP/TCP",
+  "settings": {
+    "video_backend": "frames",
+    "sample_interval_seconds": 1.0,
+    "window_seconds": 2.0,
+    "max_tokens": 8
+  },
+  "outcome": "failed",
+  "events": [
+    "status",
+    "status",
+    "status",
+    "error"
+  ],
+  "first_analysis_seconds": null,
+  "analysis_frame_count": null,
+  "cleanup_completed": true,
+  "secret_fields_excluded": true,
+  "models_http_status": 200,
+  "create_http_status": 200,
+  "events_http_status": 200,
+  "inference_error": "RuntimeError: Engine Core failed (WorkerProcessError): Model Worker failed (RuntimeError): Model Cache length mismatch for b87e6f567c5c47b8bb40fd4560f61a28: expected 117, received 233.",
+  "error": "RuntimeError: Live 推理事件回報錯誤，phase=inference。",
+  "stop_http_status": 200,
+  "publisher_exit_code": 255,
+  "duration_seconds": 31.294
+}
