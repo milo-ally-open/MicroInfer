@@ -1,43 +1,32 @@
 # VideoStreamAPI
 
-## 元件職責
+本专案提供模型专属推论服务与独立的 Go API Gateway。Gateway 负责外部 API、认证与转送；Inference 负责模型载入、生成与 GPU 资源管理。两者可独立部署及测试。
 
-- `src/gateway/`：Go API 閘道 v1，負責客戶端 API Key、租戶限流、模型別名、請求轉送、SSE／視訊代理與可觀測性；實際能力與啟動方式見 [`src/gateway/README.md`](src/gateway/README.md)。
-- `src/inference/launcher.py`：列出模型與推論後端、選取設定並啟動推論 API。
-- `src/inference/model_registry.yaml`：維護模型別名、`standard`／`custom` 整合 profile、明確 API 能力、模型／網路／媒體設定檔及 Runner／Adapter 工廠。
-- `src/inference/models/mage_vl_4b/configs/`：集中存放模型推論、網路與 MediaMTX YAML。
-- `src/inference/models/mage_vl_4b/requirements/`：保存目前 Mage-VL-4B 的 Python 依賴清單與鎖定檔。
-- `src/inference/models/qwen3_0_6b/`：Qwen3-0.6B 純文字聊天服務、Hugging Face 相容載入層、本地模型計算圖、批次 Runner 及實體 KV page pool。
-- `src/inference/api/`、`engine/`、`media/`、`models/<model>/`：推論引擎依接口門面、編排調度、執行抽象、模型運行時、模型與算子五層職責組織；五層是程式邊界，不代表五個程序。當前 API Server、Engine Core 和 Model Worker 為三個程序。
-- 新模型放入 `src/inference/models/<model>/`，實作 Runner／Adapter 並在 `model_registry.yaml` 登錄工廠與設定；共用 API、Engine Core、Worker 裝配和啟動器不需為模型新增分支。操作步驟見 [`docs/Specifications/inference/model-integration.md`](docs/Specifications/inference/model-integration.md)。
-- Gateway 預設監聽 `127.0.0.1:8000`；推論服務預設監聽 `127.0.0.1:8001`，兩者仍是分離程序。
+## 推论模型与启动
 
-Inference Engine 借鑑 vLLM／nano-vLLM 的元件職責，沒有 vLLM backend、自訂 PagedAttention kernel 或 prefix cache。五層模組歸屬、輸入與文字流輸出契約及支援範圍見 [`src/inference/README.md`](src/inference/README.md) 與 [Inference Spec](docs/Specifications/inference/)。Mage-VL 使用 Transformers Runtime；Qwen3-0.6B 實驗服務使用本地 PyTorch Runner。兩條模型路徑共用 API／Engine 職責，不混用模型專屬計算圖或把未實作後端標成已支援。
+模型别名、能力、Runtime 工厂及设定档由各模型目录下的 `configs/model.yaml` 登记；启动时以 `--model` 明确选择模型，不维护全域模型登录档。模型程式、设定及依赖集中于 `src/inference/models/<model_alias>/`。模型接入步骤见[新模型指南](docs/Specifications/inference/model-integration.md)。
 
-## 啟動指定模型設定
+目前登记模型：
 
-啟動順序為：啟用 Conda 環境、啟動 API（若缺少指定 revision，服務會自動下載模型權重至專案 checkpoints/）、確認健康狀態；使用即時推流時，再啟動 MediaMTX。完整步驟、命令與兩個程序的先後關係請參閱 [`src/inference/README.md`](src/inference/README.md)。以下為 API 啟動的簡例。在 WSL 中啟用對應的 Conda 環境，並從專案根目錄執行：
+- `mage-vl-4b`：Mage-VL-4B 多模态服务，使用 Transformers；支援图片聊天、文字 SSE、影片上传及 Live 工作阶段。
+- `qwen3-0.6b`：Qwen3-0.6B 纯文字服务，使用模型包内的 PyTorch 计算图、批次 prefill/decode 和实体 KV page pool。
+
+两者共用 API、Engine Core、Scheduler、Executor 与 Worker 装配；模型 Runtime、Processor、模型拓扑和权重载入各自留在模型包中。此架构参考 vLLM／nano-vLLM 的职责拆分，但没有 vLLM backend、自订 PagedAttention kernel、prefix cache 或其他未登记模型。
 
 ```bash
-# 列出已登錄的模型與後端
 python src/inference/launcher.py list
 python src/inference/launcher.py validate
-
-# 指定模型別名與後端啟動
 python src/inference/launcher.py start --model mage-vl-4b
 python src/inference/launcher.py start --model qwen3-0.6b
 ```
 
-預設設定由 `model_registry.yaml` 登錄。若要讓實驗命令明確記錄全部設定檔，可在啟動時分別傳入 `--inference-config`、`--network-config` 及 `--media-config`；各檔案用途與完整命令範例請參閱 [`src/inference/README.md`](src/inference/README.md)。
+推论 API 预设位址由各模型 `configs/network.yml` 决定：Mage-VL 为 `127.0.0.1:8001`，Qwen3 为 `127.0.0.1:8011`。模型参数放在对应 `configs/inference.yml`；模型 YAML 指向的依赖清单位于模型根目录。启动与服务细节见 [`src/inference/README.md`](src/inference/README.md)。
 
-`src/inference/models/mage_vl_4b/requirements/requirements.txt` 宣告直接相依套件；同目錄中的 `requirements-lock.txt` 記錄固定版本。模型快取使用專案內的 `checkpoints/`，Hugging Face 權重與快取檔案會被 `.gitignore` 排除；`val.md` 和 `val.xlsx` 則保留為可追蹤的工作流文件。啟動 API 時若固定 revision 尚未快取，服務會自動下載至該目錄。
+## API 与测试
 
-## 目前提供的 API
+- `GET /health`、`GET /v1/models`
+- `POST /v1/chat/completions`：OpenAI 相容文字／图片聊天；支援模型能力宣告的文字 SSE。
+- `POST /v1/videos/understand`：Mage-VL 影片上传理解。
+- `/v1/live/*`：Mage-VL 即时影片工作阶段 API；RTSP／RTMP 媒体流由 MediaMTX sidecar 处理。
 
-- `GET /health`
-- `GET /v1/models`
-- `POST /v1/chat/completions`：相容 OpenAI 格式的文字／圖片請求並支援 SSE；Mage-VL 要求圖片，Qwen3-0.6B 僅接受文字。
-- `POST /v1/videos/understand`：上傳視訊檔案並取得理解結果。
-- `/v1/live/*`：即時視訊工作階段 API；RTSP／RTMP 推流另需啟動 MediaMTX sidecar。
-
-Qwen3-0.6B 是已登錄的純文字模型，上游權重位於 `checkpoints/Qwen3-0.6B-c1899de/`；其直接推論 API 預設使用 `127.0.0.1:8011`，Mage-VL 仍使用 `127.0.0.1:8001`。Qwen 使用本地 PyTorch 計算圖、批次 prefill/decode 與 Worker 實體 KV page pool；Mage-VL 維持原有 Transformers Runner 與邏輯 KV reservation。Inference Engine 借鑑 vLLM／nano-vLLM 的元件職責，沒有 vLLM backend、自訂 PagedAttention kernel 或 prefix cache。模型下載、服務啟動及 Qwen SSE 性能採樣命令見 [`scripts/README.md`](scripts/README.md)。根目錄 `example.py` 仍示範透過 Gateway 呼叫 Mage-VL 圖片聊天；Gateway 與推論服務的分層測試及性能基線方式見 [`src/gateway/README.md`](src/gateway/README.md)。
+Gateway 预设监听 `127.0.0.1:8000`。测试按模型整理于 `tests/qwen3_0_6b/` 和 `tests/mage_vl_4b/`，每个模型包含计算图对照、推理性能比较和 Gateway 端到端三项测试；细节见 [`tests/README.md`](tests/README.md)。`checkpoints/val.md` 和 `checkpoints/val.xlsx` 是受保护的既有验收记录。

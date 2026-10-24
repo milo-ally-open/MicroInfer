@@ -1,4 +1,4 @@
-"""建立 Mage-VL 專屬的 Live session 管理器。"""
+"""建立 Mage-VL 专属的 Live session 管理器。"""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ from typing import Any
 
 from media.live_sessions import LiveSessionManager
 
-from . import config
+from .utils import loader as config
 
 
 def _resize_live_frame(image: Any, max_side: int) -> Any:
-    """依模型設定調整 Live frame，並保留長寬比例。"""
+    """依模型设定调整 Live frame，并保留长宽比例。"""
     from PIL import Image
 
     resampling = {
@@ -26,7 +26,7 @@ def _resize_live_frame(image: Any, max_side: int) -> Any:
 
 
 def create_live_session_manager(engine: Any) -> LiveSessionManager:
-    """由共用 API 裝配器呼叫，將 Mage-VL 即時推流接到共用 Engine。"""
+    """由共用 API 装配器呼叫，将 Mage-VL 即时推流接到共用 Engine。"""
     return LiveSessionManager(
         settings=config.LIVE_SETTINGS,
         try_inference=engine.try_live_inference,

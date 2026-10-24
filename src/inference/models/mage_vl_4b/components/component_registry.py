@@ -1,4 +1,4 @@
-"""列出固定 Mage-VL 架構元件，並套用模型包內登記的替換實作。"""
+"""列出固定 Mage-VL 架构元件，并套用模型包内登记的替换实作。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 @dataclass(frozen=True)
 class ComponentSlot:
-    """固定 revision 中可觀察或替換的模型模組群組。"""
+    """固定 revision 中可观察或替换的模型模组群组。"""
 
     name: str
     path_pattern: str
@@ -17,7 +17,7 @@ class ComponentSlot:
 
 @dataclass(frozen=True)
 class ComponentDescriptor:
-    """載入模型後找到的單一模組路徑與實際類別。"""
+    """载入模型后找到的单一模组路径与实际类别。"""
 
     slot: str
     path: str
@@ -43,7 +43,7 @@ MAGE_VL_COMPONENT_SLOTS = (
 
 
 class MageVLComponentRegistry:
-    """以固定模組路徑登記本地實作，不從 YAML 動態匯入程式碼。"""
+    """以固定模组路径登记本地实作，不从 YAML 动态汇入程式码。"""
 
     def __init__(self) -> None:
         self._slots = {slot.name: slot for slot in MAGE_VL_COMPONENT_SLOTS}
@@ -57,7 +57,7 @@ class MageVLComponentRegistry:
         *,
         transfer_weights: Callable[[Any, Any], None] | None = None,
     ) -> None:
-        """登記模型包中的替換 factory；factory 必須回傳完整初始化的模組。"""
+        """登记模型包中的替换 factory；factory 必须回传完整初始化的模组。"""
         if slot not in self._slots:
             raise ValueError(f"Unknown Mage-VL component slot: {slot}")
         if not implementation or implementation.strip() != implementation:
@@ -70,7 +70,7 @@ class MageVLComponentRegistry:
         self._replacements[key] = _Replacement(factory, transfer_weights)
 
     def validate_configuration(self, configured: Any) -> tuple[tuple[str, str, _Replacement], ...]:
-        """在載入權重前確認 YAML 只選取已登記的模型包實作。"""
+        """在载入权重前确认 YAML 只选取已登记的模型包实作。"""
         if configured is None:
             configured = {}
         if not isinstance(configured, dict):
@@ -92,7 +92,7 @@ class MageVLComponentRegistry:
         return tuple(validated)
 
     def inventory(self, model: Any) -> dict[str, tuple[ComponentDescriptor, ...]]:
-        """依固定 revision 的路徑樣式檢查已載入模型的主要元件。"""
+        """依固定 revision 的路径样式检查已载入模型的主要元件。"""
         named_modules = dict(model.named_modules())
         inventory: dict[str, tuple[ComponentDescriptor, ...]] = {}
         missing: list[str] = []
@@ -113,7 +113,7 @@ class MageVLComponentRegistry:
         return inventory
 
     def apply(self, model: Any, configured: Any) -> tuple[Any, tuple[str, ...]]:
-        """套用 YAML 選取的替換；預設不變更 Transformers 載入的模組。"""
+        """套用 YAML 选取的替换；预设不变更 Transformers 载入的模组。"""
         replacements = self.validate_configuration(configured)
         if not replacements:
             return model, ()
@@ -134,7 +134,7 @@ class MageVLComponentRegistry:
                     candidate.train(bool(getattr(original, "training", False)))
                 pending.append((descriptor.path, original, candidate))
 
-        # 所有模組均建立並完成權重轉移後才修改樹，避免前段成功、後段失敗留下半套模型。
+        # 所有模组均建立并完成权重转移后才修改树，避免前段成功、后段失败留下半套模型。
         applied: list[tuple[str, Any]] = []
         try:
             for path, original, candidate in pending:
@@ -164,7 +164,7 @@ class MageVLComponentRegistry:
 
     @staticmethod
     def _copy_compatible_weights(original: Any, replacement: Any, path: str) -> None:
-        """嚴格複製相同 state-dict 結構；轉換型實作需提供專用 weight loader。"""
+        """严格复制相同 state-dict 结构；转换型实作需提供专用 weight loader。"""
         parameters = iter(original.parameters()) if hasattr(original, "parameters") else iter(())
         parameter = next(parameters, None)
         if parameter is not None and hasattr(replacement, "to"):

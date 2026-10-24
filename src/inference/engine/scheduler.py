@@ -1,4 +1,4 @@
-"""以等待／執行佇列和 token 預算規劃線上推論批次。"""
+"""以等待／执行伫列和 token 预算规划线上推论批次。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from engine.contracts import ExecutionPhase, ScheduledBatch, ScheduledWorkItem, 
 
 
 class SchedulerFullError(RuntimeError):
-    """等待佇列及執行序列均已達上限。"""
+    """等待伫列及执行序列均已达上限。"""
 
 
 class _RequestState:
@@ -31,7 +31,7 @@ class _RequestState:
 
 
 class TokenScheduler:
-    """以序列上限、輪次 token 預算和 prefill chunk 規劃混合 Runner 工作。"""
+    """以序列上限、轮次 token 预算和 prefill chunk 规划混合 Runner 工作。"""
 
     def __init__(
         self,
@@ -99,7 +99,7 @@ class TokenScheduler:
             self._condition.notify_all()
 
     def schedule_batch(self) -> ScheduledBatch | None:
-        """以一輪 token 預算建立可同時包含 prefill 與 decode 的批次。"""
+        """以一轮 token 预算建立可同时包含 prefill 与 decode 的批次。"""
         with self._condition:
             if self._running or not self._ready:
                 return None
@@ -152,7 +152,7 @@ class TokenScheduler:
             return batch
 
     def complete_batch(self, results: tuple[WorkerResult, ...] | list[WorkerResult]) -> None:
-        """套用批次結果，將未完成 request 放回 decode 佇列。"""
+        """套用批次结果，将未完成 request 放回 decode 伫列。"""
         result_ids = [result.request_id for result in results]
         with self._condition:
             if not self._running or len(result_ids) != len(set(result_ids)) or set(result_ids) != self._inflight:
@@ -202,7 +202,7 @@ class TokenScheduler:
             self._condition.notify_all()
 
     def abort_batch(self, request_ids: set[str]) -> None:
-        """Worker 批次失敗時清除本輪排程狀態，等待 Engine 統一釋放各請求資源。"""
+        """Worker 批次失败时清除本轮排程状态，等待 Engine 统一释放各请求资源。"""
         with self._condition:
             if not self._running or request_ids != self._inflight:
                 raise RuntimeError("Only the active Worker batch can be aborted.")

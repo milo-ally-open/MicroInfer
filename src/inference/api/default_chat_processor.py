@@ -1,4 +1,4 @@
-"""為標準文字模型提供共用的 Tokenizer／Chat Template 輸入處理。"""
+"""为标准文字模型提供共用的 Tokenizer／Chat Template 输入处理。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from engine.model_config import model_source, selected_config, selected_model
 
 
 class DefaultChatInputProcessor(ChatInputProcessor):
-    """使用上游 Tokenizer 的 chat_template，不要求模型包撰寫薄型包裝器。"""
+    """使用上游 Tokenizer 的 chat_template，不要求模型包撰写薄型包装器。"""
 
     def __init__(self) -> None:
         self.tokenizer: Any = None

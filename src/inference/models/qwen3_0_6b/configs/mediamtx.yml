@@ -1,2 +1,0 @@
-# Qwen3-0.6B 是純文字模型，不啟用 MediaMTX。
-enabled: false

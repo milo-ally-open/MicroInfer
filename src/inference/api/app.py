@@ -1,4 +1,4 @@
-"""組裝 API Server、路由及 Inference Engine 生命週期。"""
+"""组装 API Server、路由及 Inference Engine 生命周期。"""
 
 from __future__ import annotations
 
@@ -14,11 +14,24 @@ from engine.errors import InferenceError
 
 
 class ContentLengthLimitMiddleware:
-    """以純 ASGI middleware 驗證本文長度，避免包裝 SSE response iterator。"""
+    """以纯 ASGI middleware 验证本文长度，避免包装 SSE response iterator。"""
 
     def __init__(self, app: Any, *, request_limits: dict[str, tuple[str, int]]) -> None:
         self.app = app
-        self.request_limits = request_limits
+        for path, policy in request_limits.items():
+            if (
+                not isinstance(path, str)
+                or not path.startswith("/")
+                or not isinstance(policy, (tuple, list))
+                or len(policy) != 2
+                or not isinstance(policy[0], str)
+                or not policy[0].strip()
+                or not isinstance(policy[1], int)
+                or isinstance(policy[1], bool)
+                or policy[1] < 1
+            ):
+                raise ValueError(f"Invalid request size policy for {path!r}.")
+        self.request_limits = dict(request_limits)
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope.get("type") != "http" or scope.get("method") != "POST":
@@ -29,16 +42,19 @@ class ContentLengthLimitMiddleware:
             await self.app(scope, receive, send)
             return
         label, max_bytes = configured_limit
-        headers = {key.lower(): value for key, value in scope.get("headers", ())}
-        content_length = headers.get(b"content-length")
-        if content_length is None:
+        content_lengths = [
+            value for key, value in scope.get("headers", ()) if key.lower() == b"content-length"
+        ]
+        if not content_lengths:
             response = JSONResponse(
                 status_code=411,
                 content={"detail": "Content-Length is required for this endpoint."},
             )
+        elif len(content_lengths) != 1 or not content_lengths[0].isdigit():
+            response = JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header."})
         else:
             try:
-                request_bytes = int(content_length)
+                request_bytes = int(content_lengths[0])
             except ValueError:
                 response = JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header."})
             else:
@@ -67,7 +83,7 @@ def create_app(
     enable_video: bool = True,
     enable_live_sessions: bool = True,
 ) -> FastAPI:
-    """建立不依賴特定模型套件的 FastAPI app。"""
+    """建立不依赖特定模型套件的 FastAPI app。"""
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -79,10 +95,12 @@ def create_app(
             engine_started = True
             yield
         finally:
-            if engine_started:
-                engine.close()
-            if input_processor is not None:
-                input_processor.close()
+            try:
+                if engine_started:
+                    engine.close()
+            finally:
+                if input_processor is not None:
+                    input_processor.close()
 
     app = FastAPI(title=title or f"{model_id} API", version="0.1.0", lifespan=lifespan)
     app.state.engine = engine

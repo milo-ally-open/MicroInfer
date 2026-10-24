@@ -1,8 +1,9 @@
-"""提供符合逐步 Cache 契約之標準文字因果語言模型 Runner／Adapter。"""
+"""提供符合逐步 Cache 契约之标准文字因果语言模型 Runner／Adapter。"""
 
 from __future__ import annotations
 
 import inspect
+import logging
 from collections.abc import Sequence
 from typing import Any
 
@@ -20,11 +21,14 @@ from engine.model_config import model_source, selected_config, selected_model
 from engine.platform import Platform, create_platform
 
 
-class StandardTextModelRunner:
-    """使用上游 Transformers causal LM forward 的單裝置逐步 Runner。
+logger = logging.getLogger(__name__)
 
-    Runner 每次 Worker batch 依序執行各 work item；Cache 由模型提供並按 request ID
-    持有。Engine KV block 在此路徑僅代表容量租約，並非實體 paged attention。
+
+class StandardTextModelRunner:
+    """使用上游 Transformers causal LM forward 的单装置逐步 Runner。
+
+    Runner 每次 Worker batch 依序执行各 work item；Cache 由模型提供并按 request ID
+    持有。Engine KV block 在此路径仅代表容量租约，并非实体 paged attention。
     """
 
     def __init__(self, platform: Platform | None = None) -> None:
@@ -39,7 +43,7 @@ class StandardTextModelRunner:
         self._block_size_tokens = 16
 
     def load(self) -> None:
-        """依模型 YAML 載入單裝置 AutoModelForCausalLM 與設定。"""
+        """依模型 YAML 载入单装置 AutoModelForCausalLM 与设定。"""
         config = selected_config("INFERENCE_CONFIG")
         model_settings = config.get("model", {})
         runtime = config.get("runtime", {})
@@ -88,7 +92,10 @@ class StandardTextModelRunner:
             parameters = inspect.signature(self.model.forward).parameters
             self._forward_parameters = set(parameters)
         except BaseException:
-            self.close()
+            try:
+                self.close()
+            except BaseException:
+                logger.exception("Could not release standard text model resources after loading failed")
             raise
 
     def begin_generation(self, request_id: str, inputs: dict[str, Any], options: dict[str, Any]) -> None:
@@ -136,7 +143,7 @@ class StandardTextModelRunner:
         return 1
 
     def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> tuple[WorkerResult, ...]:
-        """依照共用 Worker batch 契約執行，保留每個 request 的獨立 Cache。"""
+        """依照共用 Worker batch 契约执行，保留每个 request 的独立 Cache。"""
         if not requests:
             raise ValueError("The standard text Runner requires at least one work item.")
         ids = [item.request_id for item in requests]
@@ -338,7 +345,7 @@ class StandardTextModelRunner:
 
 
 class StandardTextModelAdapter:
-    """將共用 Engine 工作適配至標準文字 Runner。"""
+    """将共用 Engine 工作适配至标准文字 Runner。"""
 
     def __init__(self, model_runner: StandardTextModelRunner) -> None:
         self.model_runner = model_runner

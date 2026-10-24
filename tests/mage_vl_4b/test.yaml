@@ -1,0 +1,17 @@
+# Mage-VL-4B 测试设定；所有相对路径皆以本档所在目录为基准。
+model_alias: mage-vl-4b
+snapshot: ../../checkpoints/microsoft-Mage-VL-d88b153
+inference_config: ../../src/inference/models/mage_vl_4b/configs/inference.yml
+inference_url: http://127.0.0.1:8001
+gateway_url: http://127.0.0.1:8000
+api_key_env: VIDEO_API_KEY
+prompt: "请简要描述图片中的主要内容。"
+image: ../../magevl-soccer-frame.jpg
+video: ../../test.mp4
+max_new_tokens: 8
+warmup_requests: 1
+iterations: 3
+timeout_seconds: 900
+component:
+  engine_module: ../../src/inference
+  dtype: bfloat16

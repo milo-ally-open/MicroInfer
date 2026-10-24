@@ -1,4 +1,4 @@
-# Mage-VL 探索設定；沿用正式 inference.yml 結構，輸出 token 數預設為 8。
+# Mage-VL 探索设定；沿用正式 inference.yml 结构，输出 token 数预设为 8。
 hardware:
   expected_gpu: NVIDIA GeForce RTX 4060 Laptop GPU
 

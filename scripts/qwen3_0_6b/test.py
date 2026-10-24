@@ -1,4 +1,4 @@
-"""離線擷取 Qwen3-0.6B 模型結構、文字生成及 GPU 資訊。"""
+"""离线撷取 Qwen3-0.6B 模型结构、文字生成及 GPU 资讯。"""
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ from typing import Any
 
 
 def _arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="使用明確指定的本機權重測試 Qwen3-0.6B。")
-    parser.add_argument("--config", required=True, type=Path, help="必須明確指定探索 YAML。")
-    parser.add_argument("--model-path", required=True, type=Path, help="必須明確指定本機模型快照。")
+    parser = argparse.ArgumentParser(description="使用明确指定的本机权重测试 Qwen3-0.6B。")
+    parser.add_argument("--config", required=True, type=Path, help="必须明确指定探索 YAML。")
+    parser.add_argument("--model-path", required=True, type=Path, help="必须明确指定本机模型快照。")
     parser.add_argument("--prompt", required=True, help="送入 Qwen3 chat template 的使用者文字。")
-    parser.add_argument("--output", required=True, type=Path, help="必須明確指定 JSON 報告路徑。")
-    parser.add_argument("--max-new-tokens", type=int, help="覆寫 YAML 中 generation.max_new_tokens。")
+    parser.add_argument("--output", required=True, type=Path, help="必须明确指定 JSON 报告路径。")
+    parser.add_argument("--max-new-tokens", type=int, help="覆写 YAML 中 generation.max_new_tokens。")
     return parser.parse_args()
 
 

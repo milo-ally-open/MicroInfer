@@ -1,4 +1,4 @@
-"""MediaMTX 即時工作階段 API 與 SSE 事件路由。"""
+"""MediaMTX 即时工作阶段 API 与 SSE 事件路由。"""
 
 from __future__ import annotations
 
@@ -150,7 +150,7 @@ def stop_session(session_id: str, request: Request) -> dict[str, str]:
 
 @router.post("/v1/live/mediamtx/auth")
 async def authorize_mediamtx_client(request: Request) -> Response:
-    """只授權仍有效工作階段使用的 RTSP／RTMP 路徑。"""
+    """只授权仍有效工作阶段使用的 RTSP／RTMP 路径。"""
     try:
         body = await request.json()
     except Exception as exc:

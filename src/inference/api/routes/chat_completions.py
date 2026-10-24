@@ -1,4 +1,4 @@
-"""OpenAI 風格聊天請求及 SSE 回應路由。"""
+"""OpenAI 风格聊天请求及 SSE 回应路由。"""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class DisconnectAwareStreamingResponse(StreamingResponse):
-    """同時送出 SSE 並監聽客戶端斷線，及時關閉上游事件 iterator。"""
+    """同时送出 SSE 并监听客户端断线，及时关闭上游事件 iterator。"""
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         async with anyio.create_task_group() as task_group:
@@ -47,7 +47,7 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
 
 
 def _next_stream_event(stream: Any) -> Any:
-    """從同步 Engine stream 取得下一事件，以 sentinel 表示正常結束。"""
+    """从同步 Engine stream 取得下一事件，以 sentinel 表示正常结束。"""
     try:
         return next(stream)
     except StopIteration:
@@ -74,7 +74,15 @@ async def chat_completions(body: ChatCompletionRequest, request: Request) -> Any
         raise HTTPException(status_code=400, detail="This model does not support streaming output.")
     request_body = body.model_dump(exclude_none=True)
     input_processor = request.app.state.input_processor
-    prepared_input = input_processor.prepare_chat(request_body) if input_processor is not None else None
+    # Tokenizer、Chat Template 与多模态前处理可能耗时，避免同步阻塞 ASGI event loop。
+    try:
+        prepared_input = (
+            await run_in_threadpool(input_processor.prepare_chat, request_body)
+            if input_processor is not None
+            else None
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if body.stream:
         output_processor = (
             input_processor.create_stream_output_processor() if input_processor is not None else None
@@ -138,8 +146,9 @@ async def chat_completions(body: ChatCompletionRequest, request: Request) -> Any
             except InferenceError as exc:
                 error = {"error": {"message": exc.detail, "type": "invalid_request_error"}}
                 yield f"data: {json.dumps(error, ensure_ascii=False)}\n\n"
-            except Exception as exc:
-                error = {"error": {"message": str(exc), "type": "server_error"}}
+            except Exception:
+                logger.exception("Streaming inference request failed")
+                error = {"error": {"message": "Inference request failed.", "type": "server_error"}}
                 yield f"data: {json.dumps(error, ensure_ascii=False)}\n\n"
             finally:
                 cancel = getattr(stream, "cancel", None)

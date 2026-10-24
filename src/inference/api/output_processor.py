@@ -6,7 +6,7 @@ from typing import Any
 
 
 class IncrementalDetokenizer:
-    """以累積 token IDs 增量解碼，緩衝不完整的 Unicode replacement。"""
+    """以累积 token IDs 增量解码，缓冲不完整的 Unicode replacement。"""
 
     def __init__(self, tokenizer: Any) -> None:
         self.tokenizer = tokenizer

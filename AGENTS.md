@@ -1,71 +1,73 @@
-# VideoStreamAPI 專案協作規範
+# VideoStreamAPI 专案协作规范
 
-## 專案目標
+## 专案目标
 
-本專案用於建置視訊理解模型的 API 服務與模型無關的 API 閘道。閘道和推論服務是不同元件，必須分開維護：閘道處理外部客戶端接入，推論服務負責模型載入、GPU 推理及模型專屬功能。
+本专案用于建置视讯理解模型的 API 服务与模型无关的 API 闸道。闸道和推论服务是不同元件，必须分开维护：闸道处理外部客户端接入，推论服务负责模型载入、GPU 推理及模型专属功能。
 
-## 目前狀態
+## 目前状态
 
-- `src/inference/` 已有 Mage-VL-4B Transformers 推論服務，以及 Qwen3-0.6B 原生 PyTorch 推論引擎；共用 API／Engine 分層、Token Scheduler 與子程序 Model Worker。
-- `src/gateway/` 已實作 Go API 閘道 v1；目前能力與限制見 `src/gateway/README.md` 及 `docs/Specifications/gateway/`。
-- 目前登錄模型為 `mage-vl-4b`（上游 `microsoft/Mage-VL`）及 `qwen3-0.6b`（上游 `Qwen/Qwen3-0.6B`）。不要把專案別名和 Hugging Face `repo_id` 混為一談。
-- SGLang 與 vLLM inference backend 尚未實作；Inference Engine 參考 vLLM／nano-vLLM 的 API、Engine、Scheduler、KV 與 Worker 職責，但不宣稱其相容性或效能。Mage-VL 的 KV 是邏輯 reservation；Qwen Worker 將 Engine block ID 對應至實體 GPU page，SDPA 前仍會 gather，尚非 PagedAttention kernel。Go 閘道 v1 已實作，但仍須依實際驗收證據描述其能力，不代表已部署或通過真實模型整合。
+- `src/inference/` 已有 Mage-VL-4B Transformers 推论服务，以及 Qwen3-0.6B 原生 PyTorch 推论引擎；共用 API／Engine 分层、Token Scheduler 与子程序 Model Worker。
+- `src/gateway/` 已实作 Go API 闸道 v1；目前能力与限制见 `src/gateway/README.md` 及 `docs/Specifications/gateway/`。
+- 目前登录模型为 `mage-vl-4b`（上游 `microsoft/Mage-VL`）及 `qwen3-0.6b`（上游 `Qwen/Qwen3-0.6B`）。不要把专案别名和 Hugging Face `repo_id` 混为一谈。
+- SGLang 与 vLLM inference backend 尚未实作；Inference Engine 参考 vLLM／nano-vLLM 的 API、Engine、Scheduler、KV 与 Worker 职责，但不宣称其相容性或效能。Mage-VL 的 KV 是逻辑 reservation；Qwen Worker 将 Engine block ID 对应至实体 GPU page，GQA 注意力计算前仍会 gather，尚非 PagedAttention kernel。Go 闸道 v1 已实作，但仍须依实际验收证据描述其能力，不代表已部署或通过真实模型整合。
 
-## 重要目錄與文件
+## 重要目录与文件
 
 ```text
-checkpoints/                         # 本機模型權重與 Hugging Face 快取
-docs/                                # 專案文件
-scripts/download.py                  # 通用 Hugging Face 模型下載工具
-scripts/mage_vl_4b/                      # Mage-VL 專屬探索與診斷工具
-scripts/qwen3_0_6b/                      # Qwen3-0.6B 專屬探索與診斷工具
-scripts/README.md                    # Scripts 工具使用說明
-src/gateway/                         # Go API 閘道與 route/stream/upstream/videoproxy 模組
-src/inference/api/                   # 共用 FastAPI app、schemas 與 routes
-src/inference/api/service_app.py     # 依模型登錄建立共用 API app
+checkpoints/                         # 本机模型权重与 Hugging Face 快取
+docs/                                # 专案文件
+scripts/download.py                  # 通用 Hugging Face 模型下载工具
+scripts/mage_vl_4b/                      # Mage-VL 专属探索与诊断工具
+scripts/qwen3_0_6b/                      # Qwen3-0.6B 专属探索与诊断工具
+scripts/README.md                    # Scripts 工具使用说明
+src/gateway/                         # Go API 闸道与 route/stream/upstream/videoproxy 模组
+src/inference/api/                   # 共用 FastAPI app、schemas 与 routes
+src/inference/api/service_app.py     # 依模型登录建立共用 API app
 src/inference/engine/                # Engine Core、Token Scheduler、KV Cache Manager、Worker IPC
-src/inference/engine/model_bootstrap.py # 依模型登錄建立共用 Engine Core／Worker
-src/inference/media/                 # 通用影片及即時工作階段元件
-src/inference/models/<model>/        # 模型專屬程式、configs/ 與 requirements/
-src/inference/models/mage_vl_4b/     # Mage-VL Model Runner、前處理、設定及依賴
-src/inference/launcher.py            # 推論啟動器
-src/inference/model_registry.yaml    # 模型別名、設定檔及 Runner／Adapter 工廠登錄
-tests/                               # 測試目錄
+src/inference/engine/model_bootstrap.py # 依模型登录建立共用 Engine Core／Worker
+src/inference/media/                 # 通用影片及即时工作阶段元件
+src/inference/models/<model>/        # 模型专属程式、configs/ 与 requirements/
+src/inference/models/mage_vl_4b/     # Mage-VL Model Runner、前处理、设定及依赖
+src/inference/launcher.py            # 推论启动器
+tests/                               # 逐模型测试：tests/<model_alias>/（三项测试与 test.yaml）
 ```
 
-Inference 參考 vLLM／nano-vLLM 的 API Server、Engine Core、Scheduler、KV Cache Manager、Worker／Model Runner 職責拆分。API Server、Engine Core 與 Model Worker 為三個程序；Engine Core 逐輪排程 prompt prefill 與單 token decode。Mage-VL 的 Engine KV block 是邏輯 reservation；Qwen3 Worker 以同一 block ID 管理 GPU 實體 KV pages，Qwen Runner 支援同 phase 多序列批次 forward。沒有 vLLM backend、PagedAttention kernel、prefix cache 或第二個原生模型。
+Inference 参考 vLLM／nano-vLLM 的 API Server、Engine Core、Scheduler、KV Cache Manager、Worker／Model Runner 职责拆分。API Server、Engine Core 与 Model Worker 为三个程序；Engine Core 逐轮排程 prompt prefill 与单 token decode。Mage-VL 的 Engine KV block 是逻辑 reservation；Qwen3 Worker 以同一 block ID 管理 GPU 实体 KV pages，Qwen Runner 支援同 phase 多序列批次 forward。没有 vLLM backend、PagedAttention kernel、prefix cache 或第二个原生模型。
 
-`engine/batch_planner.py` 已由線上 Scheduler 呼叫；Mage-VL Runner 對相容的同階段請求執行多序列 forward，不相容時逐請求執行。Qwen3-0.6B 使用本地 PyTorch 計算圖、批次 Runner 與 Worker 實體 KV pool；其配置／tokenizer／Safetensors 仍沿用 Hugging Face 生態接口。Qwen 的 SDPA 會將 paged KV gather 為連續張量，尚無自訂 PagedAttention kernel。模型專屬探索工具依別名放在 `scripts/<model_alias>/`，不從 `src/` 匯入模組，且強制使用本機權重。
+`engine/batch_planner.py` 已由线上 Scheduler 呼叫；Mage-VL Runner 对相容的同阶段请求执行多序列 forward，不相容时逐请求执行。Mage-VL 视觉与文字骨干的注意力均由模型包实现；文字骨干亦自行组装 Qwen3 Attention、RMSNorm、MLP 与 Decoder layer，保留 Transformers 预训练权重及 Cache 介面。Mage-VL 的 Engine KV 是逻辑 reservation。Qwen3-0.6B 使用本地 PyTorch 计算图、批次 Runner 与 Worker 实体 KV pool；其配置／tokenizer／Safetensors 仍沿用 Hugging Face 生态接口。Qwen 的 GQA 会将 paged KV gather 为连续张量，尚无自订 PagedAttention kernel。模型专属探索工具依别名放在 `scripts/<model_alias>/`，不从 `src/` 汇入模组，且强制使用本机权重。
 
-開始修改前先閱讀根目錄 `README.md`，並依任務閱讀 `src/inference/README.md`、`src/gateway/README.md` 或 `scripts/README.md`。以實際工作樹內容為準；若文件和程式碼不一致，先查明差異，再只更新任務相關的內容。
+开始修改前先阅读根目录 `README.md`，并依任务阅读 `src/inference/README.md`、`src/gateway/README.md` 或 `scripts/README.md`。以实际工作树内容为准；若文件和程式码不一致，先查明差异，再只更新任务相关的内容。
 
-## 架構邊界
+## 架构边界
 
-- 閘道層負責客戶端認證與 API Key、租戶識別、請求政策、限流、路由、可觀測性，以及視訊請求和 SSE 回應的轉送。
-- 推論層負責模型權重與生命週期、影像／視訊理解、生成及 GPU 資源管理。不要把模型推論或 GPU 管理移入閘道。
-- MediaMTX 是即時推流時使用的 sidecar，不是模型服務或 API 閘道。圖片與上傳視訊檔案流程不應要求 MediaMTX。
-- 推論 API 預設為 `127.0.0.1:8001`；Gateway 預設監聽 `127.0.0.1:8000`。實際端點以目前設定檔為準，不要在程式中另行硬編碼。
-- `/v1/chat/completions` 支援文字／圖片輸入與 SSE 文字輸出。視訊檔案理解及即時視訊輸入依各自 API 逐段／單次回應；「流式輸出」指模型文字 token 的 SSE 輸出，不代表視訊輸入必須逐 token 或逐影格回傳。
+- 闸道层负责客户端认证与 API Key、租户识别、请求政策、限流、路由、可观测性，以及视讯请求和 SSE 回应的转送。
+- 推论层负责模型权重与生命周期、影像／视讯理解、生成及 GPU 资源管理。不要把模型推论或 GPU 管理移入闸道。
+- MediaMTX 是即时推流时使用的 sidecar，不是模型服务或 API 闸道。图片与上传视讯档案流程不应要求 MediaMTX。
+- 推论 API 预设为 `127.0.0.1:8001`；Gateway 预设监听 `127.0.0.1:8000`。实际端点以目前设定档为准，不要在程式中另行硬编码。
+- `/v1/chat/completions` 支援文字／图片输入与 SSE 文字输出。视讯档案理解及即时视讯输入依各自 API 逐段／单次回应；「流式输出」指模型文字 token 的 SSE 输出，不代表视讯输入必须逐 token 或逐影格回传。
 
-## 設定與權重
+## 设定与权重
 
-- 模型及服務設定優先從 YAML 載入。`model_registry.yaml` 登錄模型別名、推論／網路／媒體設定路徑、Runner／Adapter 工廠及選用 API 元件；所有模型共用 `api/service_app.py` 和 `engine/model_bootstrap.py`，新模型不需建立專屬 `app.py` 或 `engine_core.py`。模型程式、設定和依賴清單集中在 `src/inference/models/<model>/`。Engine 排程和邏輯 cache 參數放對應模型 `configs/inference.yml` 的 `engine` 區段。
-- 模型推論參數放在模型包的 `configs/inference.yml`；API 綁定位址及串流端點放在 `configs/network.yml`；MediaMTX 設定放在 `configs/mediamtx.yml`。新增或調整可調參數時，優先加入合適的 YAML，不要把實驗超參數散落在 Python 或 shell 腳本。
-- API 啟動時會依固定 Hugging Face revision 載入模型；缺少權重時可自動下載至根目錄 `checkpoints/`。通用下載工具則使用 `scripts/download.py`，並要求明確指定 `--repo-id`、`--revision` 和 `--local-dir`。
-- `checkpoints/` 內的大型權重及快取由 `.gitignore` 忽略；`checkpoints/val.md` 和 `checkpoints/val.xlsx` 必須保留為可追蹤文件。不要刪除、搬移或覆蓋這兩個工作流文件。
-- 不要在 Git 中加入模型權重、快取、私密金鑰或 API token。認證資料由環境變數或安全設定提供。
+- 每个模型的 `configs/model.yaml` 登记 alias、API 能力、Runtime／Processor 工厂及相对设定档名。Launcher 自动发现 `models/*/configs/model.yaml`，启动时必须透过 `--model` 指定 alias，且相对设定路径以 manifest 的 `configs/` 目录为基准。所有模型共用 `api/service_app.py` 和 `engine/model_bootstrap.py`；新模型不需建立专属 `app.py` 或 `engine_core.py`。
+- 模型程式、设定和依赖清单集中在 `src/inference/models/<model>/`。依需要建立 `runtime.py`、`processor.py`、`model/`、`components/`、`layers/`、`utils/`、`loader.py`；不需建立空目录。推论参数、Scheduler／KV 与请求上限放对应模型 `configs/inference.yml`；模型服务位址放 `configs/network.yml`。MediaMTX sidecar 设定集中在 `deploy/mediamtx/mediamtx.yml`，不得登记到单一模型 manifest 或模型设定目录。
+- 模型推论参数放在模型包的 `configs/inference.yml`；API 绑定位址及模型连接的媒体端点放在 `configs/network.yml`；MediaMTX 服务本身的监听、认证与协定设定放在独立的 `deploy/mediamtx/mediamtx.yml`。新增或调整可调参数时，优先加入合适的 YAML，不要把实验超参数散落在 Python 或 shell 脚本。
+- API 启动时会依固定 Hugging Face revision 载入模型；缺少权重时可自动下载至根目录 `checkpoints/`。通用下载工具则使用 `scripts/download.py`，并要求明确指定 `--repo-id`、`--revision` 和 `--local-dir`。
+- `checkpoints/` 内的大型权重及快取由 `.gitignore` 忽略；`checkpoints/val.md` 和 `checkpoints/val.xlsx` 必须保留为可追踪文件。不要删除、搬移或覆盖这两个工作流文件。
+- 不要在 Git 中加入模型权重、快取、私密金钥或 API token。认证资料由环境变数或安全设定提供。
 
-## 修改與驗證方式
+## 修改与验证方式
 
-- 先檢查相關程式、設定、文件和現有工作樹修改，再進行最小範圍的變更。保留使用者已有的未提交修改，不要用整檔覆寫方式抹除它們。
-- 不要自行下載大型模型、啟動 GPU 推論服務、修改遠端伺服器或推送遠端倉庫；只有在使用者明確要求時才執行。
-- 不要自行提交或推送 Git 變更，除非使用者明確要求。不要未經要求建立新分支。
-- 除非使用者明確要求測試／驗證，或任務明確要求交付驗證結果，否則不要新增或執行測試。若未執行，清楚說明；不得宣稱未做的檢查已通過。
-- 執行任何刪除、搬移、清理或覆寫前，先核對目標路徑和影響範圍；涉及模型權重或工作流資料時格外小心。
-- 完成後摘要實際修改、相關檔案、驗證方式與尚未處理的事項。不要把計畫描述成已實作。
+- 测试按模型放在 `tests/<model_alias>/`，每个模型维护 `test_components.py`、`test_performance.py`、`test_end2end.py` 和明确传入的 `test.yaml`；结果放同目录 `results/`。执行方式见 `tests/README.md`。`test_performance.py` 需要足以同时执行服务与直接基线生成的装置记忆体；只执行元件对照时不载入权重或初始化 GPU。
 
-## 語言與文件
+- 先检查相关程式、设定、文件和现有工作树修改，再进行最小范围的变更。保留使用者已有的未提交修改，不要用整档覆写方式抹除它们。
+- 不要自行下载大型模型、启动 GPU 推论服务、修改远端伺服器或推送远端仓库；只有在使用者明确要求时才执行。
+- 不要自行提交或推送 Git 变更，除非使用者明确要求。不要未经要求建立新分支。
+- 除非使用者明确要求测试／验证，或任务明确要求交付验证结果，否则不要新增或执行测试。若未执行，清楚说明；不得宣称未做的检查已通过。
+- 执行任何删除、搬移、清理或覆写前，先核对目标路径和影响范围；涉及模型权重或工作流资料时格外小心。
+- 完成后摘要实际修改、相关档案、验证方式与尚未处理的事项。不要把计划描述成已实作。
 
-- 與使用者溝通使用簡體中文。
-- 專案文件、程式註解和面向開發者的說明使用繁體中文；程式識別字、命令、API 欄位及上游專有名稱維持原文。
-- 文件中的啟動順序、連接埠、端點和設定路徑必須與實際程式及 YAML 一致。
+## 语言与文件
+
+- 与使用者沟通使用简体中文。
+- 专案文件、程式注解和面向开发者的说明使用简体中文；程式识别字、命令、API 栏位及上游专有名称维持原文。
+- 文件中的启动顺序、连接埠、端点和设定路径必须与实际程式及 YAML 一致。

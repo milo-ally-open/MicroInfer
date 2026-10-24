@@ -1,4 +1,4 @@
-"""抽象推論 Worker 使用的加速器與裝置觀測能力。"""
+"""抽象推论 Worker 使用的加速器与装置观测能力。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Any, Protocol
 
 
 class Platform(Protocol):
-    """Model Runner 使用的裝置、記憶體與資源釋放介面。"""
+    """Model Runner 使用的装置、记忆体与资源释放介面。"""
 
     name: str
 
@@ -22,7 +22,7 @@ class Platform(Protocol):
 
 
 class TorchCudaPlatform:
-    """本機 CUDA 平台；其他裝置後端可實作相同契約。"""
+    """本机 CUDA 平台；其他装置后端可实作相同契约。"""
 
     name = "torch_cuda"
 
@@ -69,7 +69,7 @@ class TorchCudaPlatform:
 
 
 def create_platform(name: str) -> Platform:
-    """依模型 YAML 的平台識別碼建立已登記平台。"""
+    """依模型 YAML 的平台识别码建立已登记平台。"""
     if name == TorchCudaPlatform.name:
         return TorchCudaPlatform()
     raise ValueError(f"Unsupported inference platform: {name}.")

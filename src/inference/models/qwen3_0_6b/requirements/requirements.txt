@@ -1,4 +1,0 @@
-# 使用服務共用環境中的 PyTorch CUDA 套件。
-transformers==5.19.0
-accelerate==1.15.0
-safetensors==0.8.0

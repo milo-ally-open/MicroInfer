@@ -1,4 +1,4 @@
-"""依模型登錄表建立共用 API Server。"""
+"""依模型登录表建立共用 API Server。"""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ engine = EngineClient(
 
 capabilities = api_settings.get("capabilities")
 if not isinstance(capabilities, dict):
-    raise ValueError("model_registry.yaml api.capabilities must be a mapping.")
+    raise ValueError("model.yaml api.capabilities must be a mapping.")
 chat_inputs = capabilities.get("chat_inputs")
 if (
     not isinstance(chat_inputs, list)
@@ -39,19 +39,19 @@ if (
     or any(not isinstance(value, str) or value not in {"text", "image"} for value in chat_inputs)
     or len(set(chat_inputs)) != len(chat_inputs)
 ):
-    raise ValueError("model_registry.yaml api.capabilities.chat_inputs must contain text and/or image.")
+    raise ValueError("model.yaml api.capabilities.chat_inputs must contain text and/or image.")
 streaming_enabled = capabilities.get("streaming")
 video_enabled = capabilities.get("video_upload")
 live_enabled = capabilities.get("live_video")
 output_mode = capabilities.get("output_mode")
 if not isinstance(streaming_enabled, bool) or not isinstance(video_enabled, bool) or not isinstance(live_enabled, bool):
-    raise ValueError("model_registry.yaml streaming, video_upload, and live_video capabilities must be booleans.")
+    raise ValueError("model.yaml streaming, video_upload, and live_video capabilities must be booleans.")
 if output_mode not in {"text_delta", "token_ids"}:
-    raise ValueError("model_registry.yaml api.capabilities.output_mode must be text_delta or token_ids.")
+    raise ValueError("model.yaml api.capabilities.output_mode must be text_delta or token_ids.")
 
 input_processor_factory = api_settings.get("input_processor")
 if input_processor_factory is not None and not isinstance(input_processor_factory, str):
-    raise ValueError("model_registry.yaml api.input_processor must be a factory path string.")
+    raise ValueError("model.yaml api.input_processor must be a factory path string.")
 profile = str(model_spec.get("integration_profile", "custom"))
 if input_processor_factory:
     input_processor = load_factory(input_processor_factory)()
@@ -75,9 +75,9 @@ elif output_mode == "token_ids":
 
 live_manager_factory = api_settings.get("live_session_manager")
 if live_manager_factory is not None and not isinstance(live_manager_factory, str):
-    raise ValueError("model_registry.yaml api.live_session_manager must be a factory path string.")
+    raise ValueError("model.yaml api.live_session_manager must be a factory path string.")
 if live_enabled and not live_manager_factory:
-    raise ValueError("Live sessions require api.live_session_manager in model_registry.yaml.")
+    raise ValueError("Live sessions require api.live_session_manager in model.yaml.")
 if live_manager_factory:
     manager = load_factory(live_manager_factory)(engine)
     engine.attach_live_sessions(manager)

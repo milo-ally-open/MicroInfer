@@ -1,0 +1,15 @@
+# Qwen3-0.6B 测试设定；所有相对路径皆以本档所在目录为基准。
+model_alias: qwen3-0.6b
+snapshot: ../../checkpoints/Qwen3-0.6B-c1899de
+inference_config: ../../src/inference/models/qwen3_0_6b/configs/inference.yml
+inference_url: http://127.0.0.1:8011
+gateway_url: http://127.0.0.1:8000
+api_key_env: VIDEO_API_KEY
+prompt: "请用一句话说明大型语言模型推理服务。"
+max_new_tokens: 32
+warmup_requests: 1
+iterations: 3
+timeout_seconds: 300
+component:
+  engine_module: ../../src/inference
+  dtype: bfloat16

@@ -1,4 +1,4 @@
-"""將共用推論結果序列化為目前相容的 HTTP API 欄位。"""
+"""将共用推论结果序列化为目前相容的 HTTP API 栏位。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from engine.contracts import InferenceResult
 
 
 def chat_completion(result: InferenceResult, model_id: str, *, video: bool = False) -> dict[str, Any]:
-    """建立聊天或視訊理解 endpoint 使用的 JSON response。"""
+    """建立聊天或视讯理解 endpoint 使用的 JSON response。"""
     response: dict[str, Any] = {
         "id": f"{'videocmpl' if video else 'chatcmpl'}-{uuid.uuid4().hex}",
         "object": "chat.completion",

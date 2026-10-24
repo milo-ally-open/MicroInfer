@@ -2,15 +2,18 @@ hardware:
   expected_gpu: NVIDIA GeForce RTX 4060 Laptop GPU
 
 model:
-  # id 是 Hugging Face 上游模型識別碼，與本專案的 mage-vl-4b 別名不同，請勿改寫。
+  # id 是 Hugging Face 上游模型识别码，与本专案的 mage-vl-4b 别名不同，请勿改写。
   id: microsoft/Mage-VL
   revision: d88b153285f1633a61b2f693c59c8576693af185
   dtype: bfloat16
   device_map: auto
-  # 請先確認此模型版本與已安裝的核心均相容，再設定為 sdpa 或 flash_attention_2。
-  attn_implementation: null
+  # 视觉塔采模型包内明确 eager 注意力；文字骨干采模型包注册的分块 eager 实作。
+  attn_implementation: eager
+  attention:
+    # 分块文字 Query 限制长影片输入的注意力暂存显存。
+    query_chunk_size: 128
   experts_implementation: null
-  # Hugging Face 核心映射為選用功能；啟用前請固定並檢視遠端核心來源。
+  # Hugging Face 核心映射为选用功能；启用前请固定并检视远端核心来源。
   use_kernels: false
   kernel_config: null
   use_safetensors: true
@@ -18,12 +21,12 @@ model:
   offload_buffers: false
   disable_mmap: null
   components:
-    # 僅可選用 Mage-VL 模型包內已登記的模組替換；空對應表保留上游 Transformers 架構。
+    # 仅可选用 Mage-VL 模型包内已登记的模组替换；空对应表保留上游 Transformers 架构。
     replacements: {}
-  # Accelerate 選用卸載目錄；若模型完全常駐 GPU，請維持 null。
+  # Accelerate 选用卸载目录；若模型完全常驻 GPU，请维持 null。
   offload_folder: null
   quantization:
-    # 可選 none、nf4、int8 或 prequantized；後者使用模型權重內附的量化中繼資料。
+    # 可选 none、nf4、int8 或 prequantized；后者使用模型权重内附的量化中继资料。
     method: nf4
     quant_type: nf4
     double_quant: true
@@ -37,7 +40,7 @@ model:
     cpu_max_memory: 4GiB
 
 processor:
-  # 除非已確認快速處理器可用，否則交由 Transformers 選擇處理器實作。
+  # 除非已确认快速处理器可用，否则交由 Transformers 选择处理器实作。
   use_fast: null
 
 backend:
@@ -45,7 +48,7 @@ backend:
 
 runtime:
   hf_home: checkpoints
-  # 使用已下載的固定 revision 快照，避免啟動時查詢 Hub 或重新下載權重。
+  # 使用已下载的固定 revision 快照，避免启动时查询 Hub 或重新下载权重。
   local_model_path: checkpoints/microsoft-Mage-VL-d88b153
   hf_endpoint: https://huggingface.co
   local_files_only: true
@@ -107,14 +110,14 @@ api:
   stream_timeout_seconds: 300
 
 engine:
-  # 單一 Model Worker 上的輪轉序列數與等待佇列上限。
+  # 单一 Model Worker 上的轮转序列数与等待伫列上限。
   max_num_seqs: 4
   max_waiting_requests: 16
-  # 短暫合併可同時執行的工作；此等待時間會增加少量首 token latency。
+  # 短暂合并可同时执行的工作；此等待时间会增加少量首 token latency。
   batch_wait_seconds: 0.01
-  # 每輪實際執行 token 上限。首個 chunk 會包含全部視覺 token，必要時可大於 chunk size。
+  # 每轮实际执行 token 上限。首个 chunk 会包含全部视觉 token，必要时可大于 chunk size。
   max_num_scheduled_tokens: 8192
-  # 其餘 prompt token 分輪追加至同一請求的 Transformers Cache。
+  # 其余 prompt token 分轮追加至同一请求的 Transformers Cache。
   prefill_chunk_size_tokens: 2048
   kv_cache:
     block_size_tokens: 16
@@ -131,10 +134,10 @@ generation:
   # Token Scheduler 的逐步生成目前要求单 beam。
   num_beams: 1
   use_cache: true
-  # 逐步生成使用模型預設 DynamicCache；獨立 KV block 管理器先負責容量預留與釋放。
+  # 逐步生成使用模型预设 DynamicCache；独立 KV block 管理器先负责容量预留与释放。
   cache_implementation: null
   cache_config: null
-  # 逐步 Runner 尚未支援自訂 GenerationMixin 參數，維持空對應表。
+  # 逐步 Runner 尚未支援自订 GenerationMixin 参数，维持空对应表。
   advanced_kwargs: {}
 
 optimization:
@@ -144,7 +147,7 @@ optimization:
     cudnn_benchmark: false
     float32_matmul_precision: high
   torch_compile:
-    # 此功能仍屬實驗性；編譯可能增加啟動時間與記憶體用量，模型遠端程式碼也可能造成計算圖中斷。
+    # 此功能仍属实验性；编译可能增加启动时间与记忆体用量，模型远端程式码也可能造成计算图中断。
     enabled: false
     backend: inductor
     mode: default

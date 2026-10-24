@@ -1,4 +1,4 @@
-"""載入啟動器選定的模型登錄、YAML 設定與模型工廠。"""
+"""载入启动器选定的模型登录、YAML 设定与模型工厂。"""
 
 from __future__ import annotations
 
@@ -12,10 +12,11 @@ import yaml
 
 INFERENCE_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = INFERENCE_ROOT.parents[1]
+MODELS_ROOT = INFERENCE_ROOT / "models"
 
 
 def read_yaml(path: str | Path) -> dict[str, Any]:
-    """讀取 YAML mapping，拒絕空白或格式錯誤的設定。"""
+    """读取 YAML mapping，拒绝空白或格式错误的设定。"""
     value = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError(f"YAML must contain a mapping at the top level: {path}")
@@ -23,19 +24,40 @@ def read_yaml(path: str | Path) -> dict[str, Any]:
 
 
 def selected_model() -> tuple[str, dict[str, Any]]:
-    """依啟動器提供的模型別名載入登錄項目。"""
+    """载入启动器选定的模型目录清单。"""
     alias = os.environ.get("INFERENCE_MODEL_ALIAS", "").strip()
     if not alias:
         raise RuntimeError("Start the inference service through launcher.py to select a model.")
-    registry = read_yaml(INFERENCE_ROOT / "model_registry.yaml")
-    models = registry.get("models")
-    if not isinstance(models, dict) or not isinstance(models.get(alias), dict):
-        raise ValueError(f"Model '{alias}' is missing from model_registry.yaml.")
-    return alias, models[alias]
+    manifest_value = os.environ.get("INFERENCE_MODEL_MANIFEST", "").strip()
+    manifest_path = Path(manifest_value) if manifest_value else model_manifest_path(alias)
+    if not manifest_path.is_absolute():
+        manifest_path = PROJECT_ROOT / manifest_path
+    model = read_yaml(manifest_path)
+    if model.get("alias") != alias:
+        raise ValueError(f"Model manifest alias does not match selected model '{alias}': {manifest_path}")
+    model["_manifest_path"] = str(manifest_path.resolve())
+    return alias, model
+
+
+def model_manifest_path(alias: str) -> Path:
+    """依模型别名寻找模型目录内的唯一 `configs/model.yaml`。"""
+    matches = []
+    for manifest in MODELS_ROOT.glob("*/configs/model.yaml"):
+        try:
+            data = read_yaml(manifest)
+        except (OSError, ValueError):
+            continue
+        if data.get("alias") == alias:
+            matches.append(manifest.resolve())
+    if not matches:
+        raise ValueError(f"Model '{alias}' has no configs/model.yaml manifest under {MODELS_ROOT}.")
+    if len(matches) > 1:
+        raise ValueError(f"Model alias '{alias}' is declared by multiple model manifests: {matches}")
+    return matches[0]
 
 
 def selected_config(environment_name: str) -> dict[str, Any]:
-    """讀取啟動器解析後放入環境的設定檔。"""
+    """读取启动器解析后放入环境的设定档。"""
     path = os.environ.get(environment_name)
     if not path:
         raise RuntimeError(f"Set {environment_name} by starting the inference service through launcher.py.")
@@ -43,7 +65,7 @@ def selected_config(environment_name: str) -> dict[str, Any]:
 
 
 def model_source(inference_config: dict[str, Any]) -> str:
-    """依 YAML 選擇本機模型快照或上游 repo ID。"""
+    """依 YAML 选择本机模型快照或上游 repo ID。"""
     model = inference_config.get("model")
     runtime = inference_config.get("runtime", {})
     if not isinstance(model, dict) or not isinstance(runtime, dict):
@@ -61,7 +83,7 @@ def model_source(inference_config: dict[str, Any]) -> str:
 
 
 def load_factory(factory_path: str) -> Any:
-    """載入登錄表指定的 `module:attribute` 元件工廠。"""
+    """载入登录表指定的 `module:attribute` 元件工厂。"""
     if not isinstance(factory_path, str):
         raise TypeError("Model factory path must be a string.")
     module_name, separator, attribute = factory_path.partition(":")
@@ -73,62 +95,37 @@ def load_factory(factory_path: str) -> Any:
     return factory
 
 
-def model_api_settings(model_spec: dict[str, Any]) -> dict[str, Any]:
-    settings = model_spec.get("api", {})
-    if not isinstance(settings, dict):
-        raise ValueError("model_registry.yaml api entries must be mappings.")
-    return settings
-
-
-def model_component(model_spec: dict[str, Any], name: str, *, required: bool = True) -> str | None:
-    components = model_spec.get("components", {})
-    if not isinstance(components, dict):
-        raise ValueError("model_registry.yaml components entries must be mappings.")
-    value = components.get(name)
-    if value is None and not required:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"Model registry entry must define components.{name} as a factory path.")
-    return value
-
-
-def validate_runtime_components(model_spec: dict[str, Any], runner: Any, adapter: Any) -> None:
-    """在 Worker 載入權重前，依宣告能力檢查 Runner／Adapter 方法。"""
-    runner_methods = {
-        "load",
-        "gpu_status",
-        "close",
-        "begin_generation",
-        "bind_generation_cache",
-        "execute_batch",
-        "finish_generation",
-        "cancel_generation",
-    }
-    adapter_methods = {
-        "health_info",
-        "generation_options",
-        "prepare_chat_generation",
-        "bind_generation_cache",
-        "execute_batch",
-        "finish_chat_generation",
-        "cancel_generation",
+def validate_runtime_components(model_spec: dict[str, Any], runtime: Any) -> None:
+    """在 Worker 载入权重前，依宣告能力检查单一模型 Runtime 契约。"""
+    required_methods = {
+        "load", "gpu_status", "close", "health_info", "generation_options",
+        "prepare_chat_generation", "bind_generation_cache", "execute_batch",
+        "finish_chat_generation", "cancel_generation",
     }
     api_settings = model_api_settings(model_spec)
     capabilities = api_settings.get("capabilities", {})
     if not isinstance(capabilities, dict):
         raise ValueError("model api.capabilities must be a mapping.")
     if capabilities.get("video_upload"):
-        adapter_methods |= {"prepare_video_generation", "finish_video_generation"}
+        required_methods |= {"prepare_video_generation", "finish_video_generation"}
     if capabilities.get("live_video"):
-        adapter_methods |= {
-            "prepare_live_frames_generation",
-            "prepare_live_video_generation",
-            "finish_live_generation",
+        required_methods |= {
+            "prepare_live_frames_generation", "prepare_live_video_generation", "finish_live_generation",
         }
-    missing_runner = sorted(name for name in runner_methods if not callable(getattr(runner, name, None)))
-    missing_adapter = sorted(name for name in adapter_methods if not callable(getattr(adapter, name, None)))
-    if missing_runner or missing_adapter:
-        raise TypeError(
-            "Model component contract mismatch: "
-            f"runner missing={missing_runner}, adapter missing={missing_adapter}."
-        )
+    missing = sorted(name for name in required_methods if not callable(getattr(runtime, name, None)))
+    if missing:
+        raise TypeError(f"Model Runtime contract mismatch: missing={missing}.")
+
+
+def model_api_settings(model_spec: dict[str, Any]) -> dict[str, Any]:
+    settings = model_spec.get("api", {})
+    if not isinstance(settings, dict):
+        raise ValueError("model.yaml api entries must be mappings.")
+    return settings
+
+
+def model_runtime_factory(model_spec: dict[str, Any]) -> str:
+    value = model_spec.get("runtime_factory")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("model.yaml must define runtime_factory as a module:attribute path.")
+    return value

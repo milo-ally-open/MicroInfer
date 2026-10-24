@@ -1,4 +1,4 @@
-"""管理 Engine Core 到 Model Worker 的程序與 IPC 執行邊界。"""
+"""管理 Engine Core 到 Model Worker 的程序与 IPC 执行边界。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from engine.worker import WorkerProcessError, _resolve_factory_path, _worker_pro
 
 
 class Executor(Protocol):
-    """Engine Core 使用的執行介面，不暴露程序或硬體細節。"""
+    """Engine Core 使用的执行介面，不暴露程序或硬体细节。"""
 
     @property
     def pid(self) -> int | None: ...
@@ -32,7 +32,7 @@ class Executor(Protocol):
 
 
 class LocalProcessExecutor:
-    """以本機 spawn 子程序執行一個模型 Worker，並以 Pipe 傳遞 Engine RPC。"""
+    """以本机 spawn 子程序执行一个模型 Worker，并以 Pipe 传递 Engine RPC。"""
 
     def __init__(
         self,

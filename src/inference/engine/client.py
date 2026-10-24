@@ -1,8 +1,10 @@
-"""提供 API Server 到獨立 Engine Core 的本機 IPC client。"""
+"""提供 API Server 到独立 Engine Core 的本机 IPC client。"""
 
 from __future__ import annotations
 
 import importlib
+import logging
+import math
 import multiprocessing
 import os
 import queue
@@ -18,12 +20,15 @@ from engine.errors import InferenceError
 from media.video import save_upload, uploaded_video_path
 
 
+logger = logging.getLogger(__name__)
+
+
 class EngineClientError(RuntimeError):
-    """Engine Core IPC 或程序生命週期錯誤。"""
+    """Engine Core IPC 或程序生命周期错误。"""
 
 
 class EngineClientStream:
-    """可跨執行緒取消的 EngineClient event iterator。"""
+    """可跨执行绪取消的 EngineClient event iterator。"""
 
     def __init__(
         self,
@@ -76,7 +81,7 @@ class EngineClientStream:
         raise EngineClientError(f"Unexpected Engine Core stream message: {kind}")
 
     def cancel(self) -> None:
-        """向 Engine Core 發送取消，並等候目前批次完成其清理路徑。"""
+        """向 Engine Core 发送取消，并等候目前批次完成其清理路径。"""
         with self._state_lock:
             if self._finished:
                 return
@@ -109,7 +114,7 @@ class EngineClientStream:
                 return
             self._finished = True
         self._client._unregister(self._request_id)
-        # 喚醒可能仍在 IPC queue 讀取中的 __next__ 執行緒。
+        # 唤醒可能仍在 IPC queue 读取中的 __next__ 执行绪。
         self._pending.put({"kind": "local_stop"})
 
 
@@ -135,11 +140,12 @@ def _send(connection: Any, lock: threading.Lock, message: dict[str, Any]) -> Non
         with lock:
             connection.send(message)
     except (EOFError, OSError, BrokenPipeError):
-        pass
+        # API Server 可能已离线；背景事件不再有接收端时，Engine Core 仍须完成清理。
+        logger.debug("Dropping Engine Core IPC message because the client disconnected.")
 
 
 def _engine_core_process_main(connection: Any, factory_path: str) -> None:
-    """啟動 Engine Core，並以可多工的 request handler 回應 API Server。"""
+    """启动 Engine Core，并以可多工的 request handler 回应 API Server。"""
     send_lock = threading.Lock()
     state_lock = threading.RLock()
     handlers: dict[str, threading.Thread] = {}
@@ -160,7 +166,7 @@ def _engine_core_process_main(connection: Any, factory_path: str) -> None:
             if engine is not None:
                 engine.close()
         except BaseException:
-            pass
+                logger.exception("Could not close Engine Core after startup failure")
         connection.close()
         return
 
@@ -193,7 +199,7 @@ def _engine_core_process_main(connection: Any, factory_path: str) -> None:
             try:
                 engine.unregister_request(request_id)
             except BaseException:
-                pass
+                logger.exception("Could not unregister Engine Core request %s", request_id)
             with state_lock:
                 handlers.pop(request_id, None)
                 cancellable_requests.discard(request_id)
@@ -205,7 +211,7 @@ def _engine_core_process_main(connection: Any, factory_path: str) -> None:
             if should_cancel:
                 engine.cancel_request(request_id)
         except BaseException:
-            pass
+            logger.exception("Could not cancel Engine Core request %s", request_id)
 
     try:
         while True:
@@ -260,7 +266,7 @@ def _engine_core_process_main(connection: Any, factory_path: str) -> None:
             try:
                 engine.close()
             except BaseException:
-                pass
+                logger.exception("Could not close Engine Core during process shutdown")
         connection.close()
 
 
@@ -275,7 +281,15 @@ class EngineClient:
         request_timeout_seconds: float,
         max_video_bytes: int,
     ) -> None:
-        if min(startup_timeout_seconds, request_timeout_seconds, max_video_bytes) <= 0:
+        if (
+            not math.isfinite(float(startup_timeout_seconds))
+            or not math.isfinite(float(request_timeout_seconds))
+            or startup_timeout_seconds <= 0
+            or request_timeout_seconds <= 0
+            or isinstance(max_video_bytes, bool)
+            or int(max_video_bytes) != max_video_bytes
+            or max_video_bytes <= 0
+        ):
             raise ValueError("Engine Core timeouts and video size limit must be positive.")
         self.factory_path = factory_path
         self.startup_timeout_seconds = float(startup_timeout_seconds)
@@ -305,36 +319,61 @@ class EngineClient:
             args=(child, self.factory_path),
             name="inference-engine-core",
         )
-        process.start()
+        try:
+            process.start()
+        except BaseException:
+            parent.close()
+            child.close()
+            raise
         child.close()
         self._process = process
         self._connection = parent
         if not parent.poll(self.startup_timeout_seconds):
             self._stop_process(force=True)
             raise TimeoutError(f"Engine Core did not start within {self.startup_timeout_seconds:g} seconds.")
-        message = parent.recv()
+        try:
+            message = parent.recv()
+        except (EOFError, OSError) as exc:
+            self._stop_process(force=True)
+            raise EngineClientError("Engine Core exited before completing startup.") from exc
         if message.get("kind") != "ready":
             self._stop_process(force=True)
             self._raise_remote(message)
-        self._engine_core_pid = int(message["pid"])
+        try:
+            self._engine_core_pid = int(message["pid"])
+        except (KeyError, TypeError, ValueError) as exc:
+            self._stop_process(force=True)
+            raise EngineClientError("Engine Core returned an invalid startup PID.") from exc
         self._closing.clear()
         self._reader = threading.Thread(target=self._reader_loop, name="engine-core-ipc-reader", daemon=True)
-        self._reader.start()
+        try:
+            self._reader.start()
+        except BaseException:
+            # IPC reader 若未能启动，Engine Core 已就绪但无法接收回应，必须立即回收。
+            self._reader = None
+            self._stop_process(force=True)
+            raise
 
     def close(self) -> None:
+        # 即使 MediaMTX/live cleanup 失败，也要继续关闭 Engine Core 子程序。
         if self._live_sessions is not None:
-            self._live_sessions.stop_all()
+            try:
+                self._live_sessions.stop_all()
+            except BaseException:
+                logger.exception("Could not stop all live sessions during EngineClient shutdown")
         if self._process is None:
             return
-        if self._process.is_alive() and self._connection is not None:
-            try:
-                self._request_message("close", {}, expected={"closed"})
-            except BaseException:
-                pass
-        self._closing.set()
-        if self._reader is not None:
-            self._reader.join(timeout=2)
-        self._stop_process(force=False)
+        try:
+            if self._process.is_alive() and self._connection is not None:
+                try:
+                    self._request_message("close", {}, expected={"closed"})
+                except BaseException:
+                    logger.exception("Could not request graceful Engine Core shutdown")
+        finally:
+            self._closing.set()
+            if self._reader is not None:
+                self._reader.join(timeout=2)
+            self._stop_process(force=False)
 
     def health(self) -> dict[str, Any]:
         data = dict(self._invoke("health"))
@@ -451,7 +490,11 @@ class EngineClient:
                     self._raise_remote(item)
                 raise EngineClientError(f"Unexpected Engine Core response: {response_kind}")
         except queue.Empty as exc:
-            self._send({"kind": "cancel", "request_id": request_id})
+            try:
+                self._send({"kind": "cancel", "request_id": request_id})
+            except EngineClientError:
+                # IPC 若同时关闭，仍保留请求逾时作为呼叫端可见的主要错误。
+                logger.debug("Could not cancel timed-out Engine Core request %s", request_id, exc_info=True)
             raise TimeoutError(f"Engine Core request exceeded {self.request_timeout_seconds:g} seconds.") from exc
         finally:
             self._unregister(request_id)
@@ -506,14 +549,20 @@ class EngineClient:
 
     def _stop_process(self, *, force: bool) -> None:
         process, connection = self._process, self._connection
-        if process is not None:
-            if not force:
-                process.join(timeout=30)
-            if process.is_alive():
-                process.terminate()
-            process.join(timeout=5)
-        if connection is not None:
-            connection.close()
-        self._process = None
-        self._connection = None
-        self._engine_core_pid = None
+        try:
+            if process is not None:
+                if not force:
+                    process.join(timeout=30)
+                if process.is_alive():
+                    process.terminate()
+                process.join(timeout=5)
+        finally:
+            try:
+                if connection is not None:
+                    connection.close()
+            except (OSError, ValueError):
+                logger.debug("Engine Core IPC connection was already closed.", exc_info=True)
+            finally:
+                self._process = None
+                self._connection = None
+                self._engine_core_pid = None

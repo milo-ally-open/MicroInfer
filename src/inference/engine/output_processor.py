@@ -1,4 +1,4 @@
-"""將 Worker 批次結果轉為逐請求 Engine stream event。"""
+"""将 Worker 批次结果转为逐请求 Engine stream event。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from engine.contracts import WorkerResult
 
 @dataclass(frozen=True)
 class EngineOutputEvent:
-    """不攜帶 HTTP 格式的單筆輸出增量。"""
+    """不携带 HTTP 格式的单笔输出增量。"""
 
     kind: str
     text: str | None = None
@@ -17,7 +17,7 @@ class EngineOutputEvent:
 
 
 class EngineOutputProcessor:
-    """保留 request ID 對應並統一 Token 與文字 Runner 的輸出形狀。"""
+    """保留 request ID 对应并统一 Token 与文字 Runner 的输出形状。"""
 
     def process(self, result: WorkerResult) -> tuple[EngineOutputEvent, ...]:
         if result.token_id is not None and result.text_delta:

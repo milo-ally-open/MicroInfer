@@ -1,8 +1,9 @@
-"""管理即時視訊來源、工作階段事件與背景工作執行緒。"""
+"""管理即时视讯来源、工作阶段事件与背景工作执行绪。"""
 
 from __future__ import annotations
 
 import csv
+import math
 import os
 import shutil
 import subprocess
@@ -19,7 +20,7 @@ from PIL import Image
 
 @dataclass(frozen=True)
 class LiveVideoSettings:
-    """管理即時視訊的傳輸、取樣與編碼片段設定。"""
+    """管理即时视讯设定，并在建立背景执行绪前拒绝无效数值。"""
 
     rtsp_host: str = "127.0.0.1"
     rtsp_port: int = 8554
@@ -42,12 +43,41 @@ class LiveVideoSettings:
     codec_max_pending_segments: int = 2
     ffmpeg_bin: str = "ffmpeg"
 
+    def __post_init__(self) -> None:
+        durations = (
+            self.sample_interval_seconds,
+            self.window_seconds,
+            self.max_duration_seconds,
+            self.reconnect_seconds,
+        )
+        if any(not math.isfinite(value) or value <= 0 for value in durations):
+            raise ValueError("Live video intervals and duration must be finite and positive.")
+        if min(self.rtsp_port, self.rtmp_port) < 1 or max(self.rtsp_port, self.rtmp_port) > 65535:
+            raise ValueError("MediaMTX ports must be between 1 and 65535.")
+        if self.max_sessions < 1 or self.open_timeout_ms < 1 or self.read_timeout_ms < 1:
+            raise ValueError("Live session count and capture timeouts must be positive.")
+        if self.max_frames < 1 or self.max_frame_side < 1:
+            raise ValueError("Live frame count and maximum side length must be positive.")
+        if self.video_backend not in {"frames", "codec"}:
+            raise ValueError(f"Unsupported live video backend: {self.video_backend}")
+        if self.codec_engine not in {None, "hevc", "dcvc-rt"}:
+            raise ValueError(f"Unsupported live codec engine: {self.codec_engine}")
+        if min(
+            self.codec_target_canvas,
+            self.live_codec_target_canvas,
+            self.codec_max_pixels,
+            self.codec_max_pending_segments,
+        ) < 1:
+            raise ValueError("Live codec dimensions, pixel limits and pending segment count must be positive.")
+        if not self.rtsp_host.strip() or not self.ffmpeg_bin.strip():
+            raise ValueError("Live RTSP host and FFmpeg executable must not be empty.")
+
 LiveInferenceDispatcher = Callable[..., tuple[bool, dict[str, Any] | None]]
 GenerationOptionsBuilder = Callable[[dict[str, Any]], dict[str, Any]]
 FrameTransformer = Callable[[Image.Image, int], Image.Image]
 
 class LiveVideoSession:
-    """管理串流擷取執行緒與序列化推論執行緒。"""
+    """管理串流撷取执行绪与序列化推论执行绪。"""
 
     def __init__(
         self,
@@ -72,6 +102,7 @@ class LiveVideoSession:
         self.condition = threading.Condition()
         self.frames: deque[tuple[float, Image.Image]] = deque(maxlen=max(1, settings.max_frames))
         self.codec_workdir = Path(tempfile.mkdtemp(prefix=f"magevl4b-live-{session_id[:8]}-")) if settings.video_backend == "codec" else None
+        self._cleanup_workdir_after_capture = False
         self.codec_segments: deque[tuple[Path, float, float]] = deque()
         self.events: deque[dict[str, Any]] = deque(maxlen=256)
         self.event_id = 0
@@ -87,13 +118,13 @@ class LiveVideoSession:
         )
 
     def start(self) -> None:
-        """啟動串流擷取與推論執行緒。"""
+        """启动串流撷取与推论执行绪。"""
         self._set_status("waiting_for_stream")
         self.capture_thread.start()
         self.inference_thread.start()
 
     def _emit(self, event_name: str, data: dict[str, Any]) -> None:
-        """保存事件並喚醒等待中的 SSE 用戶端。"""
+        """保存事件并唤醒等待中的 SSE 用户端。"""
         with self.condition:
             self.event_id += 1
             self.events.append({"id": self.event_id, "event": event_name, "data": data})
@@ -108,13 +139,13 @@ class LiveVideoSession:
             self._emit("status", {"status": status, **details})
 
     def events_after(self, event_id: int) -> tuple[list[dict[str, Any]], bool]:
-        """回傳指定事件識別碼之後的新事件及工作階段結束狀態。"""
+        """回传指定事件识别码之后的新事件及工作阶段结束状态。"""
         with self.condition:
             available = [event for event in self.events if event["id"] > event_id]
             return available, self.finished_at is not None
 
     def snapshot(self) -> list[tuple[float, Image.Image]]:
-        """取得分析視窗內的影格，並限制回傳數量。"""
+        """取得分析视窗内的影格，并限制回传数量。"""
         cutoff = time.monotonic() - self.settings.window_seconds
         with self.condition:
             frames = [item for item in self.frames if item[0] >= cutoff]
@@ -133,13 +164,13 @@ class LiveVideoSession:
         return self.finished_at is None
 
     def _capture_loop(self) -> None:
-        """以 OpenCV 擷取 RTSP 影格，按取樣間隔更新即時影格佇列。"""
-        # OpenCV 建立 FFmpeg RTSP 連線時會讀取此選項。
+        """以 OpenCV 撷取 RTSP 影格，按取样间隔更新即时影格伫列。"""
+        # OpenCV 建立 FFmpeg RTSP 连线时会读取此选项。
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
-        import cv2
-
-        if self.settings.max_frames < 1 or self.settings.max_frame_side < 1:
-            self._emit("error", {"message": "max_frames and max_frame_side must be positive."})
+        try:
+            import cv2
+        except Exception as exc:
+            self._emit("error", {"phase": "capture", "message": f"OpenCV is unavailable: {exc}"})
             self.stop_event.set()
             return
 
@@ -158,7 +189,7 @@ class LiveVideoSession:
                     capture = cv2.VideoCapture(self.rtsp_url, backend, open_options)
                     if not capture.isOpened():
                         self._set_status("waiting_for_stream")
-                        # 推流端尚未連線或連線中斷時，以可中止的等待進行重試。
+                        # 推流端尚未连线或连线中断时，以可中止的等待进行重试。
                         self.stop_event.wait(self.settings.reconnect_seconds)
                         continue
 
@@ -196,9 +227,11 @@ class LiveVideoSession:
         finally:
             with self.condition:
                 self.condition.notify_all()
+            if self._cleanup_workdir_after_capture:
+                self._cleanup_codec_workdir()
 
     def _queue_completed_segments(self, manifest: Path, workdir: Path, seen: set[Path]) -> bool:
-        """只將 FFmpeg 已完成封裝並列出的片段加入佇列。"""
+        """只将 FFmpeg 已完成封装并列出的片段加入伫列。"""
         if not manifest.is_file():
             return False
         queued_any = False
@@ -232,7 +265,7 @@ class LiveVideoSession:
         return queued_any
 
     def _codec_capture_loop(self) -> None:
-        """將編碼後的 RTSP 串流複製為封裝完成且對齊關鍵影格的片段。"""
+        """将编码后的 RTSP 串流复制为封装完成且对齐关键影格的片段。"""
         if self.codec_workdir is None:
             self._emit("error", {"phase": "capture", "message": "Codec segment directory was not initialized."})
             self.stop_event.set()
@@ -307,9 +340,11 @@ class LiveVideoSession:
         finally:
             with self.condition:
                 self.condition.notify_all()
+            if self._cleanup_workdir_after_capture:
+                self._cleanup_codec_workdir()
 
     def _inference_loop(self) -> None:
-        """依分析視窗取出影格或片段，序列化呼叫模型並發布結果事件。"""
+        """依分析视窗取出影格或片段，序列化呼叫模型并发布结果事件。"""
         last_analyzed_at: float | None = None
         last_busy_event_at = 0.0
         completion_reason = "stopped"
@@ -391,18 +426,19 @@ class LiveVideoSession:
             self.stop_event.set()
             with self.condition:
                 self.condition.notify_all()
+            self._cleanup_workdir_after_capture = True
             if self.capture_thread.is_alive() and threading.current_thread() is not self.capture_thread:
                 self.capture_thread.join(timeout=max(5.0, self.settings.read_timeout_ms / 1000 + self.settings.reconnect_seconds + 2))
             for segment_path, _, _ in list(self.codec_segments):
                 segment_path.unlink(missing_ok=True)
-            if self.codec_workdir is not None:
-                shutil.rmtree(self.codec_workdir, ignore_errors=True)
+            if not self.capture_thread.is_alive():
+                self._cleanup_codec_workdir()
             self.finished_at = time.monotonic()
             self._set_status("stopped", reason=completion_reason)
             self._emit("completed", {"reason": completion_reason})
 
     def _handle_busy_model(self, last_busy_event_at: float, segment: tuple[Path, float, float] | None) -> float:
-        """保留已封裝片段並通知用戶端等待共用 Engine 名額。"""
+        """保留已封装片段并通知用户端等待共用 Engine 名额。"""
         now = time.monotonic()
         if now - last_busy_event_at >= 5:
             self._emit("status", {"status": "waiting_for_model"})
@@ -417,17 +453,21 @@ class LiveVideoSession:
         self.stop_event.wait(0.5)
         return last_busy_event_at
 
+    def _cleanup_codec_workdir(self) -> None:
+        if self.codec_workdir is not None:
+            shutil.rmtree(self.codec_workdir, ignore_errors=True)
+
 
 class LiveSessionLimitError(RuntimeError):
-    """作用中的即時工作階段已達設定上限。"""
+    """作用中的即时工作阶段已达设定上限。"""
 
 
 class LiveSessionNotFoundError(LookupError):
-    """找不到指定的即時工作階段。"""
+    """找不到指定的即时工作阶段。"""
 
 
 class LiveSessionManager:
-    """保存即時工作階段並管理其建立、查詢與停止。"""
+    """保存即时工作阶段并管理其建立、查询与停止。"""
 
     def __init__(self, *, settings: LiveVideoSettings, try_inference: LiveInferenceDispatcher, transform_frame: FrameTransformer) -> None:
         self.settings = settings
@@ -460,6 +500,8 @@ class LiveSessionManager:
     def start_session(self, *, session_id: str, question: str, generation_options: dict[str, Any], settings: LiveVideoSettings) -> LiveVideoSession:
         self._prune_finished()
         with self._sessions_lock:
+            if not session_id or session_id in self._sessions:
+                raise ValueError("A live session requires a unique, non-empty session ID.")
             active_count = sum(session.is_active() for session in self._sessions.values())
             if active_count >= settings.max_sessions:
                 raise LiveSessionLimitError(f"At most {settings.max_sessions} live session(s) may run at once.")
@@ -468,7 +510,21 @@ class LiveSessionManager:
                 settings=settings, try_inference=self.try_inference, transform_frame=self.transform_frame,
             )
             self._sessions[session_id] = session
-        session.start()
+        try:
+            session.start()
+        except BaseException:
+            # 若第二个 thread 启动失败，停止第一个 thread 并移除不可用的工作阶段。
+            session._cleanup_workdir_after_capture = True
+            session.request_stop()
+            for worker in (session.capture_thread, session.inference_thread):
+                if worker.is_alive():
+                    worker.join(timeout=5)
+            if not session.capture_thread.is_alive():
+                session._cleanup_codec_workdir()
+            with self._sessions_lock:
+                if self._sessions.get(session_id) is session:
+                    self._sessions.pop(session_id)
+            raise
         return session
 
     def get_session(self, session_id: str) -> LiveVideoSession:

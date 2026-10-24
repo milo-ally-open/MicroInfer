@@ -1,4 +1,4 @@
-"""Mage-VL-4B 專屬的圖片、影片與生成輸入適配。"""
+"""Mage-VL-4B 专属的图片、影片与生成输入适配。"""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from PIL import Image, UnidentifiedImageError
 
 from engine.errors import InferenceError
 from media.video import probe_video_metadata, sample_video_frames, save_upload, uploaded_video_path
-from . import config as settings
-from .config import (
+from .utils import loader as settings
+from .utils.loader import (
     API_CONFIG, CODEC_ENGINE, CODEC_FFMPEG_BIN, CODEC_FFPROBE_BIN, CODEC_MAX_PIXELS,
     CODEC_TARGET_CANVAS, CODEC_TIMEOUT_SECONDS, GENERATION_CONFIG, IMAGE_RESAMPLING,
     IMAGE_URL_TIMEOUT, LOCAL_FILES_ONLY, MAX_CONTEXT_TOKENS, MAX_IMAGE_BYTES,
@@ -110,7 +110,7 @@ def _move_inputs_to_model(inputs: Any, model_runner: Any) -> dict[str, Any]:
 
 
 def _require_codec_runtime(engine: str | None) -> None:
-    """選用編碼器缺少主機端前處理工具時，提供明確錯誤訊息。"""
+    """选用编码器缺少主机端前处理工具时，提供明确错误讯息。"""
     for name, executable in (("ffmpeg", CODEC_FFMPEG_BIN), ("ffprobe", CODEC_FFPROBE_BIN)):
         if shutil.which(executable) is None and not Path(executable).is_file():
             raise InferenceError(status_code=503, detail=f"Codec video mode requires {name}; executable not found: {executable}")
@@ -147,7 +147,7 @@ def _codec_processor_config(
         except (TypeError, ValueError):
             patch_size = 0
         if patch_size > 0:
-            # 將編碼 patch 座標對齊目前載入權重使用的影像網格。
+            # 将编码 patch 座标对齐目前载入权重使用的影像网格。
             config["patch"] = patch_size
     if cache_root is not None:
         config["cache_root"] = cache_root
@@ -169,8 +169,8 @@ def _codec_processor_config(
             raise InferenceError(status_code=503, detail=f"DCVC-RT files are missing from the model snapshot: {neural_codec_path}")
         device = model_runner.model.get_input_embeddings().weight.device
         config["dcvc"] = {"pkg_dir": str(neural_codec_path), "device": str(device)}
-    # 模型處理器的遠端程式碼會提供編碼設定結構；依實際載入的結構篩選
-    # 服務選項，避免 API 綁定特定版權重使用的 dataclass 欄位。
+    # 模型处理器的远端程式码会提供编码设定结构；依实际载入的结构筛选
+    # 服务选项，避免 API 绑定特定版权重使用的 dataclass 栏位。
     try:
         processor_module = importlib.import_module(model_runner.processor.__class__.__module__)
         codec_module = importlib.import_module(
@@ -185,7 +185,7 @@ def _codec_processor_config(
 
 
 def _require_processor_codec_support(model_runner: Any) -> None:
-    """檢查已載入模型的處理器介面，不將程式固定綁定至特定版本。"""
+    """检查已载入模型的处理器介面，不将程式固定绑定至特定版本。"""
     if model_runner.processor is None:
         raise InferenceError(status_code=503, detail="The Mage-VL-4B processor is not ready yet.")
     try:
@@ -253,7 +253,7 @@ def _video_inputs(
 
 
 def _normalize_messages(raw_messages: Any) -> tuple[list[dict[str, Any]], list[Image.Image]]:
-    """驗證對話內容並載入圖片，整理成模型處理器需要的格式。"""
+    """验证对话内容并载入图片，整理成模型处理器需要的格式。"""
     if not isinstance(raw_messages, list) or not raw_messages:
         raise InferenceError(status_code=400, detail="messages must be a non-empty array.")
     normalized: list[dict[str, Any]] = []
@@ -296,7 +296,7 @@ def _normalize_messages(raw_messages: Any) -> tuple[list[dict[str, Any]], list[I
 
 
 def _prepare_inputs(messages: list[dict[str, Any]], images: list[Image.Image], model_runner: Any) -> tuple[Any, int]:
-    """套用對話模板、準備模型輸入張量，並計算提示詞 token 數。"""
+    """套用对话模板、准备模型输入张量，并计算提示词 token 数。"""
     prompt = model_runner.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = model_runner.processor(text=[prompt], images=images, return_tensors="pt")
     input_tokens = int(inputs["input_ids"].shape[-1])
@@ -304,7 +304,7 @@ def _prepare_inputs(messages: list[dict[str, Any]], images: list[Image.Image], m
 
 
 def _generation_args(request_body: dict[str, Any]) -> dict[str, Any]:
-    """合併模型預設值與請求參數，產生受 API 限制的生成設定。"""
+    """合并模型预设值与请求参数，产生受 API 限制的生成设定。"""
     max_tokens = int(request_body.get("max_tokens", request_body.get("max_completion_tokens", GENERATION_CONFIG["max_tokens_default"])))
     if not 1 <= max_tokens <= MAX_NEW_TOKENS:
         raise InferenceError(status_code=400, detail=f"max_tokens must be between 1 and {MAX_NEW_TOKENS}.")

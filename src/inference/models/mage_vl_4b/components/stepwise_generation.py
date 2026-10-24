@@ -1,4 +1,4 @@
-"""管理 Mage-VL 的逐步 prefill、decode、cache 狀態與抽樣。"""
+"""管理 Mage-VL 的逐步 prefill、decode、cache 状态与抽样。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from .cache_manager import RequestCacheManager
 
 
 class MageVLStepwiseGeneration:
-    """保存每個 request 的 Transformers Cache 並逐 token 執行模型。"""
+    """保存每个 request 的 Transformers Cache 并逐 token 执行模型。"""
 
     def __init__(self) -> None:
         self.model: Any = None
@@ -72,7 +72,7 @@ class MageVLStepwiseGeneration:
         self.cache_manager.bind_blocks(request_id, block_ids)
 
     def prefill_min_chunk_tokens(self, request_id: str) -> int:
-        """回報首輪必須涵蓋的視覺 token 前綴長度。"""
+        """回报首轮必须涵盖的视觉 token 前缀长度。"""
         state = self._state(request_id)
         if self._has_visual_inputs(state):
             # Visual tensors can expand prompt markers into model-specific positions.
@@ -97,7 +97,7 @@ class MageVLStepwiseGeneration:
         return int(visual_positions[-1, 0].item()) + 1
 
     def execute_work_batch(self, requests: Sequence[Any]) -> tuple[dict[str, Any], ...]:
-        """在一個 Worker 請求中混排 prefill/decode，並按原順序回傳逐請求結果。"""
+        """在一个 Worker 请求中混排 prefill/decode，并按原顺序回传逐请求结果。"""
         if not requests:
             return ()
         ids = [item.request_id for item in requests]
@@ -121,7 +121,7 @@ class MageVLStepwiseGeneration:
     def execute_prefill_chunks(
         self, requests: Sequence[tuple[str, int, int]]
     ) -> tuple[dict[str, Any], ...]:
-        """將提示詞片段追加至 Cache；僅最後片段取樣並產生第一個 token。"""
+        """将提示词片段追加至 Cache；仅最后片段取样并产生第一个 token。"""
         if not requests:
             return ()
         request_ids = [request_id for request_id, _, _ in requests]
@@ -261,7 +261,7 @@ class MageVLStepwiseGeneration:
         return tuple(results)
 
     def _execute_decode_batch(self, request_ids: Sequence[str]) -> tuple[dict[str, Any], ...]:
-        """批次執行相容的 decode 請求，並維持各請求獨立的 cache 與輸出。"""
+        """批次执行相容的 decode 请求，并维持各请求独立的 cache 与输出。"""
         if not request_ids:
             return ()
         if len(request_ids) != len(set(request_ids)):
@@ -578,7 +578,7 @@ class MageVLStepwiseGeneration:
         )
 
     def _update_prefill_cache(self, request_id: str, cache: Any, minimum_length: int) -> None:
-        """允許視覺模型展開 Cache 位置，但不接受少於已處理 token 的 Cache。"""
+        """允许视觉模型展开 Cache 位置，但不接受少于已处理 token 的 Cache。"""
         actual_length = self.cache_manager.sequence_length(cache)
         if actual_length < minimum_length:
             raise RuntimeError(
@@ -627,3 +627,99 @@ class MageVLStepwiseGeneration:
         else:
             token_id = torch.argmax(scores, dim=-1, keepdim=True)
         return int(token_id.item())
+
+
+if __name__ == "__main__":
+    from types import SimpleNamespace
+
+    from transformers import Qwen3Config
+    from transformers.models.qwen3.modeling_qwen3 import (
+        Qwen3ForCausalLM as TransformersQwen3ForCausalLM,
+    )
+
+    from engine.contracts import ExecutionPhase, ScheduledWorkItem
+    from ..model.configuration_mage_vl import MageVLConfig, MageVLVisionConfig
+    from ..model.conditional_generation import MageVLForConditionalGeneration
+
+    torch.manual_seed(79)
+    text_config = Qwen3Config(
+        vocab_size=97,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=8,
+        max_position_embeddings=64,
+        eos_token_id=None,
+    )
+    text_config._attn_implementation = "eager"
+    vision_config = MageVLVisionConfig(
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        patch_size=2,
+        out_hidden_size=32,
+    )
+    config = MageVLConfig(text_config=text_config, vision_config=vision_config)
+    engine_model = MageVLForConditionalGeneration(config).eval()
+    baseline_model = TransformersQwen3ForCausalLM(text_config).eval()
+    baseline_model.model.load_state_dict(engine_model.model.language_model.state_dict(), strict=True)
+    baseline_model.lm_head.load_state_dict(engine_model.lm_head.state_dict(), strict=True)
+    tokenizer = SimpleNamespace(
+        eos_token_id=None,
+        decode=lambda token_ids, **kwargs: f"token-{token_ids[0]}",
+    )
+    processor = SimpleNamespace(tokenizer=tokenizer)
+    engine = MageVLStepwiseGeneration()
+    engine.bind(engine_model, processor)
+    request_id = "stepwise-forward-check"
+    input_ids = torch.tensor([[5, 7, 9, 11]])
+    attention_mask = torch.ones_like(input_ids)
+    options = {
+        "max_new_tokens": 2,
+        "temperature": 0.0,
+        "do_sample": False,
+        "use_cache": True,
+        "eos_token_id": None,
+    }
+    engine.begin(
+        request_id,
+        {"input_ids": input_ids, "attention_mask": attention_mask},
+        options,
+    )
+    try:
+        with torch.inference_mode():
+            baseline_prefill = baseline_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                use_cache=True,
+                return_dict=True,
+            )
+            engine_prefill = engine.execute_work_batch(
+                (ScheduledWorkItem(request_id, ExecutionPhase.PREFILL, input_ids.shape[-1]),)
+            )[0]
+            baseline_first_token = int(torch.argmax(baseline_prefill.logits[0, -1]).item())
+            assert engine._states[request_id]["generated_ids"] == [baseline_first_token]
+            decode_item = ScheduledWorkItem(request_id, ExecutionPhase.DECODE, 1)
+            engine_decode = engine.execute_work_batch((decode_item,))[0]
+            baseline_decode = baseline_model(
+                input_ids=torch.tensor([[baseline_first_token]]),
+                attention_mask=torch.ones((1, input_ids.shape[-1] + 1), dtype=torch.long),
+                past_key_values=baseline_prefill.past_key_values,
+                use_cache=True,
+                return_dict=True,
+            )
+            baseline_second_token = int(torch.argmax(baseline_decode.logits[0, -1]).item())
+            assert engine._states[request_id]["generated_ids"][-1] == baseline_second_token
+        print("==========engine===========")
+        print(f"prefill text={engine_prefill['text']}, decode text={engine_decode['text']}")
+        print("==========baseline==========")
+        print(f"prefill token={baseline_first_token}, decode token={baseline_second_token}")
+        assert engine_prefill["text"] == f"token-{baseline_first_token}"
+        assert engine_decode["text"] == f"token-{baseline_second_token}"
+    finally:
+        if request_id in engine._states:
+            engine.cancel(request_id)
+    print("Mage-VL stepwise text streaming matches the Transformers prefill/decode baseline on CPU.")

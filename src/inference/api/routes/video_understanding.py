@@ -1,4 +1,4 @@
-"""上傳影片理解 endpoint。"""
+"""上传影片理解 endpoint。"""
 
 from __future__ import annotations
 

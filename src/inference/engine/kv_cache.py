@@ -1,4 +1,4 @@
-"""管理請求 KV 快取的邏輯 token block 預留與釋放。"""
+"""管理请求 KV 快取的逻辑 token block 预留与释放。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class KVCacheLease:
-    """單一請求持有的 block table 與 KV 記憶體估算。"""
+    """单一请求持有的 block table 与 KV 记忆体估算。"""
 
     request_id: str
     block_ids: tuple[int, ...]
@@ -17,10 +17,10 @@ class KVCacheLease:
 
 
 class KVCacheManager:
-    """分配固定 block ID；Qwen Worker 將同一 ID 對應至預先配置的實體 GPU pages。
+    """分配固定 block ID；Qwen Worker 将同一 ID 对应至预先配置的实体 GPU pages。
 
-    Manager 負責容量准入與租約生命週期，實體 tensor pool 由 GPU Worker 持有；
-    attention 會收集 page 至 PyTorch SDPA batch，不代表使用 PagedAttention kernel。
+    Manager 负责容量准入与租约生命周期，实体 tensor pool 由 GPU Worker 持有；
+    attention 会收集 page 组成批次 K/V 张量，不代表使用 PagedAttention kernel。
     """
 
     def __init__(self, *, block_size_tokens: int, capacity_tokens: int, bytes_per_token: int = 0) -> None:
@@ -55,7 +55,8 @@ class KVCacheManager:
                 request_id=request_id,
                 block_ids=block_ids,
                 reserved_tokens=block_count * self.block_size_tokens,
-                estimated_bytes=token_count * self.bytes_per_token,
+                # 实际容量以整个 block table 预留量估算，不以未对齐的 token 需求低估。
+                estimated_bytes=block_count * self.block_size_tokens * self.bytes_per_token,
             )
             self._leases[request_id] = lease
             return lease

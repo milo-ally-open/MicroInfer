@@ -1,0 +1,16 @@
+alias: qwen3-0.6b
+display_name: Qwen3-0.6B
+integration_profile: custom
+backend: qwen3_native_torch
+runtime_factory: models.qwen3_0_6b.runtime:create_runtime
+inference_config: inference.yml
+network_config: network.yml
+api:
+  model_id: qwen3-0.6b
+  input_processor: models.qwen3_0_6b.processor:Qwen3InputProcessor
+  capabilities:
+    chat_inputs: [text]
+    streaming: true
+    output_mode: token_ids
+    video_upload: false
+    live_video: false

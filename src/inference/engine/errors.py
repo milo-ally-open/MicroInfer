@@ -1,8 +1,8 @@
-"""推論層錯誤，不依賴 HTTP 框架。"""
+"""推论层错误，不依赖 HTTP 框架。"""
 
 
 class InferenceError(Exception):
-    """可映射至 API 錯誤回應的推論錯誤。"""
+    """可映射至 API 错误回应的推论错误。"""
 
     def __init__(self, status_code: int, detail: str) -> None:
         super().__init__(detail)

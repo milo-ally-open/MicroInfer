@@ -1,4 +1,4 @@
-"""追蹤 Worker 內每個請求實際持有的模型 Cache 物件與序列長度。"""
+"""追踪 Worker 内每个请求实际持有的模型 Cache 物件与序列长度。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ class RequestCacheEntry:
 
 
 class RequestCacheManager:
-    """管理 Worker 進程內的 Cache 物件；Engine 端容量 lease 仍由 KVCacheManager 管理。"""
+    """管理 Worker 进程内的 Cache 物件；Engine 端容量 lease 仍由 KVCacheManager 管理。"""
 
     def __init__(self) -> None:
         self._entries: dict[str, RequestCacheEntry] = {}
@@ -40,6 +40,8 @@ class RequestCacheManager:
         if cache is None:
             raise ValueError("A populated cache entry cannot hold None.")
         length = self.sequence_length(cache)
+        if length < 0:
+            raise ValueError("Model Cache sequence length must not be negative.")
         if expected_length is not None and length != expected_length:
             raise RuntimeError(
                 f"Model Cache length mismatch for {request_id}: expected {expected_length}, received {length}."
@@ -48,6 +50,11 @@ class RequestCacheManager:
             if request_id not in self._entries:
                 raise RuntimeError(f"Unknown cache request: {request_id}")
             current = self._entries[request_id]
+            if length < current.sequence_length:
+                raise RuntimeError(
+                    f"Model Cache sequence length moved backwards for {request_id}: "
+                    f"{current.sequence_length} to {length}."
+                )
             self._entries[request_id] = RequestCacheEntry(
                 cache=cache,
                 sequence_length=length,
@@ -56,15 +63,20 @@ class RequestCacheManager:
         return length
 
     def bind_blocks(self, request_id: str, block_ids: tuple[int, ...]) -> None:
+        blocks = tuple(int(block_id) for block_id in block_ids)
+        if not blocks or any(block_id < 0 for block_id in blocks) or len(blocks) != len(set(blocks)):
+            raise ValueError("Logical KV block IDs must be non-empty, non-negative and unique.")
         with self._lock:
             try:
                 current = self._entries[request_id]
             except KeyError as exc:
                 raise RuntimeError(f"Unknown cache request: {request_id}") from exc
+            if current.logical_block_ids and current.logical_block_ids != blocks:
+                raise RuntimeError(f"Logical KV block table cannot be rebound for {request_id}.")
             self._entries[request_id] = RequestCacheEntry(
                 cache=current.cache,
                 sequence_length=current.sequence_length,
-                logical_block_ids=tuple(block_ids),
+                logical_block_ids=blocks,
             )
 
     def length(self, request_id: str) -> int:

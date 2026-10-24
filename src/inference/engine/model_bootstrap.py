@@ -1,4 +1,4 @@
-"""以共用 Engine Core 與 Worker 裝配登錄表中的模型元件。"""
+"""以共用 Engine Core 与 Worker 装配登录表中的模型元件。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from engine.executor import LocalProcessExecutor
 from engine.model_config import (
     load_factory,
     model_api_settings,
-    model_component,
+    model_runtime_factory,
     selected_config,
     selected_model,
     validate_runtime_components,
@@ -16,33 +16,15 @@ from engine.worker import InProcessModelWorker
 
 
 def create_model_worker() -> InProcessModelWorker:
-    """只在 GPU Worker 子程序載入模型 Runner 與 Adapter。"""
+    """只在 GPU Worker 子程序载入模型目录提供的单一 Runtime。"""
     _, model_spec = selected_model()
-    profile = str(model_spec.get("integration_profile", "custom"))
-    runner_path = model_component(model_spec, "runner", required=profile != "standard")
-    adapter_path = model_component(model_spec, "adapter", required=profile != "standard")
-    if runner_path:
-        runner = load_factory(runner_path)()
-    elif profile == "standard":
-        from engine.standard_text import StandardTextModelRunner
-
-        runner = StandardTextModelRunner()
-    else:
-        raise ValueError("Custom model registration must define components.runner.")
-    if adapter_path:
-        adapter = load_factory(adapter_path)(runner)
-    elif profile == "standard":
-        from engine.standard_text import StandardTextModelAdapter
-
-        adapter = StandardTextModelAdapter(runner)
-    else:
-        raise ValueError("Custom model registration must define components.adapter.")
-    validate_runtime_components(model_spec, runner, adapter)
-    return InProcessModelWorker(runner, adapter)
+    runtime = load_factory(model_runtime_factory(model_spec))()
+    validate_runtime_components(model_spec, runtime)
+    return InProcessModelWorker(runtime)
 
 
 def create_engine_core() -> InferenceEngine:
-    """由 YAML 建立共用 Scheduler、KV 管理器及獨立 Model Worker。"""
+    """由 YAML 建立共用 Scheduler、KV 管理器及独立 Model Worker。"""
     model_alias, model_spec = selected_model()
     config = selected_config("INFERENCE_CONFIG")
     runtime = config.get("runtime", {})

@@ -1,10 +1,10 @@
-# Python 環境與快取
+# Python 环境与快取
 **/.venv/
 __pycache__/
 *.py[cod]
 **/.cache/
 
-# 本機模型權重與 Hugging Face 快取
+# 本机模型权重与 Hugging Face 快取
 /checkpoints/**
 !/checkpoints/val.md
 !/checkpoints/val.xlsx
@@ -13,14 +13,15 @@ __pycache__/
 *.pt
 *.pth
 
-# 本機執行輸出
+# 本机执行输出
 /logs/
 /results/
 *.log
 *.pid
 
-# 本機密鑰與 IDE 設定
+# 本机密钥与 IDE 设定
 .env
 .env.*
 !.env.example
 .vscode/
+/repos/

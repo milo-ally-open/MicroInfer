@@ -1,9 +1,10 @@
-"""Engine Core：協調推論請求、Token Scheduler、KV 預留與 Worker 執行。"""
+"""Engine Core：协调推论请求、Token Scheduler、KV 预留与 Worker 执行。"""
 
 from __future__ import annotations
 
-import tempfile
+import logging
 import queue
+import tempfile
 import threading
 import time
 import uuid
@@ -21,19 +22,23 @@ from engine.scheduler import SchedulerFullError, TokenScheduler
 from media.video import save_upload, uploaded_video_path
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class _GenerationContext:
-    """由 Engine Core 排程、並將結果送至單一 API stream 的請求狀態。"""
+    """由 Engine Core 排程、并将结果送至单一 API stream 的请求状态。"""
 
     request_id: str
     finish_operation: str
+    # 单一请求的输出量受 max_new_tokens 限制；Queue 保留跨 Thread 的事件顺序。
     events: queue.Queue[Any] = field(default_factory=queue.Queue)
     terminal: bool = False
     cancelled: bool = False
 
 
 class InferenceEngine:
-    """在 API Server 與模型 Worker 之間執行排程、快取預留及結果協調。"""
+    """在 API Server 与模型 Worker 之间执行排程、快取预留及结果协调。"""
 
     def __init__(
         self,
@@ -105,7 +110,7 @@ class InferenceEngine:
             try:
                 self.executor.close()
             except BaseException:
-                pass
+                logger.exception("Could not close the Worker after Engine startup failed")
             with self._state_lock:
                 self._state = "failed"
             raise
@@ -119,24 +124,29 @@ class InferenceEngine:
 
     def close(self) -> None:
         with self._state_lock:
-            if self._state == "closed":
+            if self._state in {"closing", "closed"}:
                 return
             self._state = "closing"
-        if self._live_sessions is not None:
-            self._live_sessions.stop_all()
-        self.scheduler.wait_idle()
-        self._dispatcher_stop.set()
-        self._scheduler_wakeup.set()
-        if self._dispatcher is not None:
-            self._dispatcher.join(timeout=30)
         try:
-            self.executor.close()
+            if self._live_sessions is not None:
+                self._live_sessions.stop_all()
+            self.scheduler.wait_idle()
         finally:
-            with self._state_lock:
-                self._state = "closed"
+            try:
+                # 即使停止 Live 或等待请求时出错，也要唤醒背景回圈并释放 Worker。
+                self._dispatcher_stop.set()
+                self._scheduler_wakeup.set()
+                if self._dispatcher is not None:
+                    self._dispatcher.join(timeout=30)
+                    if self._dispatcher.is_alive():
+                        logger.error("Inference Engine dispatcher did not stop within 30 seconds")
+                self.executor.close()
+            finally:
+                with self._state_lock:
+                    self._state = "closed"
 
     def attach_live_sessions(self, manager: Any) -> None:
-        """將 Live manager 納入 Engine 生命週期。"""
+        """将 Live manager 纳入 Engine 生命周期。"""
         if self._live_sessions is not None:
             raise RuntimeError("A live session manager is already attached.")
         self._live_sessions = manager
@@ -154,7 +164,7 @@ class InferenceEngine:
         on_admitted: Any = None,
         request_id: str | None = None,
     ) -> Iterator[InferenceStreamEvent]:
-        """準備並登記請求；Engine Core 背景迴圈負責排程、執行及逐事件回傳。"""
+        """准备并登记请求；Engine Core 背景回圈负责排程、执行及逐事件回传。"""
         self._require_ready()
         request_id = request_id or uuid.uuid4().hex
         prepared = False
@@ -163,7 +173,7 @@ class InferenceEngine:
         try:
             if self._request_was_cancelled(request_id):
                 raise GeneratorExit
-            # prepare 可能在內部建立部分狀態後失敗；之後一律執行冪等取消清理。
+            # prepare 可能在内部建立部分状态后失败；之后一律执行幂等取消清理。
             prepared = True
             descriptor = self.executor.invoke(prepare_operation, request_id, *prepare_args)
             if self._request_was_cancelled(request_id):
@@ -203,7 +213,13 @@ class InferenceEngine:
             context.events.put(InferenceStreamEvent("start", prompt_tokens=prompt_tokens))
             self._scheduler_wakeup.set()
             while True:
-                event = context.events.get()
+                try:
+                    event = context.events.get(timeout=0.5)
+                except queue.Empty:
+                    # 避免 Engine Core 背景执行绪意外退出后，API stream 永久等待。
+                    if self._dispatcher is None or not self._dispatcher.is_alive():
+                        raise RuntimeError("Inference Engine dispatcher stopped before completing the request.")
+                    continue
                 if isinstance(event, BaseException):
                     raise event
                 yield event
@@ -219,7 +235,7 @@ class InferenceEngine:
                     self.kv_cache.release(request_id)
 
     def _dispatch_batches(self) -> None:
-        """集中執行 Scheduler 批次，並把每個結果送回對應的請求 stream。"""
+        """集中执行 Scheduler 批次，并把每个结果送回对应的请求 stream。"""
         while not self._dispatcher_stop.is_set():
             batch = self.scheduler.schedule_batch()
             if batch is None:
@@ -228,9 +244,10 @@ class InferenceEngine:
                 continue
             request_ids = {item.request_id for item in batch.work_items}
             try:
+                # Scheduler 只有在 Worker 回传完整批次后才提交状态更新。
                 results = tuple(self.executor.execute_batch(batch.work_items))
                 self.scheduler.complete_batch(results)
-            except BaseException as exc:
+            except Exception as exc:
                 self.scheduler.abort_batch(request_ids)
                 for request_id in request_ids:
                     context = self._get_context(request_id)
@@ -242,20 +259,21 @@ class InferenceEngine:
                 context = self._get_context(result.request_id)
                 if context is None or context.terminal or context.cancelled:
                     continue
-                for output in self.output_processor.process(result):
-                    context.events.put(
-                        InferenceStreamEvent(
-                            output.kind,
-                            text=output.text,
-                            token_id=output.token_id,
+                try:
+                    for output in self.output_processor.process(result):
+                        context.events.put(
+                            InferenceStreamEvent(
+                                output.kind,
+                                text=output.text,
+                                token_id=output.token_id,
+                            )
                         )
-                    )
-                if result.finished:
-                    try:
+                    if result.finished:
                         final = self.executor.invoke(context.finish_operation, context.request_id)
                         self._finish_context(context, final)
-                    except BaseException as exc:
-                        self._fail_context(context, exc)
+                except Exception as exc:
+                    logger.exception("Could not publish Worker result for request %s", result.request_id)
+                    self._fail_context(context, exc)
             self._scheduler_wakeup.set()
 
     def _get_context(self, request_id: str) -> _GenerationContext | None:
@@ -263,7 +281,7 @@ class InferenceEngine:
             return self._contexts.get(request_id)
 
     def cancel_request(self, request_id: str) -> None:
-        """取消指定請求並喚醒其事件 iterator，供 EngineClient IPC 中斷使用。"""
+        """取消指定请求并唤醒其事件 iterator，供 EngineClient IPC 中断使用。"""
         with self._contexts_lock:
             context = self._contexts.get(request_id)
             if context is None:
@@ -274,7 +292,7 @@ class InferenceEngine:
         context.events.put(GeneratorExit())
 
     def register_request(self, request_id: str) -> None:
-        """在 Engine Core 接收 IPC 後、啟動 handler 前登記可取消的工作。"""
+        """在 Engine Core 接收 IPC 后、启动 handler 前登记可取消的工作。"""
         if not request_id:
             raise ValueError("request_id is required.")
         with self._contexts_lock:
@@ -283,7 +301,7 @@ class InferenceEngine:
             self._registered_requests.add(request_id)
 
     def unregister_request(self, request_id: str) -> None:
-        """清除 IPC request 註冊及未消耗的提前取消旗標。"""
+        """清除 IPC request 注册及未消耗的提前取消旗标。"""
         with self._contexts_lock:
             self._registered_requests.discard(request_id)
             self._cancelled_requests.discard(request_id)
@@ -337,7 +355,7 @@ class InferenceEngine:
         try:
             self.executor.invoke("cancel_generation", request_id)
         except BaseException:
-            pass
+            logger.exception("Could not cancel Worker generation %s", request_id)
 
     def generate_chat(
         self,
@@ -388,7 +406,7 @@ class InferenceEngine:
         *,
         request_id: str | None = None,
     ) -> InferenceResult:
-        """執行 API Server 已安全暫存的影片，不把 bytes 跨 Engine IPC 傳輸。"""
+        """执行 API Server 已安全暂存的影片，不把 bytes 跨 Engine IPC 传输。"""
         return self._collect_result(self._run_generation(
             "prepare_video_generation",
             (video_path, filename, request_body, upload_bytes, staging_seconds),
@@ -427,7 +445,7 @@ class InferenceEngine:
     def try_live_inference(
         self, operation: str, *args: Any, on_admitted: Any = None, request_id: str | None = None
     ) -> tuple[bool, Any]:
-        """讓 Live 分析共用公平 Token Scheduler 與 KV block 預留。"""
+        """让 Live 分析共用公平 Token Scheduler 与 KV block 预留。"""
         self._require_ready()
         prepare_operations = {
             "analyze_live_frames": "prepare_live_frames_generation",

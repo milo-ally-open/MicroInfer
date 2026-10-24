@@ -2,7 +2,7 @@ listener:
   host: 127.0.0.1
   port: 8000
 
-# 設定為外部客戶端可到達的 Gateway URL；TLS 可由前置 Proxy 終止。
+# 设定为外部客户端可到达的 Gateway URL；TLS 可由前置 Proxy 终止。
 public_base_url: http://127.0.0.1:8000
 
 defaults:
@@ -17,7 +17,7 @@ upstream:
   tcp_keepalive_seconds: 30
   expect_continue_seconds: 1
 
-# 對外別名與推論服務的識別碼分開保存。首版只登錄已實作的模型。
+# 对外别名与推论服务的识别码分开保存。首版只登录已实作的模型。
 models:
   mage-vl-4b:
     upstream_model: microsoft/Mage-VL
@@ -58,18 +58,18 @@ timeouts:
   idle_connection_seconds: 60
   shutdown_grace_seconds: 30
 
-# 單執行個體 token bucket；Gateway 重啟後計數重設。
+# 单执行个体 token bucket；Gateway 重启后计数重设。
 rate_limit:
   requests_per_second: 5
   burst: 10
 
-# 機密由程序環境指定檔案路徑或簽章金鑰，不寫入此 YAML。
+# 机密由程序环境指定档案路径或签章金钥，不写入此 YAML。
 auth:
   api_keys_file_env: GATEWAY_API_KEYS_FILE
 
 session:
   hmac_keys_env: GATEWAY_SESSION_HMAC_KEYS
-  # 至少覆蓋推論 live 工作階段最長時間；舊金鑰需保留至簽發句柄到期。
+  # 至少覆盖推论 live 工作阶段最长时间；旧金钥需保留至签发句柄到期。
   handle_ttl_seconds: 3660
 
 observability:

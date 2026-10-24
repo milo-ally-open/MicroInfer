@@ -11,7 +11,7 @@ import (
 	"gitee.com/milo-ally-intern/LYGCloudModelAPI/src/gateway/internal/config"
 )
 
-// Client 管理連線推論服務時共用的 HTTP transport。
+// Client 管理连线推论服务时共用的 HTTP transport。
 type Client struct {
 	httpClient *http.Client
 }

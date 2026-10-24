@@ -1,7 +1,7 @@
-"""定義推論引擎線上使用的請求與批次資料結構。
+"""定义推论引擎线上使用的请求与批次资料结构。
 
-Engine 請求可帶小型資料或本機媒體參照，不傳影片 bytes、GPU tensor 或模型 Cache。
-Worker 批次入口已接入現行路徑；Mage-VL Runner 會合併相容輸入，不相容時逐請求執行。
+Engine 请求可带小型资料或本机媒体参照，不传影片 bytes、GPU tensor 或模型 Cache。
+Worker 批次入口已接入现行路径；Mage-VL Runner 会合并相容输入，不相容时逐请求执行。
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ class ExecutionPhase(str, Enum):
 
 @dataclass(frozen=True)
 class PreparedChatInput:
-    """由 API 輸入處理器建立、可安全跨 Engine IPC 傳遞的模型輸入。"""
+    """由 API 输入处理器建立、可安全跨 Engine IPC 传递的模型输入。"""
 
     model_alias: str
     input_ids: tuple[int, ...]
@@ -34,7 +34,7 @@ class PreparedChatInput:
 
 @dataclass(frozen=True)
 class InferenceResult:
-    """跨 API、Engine 與模型 Adapter 傳遞的單次推論結果。"""
+    """跨 API、Engine 与模型 Adapter 传递的单次推论结果。"""
 
     content: str
     prompt_tokens: int
@@ -46,7 +46,7 @@ class InferenceResult:
 
 @dataclass(frozen=True)
 class InferenceStreamEvent:
-    """不依賴 SSE 或 OpenAI schema 的逐請求生成事件。"""
+    """不依赖 SSE 或 OpenAI schema 的逐请求生成事件。"""
 
     kind: str
     text: str | None = None

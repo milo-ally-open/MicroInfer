@@ -3,6 +3,8 @@
     "*.cce": "cpp",
     "*.asc": "cpp"
   },
+  "python-envs.defaultEnvManager": "ms-python.python:conda",
+  "python-envs.defaultPackageManager": "ms-python.python:conda",
   "ascendCToolkit.internal.settingsVersion": "1.5.5",
   "ascendCToolkit.environment.environmentScript": "/etc/profile",
   "ascendCToolkit.projectType": "pyasc",

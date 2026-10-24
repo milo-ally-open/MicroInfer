@@ -82,7 +82,7 @@ type ModelCapabilities struct {
 	LiveVideo   bool `yaml:"live_video"`
 }
 
-// UnmarshalYAML 要求每個路由明確列出全部支援與不支援的 API 能力。
+// UnmarshalYAML 要求每个路由明确列出全部支援与不支援的 API 能力。
 func (capabilities *ModelCapabilities) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind != yaml.MappingNode {
 		return fmt.Errorf("model capabilities must be a mapping")

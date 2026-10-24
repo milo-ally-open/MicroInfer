@@ -1,4 +1,4 @@
-"""離線擷取 Mage-VL 的模型結構、輸入張量與 KV cache 資訊。"""
+"""离线撷取 Mage-VL 的模型结构、输入张量与 KV cache 资讯。"""
 
 from __future__ import annotations
 
@@ -19,21 +19,21 @@ from typing import Any
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="僅使用本機權重，擷取 Mage-VL 推理與 KV cache 能力資訊。"
+        description="仅使用本机权重，撷取 Mage-VL 推理与 KV cache 能力资讯。"
     )
     inputs = parser.add_mutually_exclusive_group(required=True)
-    inputs.add_argument("--image", type=Path, help="本機圖片路徑")
-    inputs.add_argument("--video", type=Path, help="本機影片路徑；以均勻取樣影格送入 Processor")
-    parser.add_argument("--output", required=True, type=Path, help="JSON 報告輸出路徑")
-    parser.add_argument("--config", required=True, type=Path, help="必須明確指定 Mage-VL 探索工具 YAML 路徑")
-    parser.add_argument("--model-path", required=True, type=Path, help="必須明確指定已存在的本機模型快照目錄")
-    parser.add_argument("--question", required=True, help="送入模型的問題文字")
-    parser.add_argument("--max-new-tokens", type=int, help="覆寫 YAML 中 generation.max_tokens_default 的輸出 token 數")
+    inputs.add_argument("--image", type=Path, help="本机图片路径")
+    inputs.add_argument("--video", type=Path, help="本机影片路径；以均匀取样影格送入 Processor")
+    parser.add_argument("--output", required=True, type=Path, help="JSON 报告输出路径")
+    parser.add_argument("--config", required=True, type=Path, help="必须明确指定 Mage-VL 探索工具 YAML 路径")
+    parser.add_argument("--model-path", required=True, type=Path, help="必须明确指定已存在的本机模型快照目录")
+    parser.add_argument("--question", required=True, help="送入模型的问题文字")
+    parser.add_argument("--max-new-tokens", type=int, help="覆写 YAML 中 generation.max_tokens_default 的输出 token 数")
     return parser.parse_args()
 
 
 def _resolve_path(value: Path) -> Path:
-    """解析呼叫者提供的路徑；相對路徑以目前工作目錄為基準。"""
+    """解析呼叫者提供的路径；相对路径以目前工作目录为基准。"""
     return value.expanduser().resolve()
 
 

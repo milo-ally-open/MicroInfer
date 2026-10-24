@@ -1,4 +1,4 @@
-"""為批次 Model Runner 建立可驗證的 token 執行計畫。"""
+"""为批次 Model Runner 建立可验证的 token 执行计划。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ Phase = Literal["prefill", "decode"]
 
 @dataclass(frozen=True)
 class SequenceProgress:
-    """Scheduler 在一次規劃前取得的序列進度快照。"""
+    """Scheduler 在一次规划前取得的序列进度快照。"""
 
     request_id: str
     phase: Phase
@@ -27,7 +27,7 @@ class SequenceProgress:
 
 @dataclass(frozen=True)
 class ScheduledSequence:
-    """批次中單一序列要執行的工作。"""
+    """批次中单一序列要执行的工作。"""
 
     request_id: str
     phase: Phase
@@ -38,7 +38,7 @@ class ScheduledSequence:
 
 @dataclass(frozen=True)
 class BatchPlan:
-    """供 Engine 交給批次 Model Runner 的單輪計畫。"""
+    """供 Engine 交给批次 Model Runner 的单轮计划。"""
 
     sequences: tuple[ScheduledSequence, ...]
     scheduled_tokens: int
@@ -53,11 +53,11 @@ def plan_batch(
     prefill_chunk_size: int | None = None,
     cursor: int = 0,
 ) -> BatchPlan:
-    """混合安排 decode 與 prefill，並依首段視覺 token 邊界切分 prompt。
+    """混合安排 decode 与 prefill，并依首段视觉 token 边界切分 prompt。
 
-    每個 request 每輪最多出現一次。Prefill 可切成多輪；Model Runner 必須回報實際處理的
-    prompt token 數，Engine 才能更新下一輪進度。`prefill_min_chunk_tokens` 用於要求首段涵蓋
-    完整視覺 token 區段，避免將圖像／影片標記和視覺特徵分開。此純規劃函式不執行模型或管理 KV 張量。
+    每个 request 每轮最多出现一次。Prefill 可切成多轮；Model Runner 必须回报实际处理的
+    prompt token 数，Engine 才能更新下一轮进度。`prefill_min_chunk_tokens` 用于要求首段涵盖
+    完整视觉 token 区段，避免将图像／影片标记和视觉特征分开。此纯规划函式不执行模型或管理 KV 张量。
     """
     if max_num_seqs < 1 or max_num_scheduled_tokens < 1:
         raise ValueError("Batch limits must be positive.")

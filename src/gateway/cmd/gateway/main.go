@@ -17,28 +17,28 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "src/gateway/configs/gateway.yml", "Gateway YAML 設定路徑")
+	configPath := flag.String("config", "src/gateway/configs/gateway.yml", "Gateway YAML 设定路径")
 	flag.Parse()
 	cfg, err := gateway.LoadConfig(*configPath)
 	if err != nil {
-		fatal("載入 Gateway 設定失敗", err)
+		fatal("载入 Gateway 设定失败", err)
 	}
 	apiKeyPath := strings.TrimSpace(os.Getenv(cfg.Auth.APIKeysFileEnv))
 	if apiKeyPath == "" {
-		fatal(fmt.Sprintf("環境變數 %s 未設定", cfg.Auth.APIKeysFileEnv), nil)
+		fatal(fmt.Sprintf("环境变数 %s 未设定", cfg.Auth.APIKeysFileEnv), nil)
 	}
 	apiKeys, err := gateway.LoadAPIKeys(apiKeyPath)
 	if err != nil {
-		fatal("載入 API Key 檔案失敗", err)
+		fatal("载入 API Key 档案失败", err)
 	}
 	hmacKeys, err := gateway.ParseHMACKeys(os.Getenv(cfg.Session.HMACKeysEnv))
 	if err != nil {
-		fatal("載入 session HMAC 金鑰失敗", err)
+		fatal("载入 session HMAC 金钥失败", err)
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(cfg.Observability.LogLevel)}))
 	handler, err := gateway.NewHandler(cfg, gateway.Options{APIKeys: apiKeys, HMACKeys: hmacKeys, Logger: logger})
 	if err != nil {
-		fatal("建立 Gateway 失敗", err)
+		fatal("建立 Gateway 失败", err)
 	}
 	server := &http.Server{
 		Addr:              net.JoinHostPort(cfg.Listener.Host, fmt.Sprint(cfg.Listener.Port)),
@@ -54,12 +54,12 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.Timeouts.ShutdownGraceSeconds)*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			logger.Error("Gateway 優雅停止失敗", "error", err)
+			logger.Error("Gateway 优雅停止失败", "error", err)
 		}
 	}()
-	logger.Info("Gateway 已啟動", "address", server.Addr, "upstream", cfg.Upstream.BaseURL)
+	logger.Info("Gateway 已启动", "address", server.Addr, "upstream", cfg.Upstream.BaseURL)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fatal("Gateway 啟動失敗", err)
+		fatal("Gateway 启动失败", err)
 	}
 }
 

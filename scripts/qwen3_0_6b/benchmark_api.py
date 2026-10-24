@@ -1,4 +1,4 @@
-"""以 OpenAI SSE API 量測 Qwen3 端到端生成延遲與吞吐。"""
+"""以 OpenAI SSE API 量测 Qwen3 端到端生成延迟与吞吐。"""
 
 from __future__ import annotations
 
@@ -17,14 +17,14 @@ from typing import Any
 
 
 def _arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="量測已啟動 Qwen3 Chat Completions API 的文字 SSE 性能。")
-    parser.add_argument("--base-url", required=True, help="推論 API 根網址，例如 http://127.0.0.1:8011")
-    parser.add_argument("--model", required=True, help="公開模型別名，例如 qwen3-0.6b")
-    parser.add_argument("--prompt", required=True, help="每一個請求使用的文字 prompt")
-    parser.add_argument("--requests", required=True, type=int, help="測量請求數")
-    parser.add_argument("--concurrency", required=True, type=int, help="同時執行的請求數")
-    parser.add_argument("--max-tokens", required=True, type=int, help="每個回應允許生成的 token 上限")
-    parser.add_argument("--output", required=True, type=Path, help="明確指定 JSON 報告路徑")
+    parser = argparse.ArgumentParser(description="量测已启动 Qwen3 Chat Completions API 的文字 SSE 性能。")
+    parser.add_argument("--base-url", required=True, help="推论 API 根网址，例如 http://127.0.0.1:8011")
+    parser.add_argument("--model", required=True, help="公开模型别名，例如 qwen3-0.6b")
+    parser.add_argument("--prompt", required=True, help="每一个请求使用的文字 prompt")
+    parser.add_argument("--requests", required=True, type=int, help="测量请求数")
+    parser.add_argument("--concurrency", required=True, type=int, help="同时执行的请求数")
+    parser.add_argument("--max-tokens", required=True, type=int, help="每个回应允许生成的 token 上限")
+    parser.add_argument("--output", required=True, type=Path, help="明确指定 JSON 报告路径")
     return parser.parse_args()
 
 
@@ -170,9 +170,9 @@ def main() -> int:
             "worker_kv_cache": health_after.get("worker_kv_cache"),
         },
         "limitations": [
-            "此報告量測單一 API 程序及本機 GPU 的短期基線，不構成 SLA。",
-            "TTFT 以第一個非空 SSE content chunk 計算；inter-token latency 以相鄰可見文字 chunk 計算。",
-            "SDPA 目前會將 paged KV 收集至連續 batch tensor，報告不代表 PagedAttention kernel 效能。",
+            "此报告量测单一 API 程序及本机 GPU 的短期基线，不构成 SLA。",
+            "TTFT 以第一个非空 SSE content chunk 计算；inter-token latency 以相邻可见文字 chunk 计算。",
+            "SDPA 目前会将 paged KV 收集至连续 batch tensor，报告不代表 PagedAttention kernel 效能。",
         ],
     }
     output = args.output.expanduser().resolve()

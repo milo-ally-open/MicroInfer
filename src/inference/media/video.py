@@ -1,4 +1,4 @@
-"""處理上傳影片暫存、一般影格讀取及容器 metadata。"""
+"""处理上传影片暂存、一般影格读取及容器 metadata。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def uploaded_video_path(filename: str | None, directory: str | Path) -> Path:
 
 
 def save_upload(upload_stream: BinaryIO, destination: Path, max_bytes: int) -> int:
-    """以固定大小區塊寫入暫存檔，避免把整段影片放入記憶體。"""
+    """以固定大小区块写入暂存档，避免把整段影片放入记忆体。"""
     size = 0
     with destination.open("wb") as output:
         while chunk := upload_stream.read(1024 * 1024):
@@ -41,14 +41,20 @@ def sample_video_frames(
     *,
     max_frames: int,
     max_frame_side: int,
+    max_frame_pixels: int,
     max_duration_seconds: float,
     resize: Callable[[Image.Image, int], Image.Image],
 ) -> tuple[list[Image.Image], dict[str, Any]]:
-    """均勻讀取影片影格並回傳來源 metadata；影格策略參數由模型設定提供。"""
-    import cv2
+    """均匀读取影片影格；先依来源像素上限拒绝超大影格，再交由模型设定缩放。"""
+    try:
+        import cv2
+    except Exception as exc:
+        raise InferenceError(503, "OpenCV is required to sample uploaded video frames.") from exc
 
-    if max_frames < 1 or max_frame_side < 1:
-        raise RuntimeError("video_max_frames and video_max_frame_side must be positive in the API YAML.")
+    if max_frames < 1 or max_frame_side < 1 or max_frame_pixels < 1:
+        raise RuntimeError("Video frame count, side length and pixel limits must be positive in the API YAML.")
+    if not math.isfinite(max_duration_seconds) or max_duration_seconds <= 0:
+        raise RuntimeError("max_video_duration_seconds must be finite and positive in the API YAML.")
     try:
         capture = cv2.VideoCapture(str(video_path))
     except cv2.error as exc:
@@ -65,6 +71,11 @@ def sample_video_frames(
         frame_count, width, height = int(frame_count_value), int(width_value), int(height_value)
         if fps <= 0 or frame_count <= 0 or width <= 0 or height <= 0:
             raise InferenceError(400, "Could not read video frame count or frame rate.")
+        if width * height > max_frame_pixels:
+            raise InferenceError(
+                413,
+                f"Video frame dimensions exceed the configured {max_frame_pixels}-pixel limit.",
+            )
         duration = frame_count / fps
         if not math.isfinite(duration):
             raise InferenceError(400, "Video metadata contains an invalid duration.")
@@ -103,7 +114,7 @@ def sample_video_frames(
 
 
 def probe_video_metadata(video_path: Path, *, ffprobe_bin: str, max_duration_seconds: float) -> dict[str, Any]:
-    """透過 ffprobe 讀取容器 metadata，不解碼整段影片。"""
+    """透过 ffprobe 读取容器 metadata，不解码整段影片。"""
     ffprobe = shutil.which(ffprobe_bin)
     if ffprobe is None and Path(ffprobe_bin).is_file():
         ffprobe = str(Path(ffprobe_bin).resolve())
@@ -142,7 +153,7 @@ def probe_video_metadata(video_path: Path, *, ffprobe_bin: str, max_duration_sec
         frame_count = int(stream.get("nb_frames") or 0)
         if frame_count <= 0 and duration > 0 and fps > 0:
             frame_count = round(duration * fps)
-    except (ValueError, TypeError, KeyError, IndexError, ZeroDivisionError) as exc:
+    except (ValueError, TypeError, KeyError, IndexError, ZeroDivisionError, AttributeError) as exc:
         raise InferenceError(400, "Could not read uploaded video metadata.") from exc
     if not math.isfinite(duration) or duration <= 0 or width <= 0 or height <= 0:
         raise InferenceError(400, "Video metadata contains invalid duration or dimensions.")
