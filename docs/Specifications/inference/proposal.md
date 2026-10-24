@@ -84,3 +84,7 @@ KV block 所有权仍分成 Engine 的逻辑 reservation 和 Qwen Worker 的 GPU
 实际影片测试显示，Mage-VL 长视讯输入会令文字骨干 eager attention 建立过大的完整 `Q×K` 中间矩阵。本次按模型责任将 Mage-VL 拓扑／输出结构放入 `model/`、视觉／文字注意力放入 `layers/`，并在 Transformers `AttentionInterface` 登记模型专属分块 eager Attention；分块大小由 Mage `inference.yml` 管理。Qwen3 自有 GQA 亦改用分组矩阵乘法。两者均维持既有 Runtime、外部 API 与文字 SSE 契约，不引入 fused SDPA；这是长序列暂存显存控制，不代表 PagedAttention Kernel。
 
 本次维护进一步统一 Mage-VL 视觉注意力类名为 `MultiHeadAttention`，源码文件命名为 `multi_head_attention.py`；三个模型组件 CPU 对照入口将测试逻辑直接放在文件的 `if __name__ == "__main__":` 区块中。程式、文档、注释与 YAML 中的中文统一使用简体。MediaMTX 配置移至项目根目录 `deploy/mediamtx/`，不再由模型 manifest 登记或由 Inference Launcher 读取／启动；部署者单独管理 sidecar 进程。模型 `network.yml` 仍保留模型所需的 RTSP／RTMP 连接端点。
+
+## 新模型接入文档澄清
+
+本次只细化模型接入说明，不改变模型实现、API 契约、运行配置或启动方式。接入指南逐项描述需要新增或修改的文件及其内容，并说明 profile、Gateway、MediaMTX 和三项测试的使用条件；不附模型实现代码示例。验收以文件清单完整、内容职责与当前代码一致、README 链接有效及 Inference Spec validator 通过为准。

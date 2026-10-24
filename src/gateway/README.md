@@ -73,16 +73,9 @@ curl.exe http://127.0.0.1:8000/readyz
 
 Gateway 和推论服务启动方式维持独立。逐模型的三项测试入口、依赖条件与命令见 [`tests/README.md`](../../tests/README.md)；每个测试都必须用 `--config` 指向模型专属 `test.yaml`。Gateway 端到端测试位于 `tests/qwen3_0_6b/test_end2end.py` 和 `tests/mage_vl_4b/test_end2end.py`，前者验证文字 SSE，后者验证图片 SSE 和影片上传。
 
-2026-10-22 已以低显存设定连接 Qwen3-0.6B 执行文字 JSON／SSE、双请求并发与客户端断流回收 smoke；同日也透过真实 Mage-VL 完成图片聊天 JSON／SSE、视讯上传与 Live／MediaMTX 合成 RTSP smoke。历史 JSON 结果按模型归档在 [`tests/qwen3_0_6b/results/`](../../tests/qwen3_0_6b/results/) 和 [`tests/mage_vl_4b/results/`](../../tests/mage_vl_4b/results/)；Mage-VL 的既有验收记录见 [`checkpoints/val.md`](../../checkpoints/val.md) 与 [`checkpoints/val.xlsx`](../../checkpoints/val.xlsx)。Live 仅有单次功能验证；正式容量、高并发和媒体授权边界仍未测。
+2026-10-22 已以低显存设定连接 Qwen3-0.6B 执行文字 JSON／SSE、双请求并发与客户端断流回收 smoke；同日也透过真实 Mage-VL 完成图片聊天 JSON／SSE、视讯上传与 Live／MediaMTX 合成 RTSP smoke。当前逐模型测试脚本将 JSON 摘要输出到标准输出，不会自动创建结果文件；需要归档时由执行者保存到对应模型目录的 results/。既有验收记录见 [`checkpoints/val.md`](../../checkpoints/val.md) 与 [`checkpoints/val.xlsx`](../../checkpoints/val.xlsx)。Live 仅有单次功能验证；正式容量、高并发和媒体授权边界仍未测。
 
-根目录的 `example.py` 只示范一次 OpenAI SDK 图片聊天呼叫。此范例使用 `test.jpg`，因目前推论端的聊天 API 要求图片输入。若执行环境尚未安装 OpenAI Python SDK，先安装套件；Gateway 与推论服务就绪后，在专案根目录执行：
-
-```powershell
-python -m pip install openai
-$env:VIDEO_API_KEY = '<client API Key>'
-$env:GATEWAY_URL = 'http://127.0.0.1:8000'
-python example.py
-```
+目前仓库不再包含根目录的 example.py 或 test.jpg 范例。客户端可直接使用 OpenAI 兼容的聊天 API；API Key 由 VIDEO_API_KEY 环境变量提供。三项逐模型验收脚本及其设定方式见 [Tests README](../../tests/README.md)。
 
 Inference 性能比较位于各模型的 `test_performance.py`，Gateway 端到端功能验收则位于 `test_end2end.py`；两者使用不同路径，分别量测推理 API 与 Gateway 完整链路。三项测试不做模型精度评测；既有 smoke 样本数不足以作为稳定容量基线或 SLA。
 

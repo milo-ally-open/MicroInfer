@@ -106,7 +106,7 @@
 - **AC-12.4** 模型拓扑置于模型包 `model/`；模型层置于 `layers/`；Runtime 支援元件置于 `components/`；模型设定、Transformers Config／Tokenizer／Processor 选择、snapshot 与权重载入集中于 `utils/loader.py`。不再为相同职责拆分多个设定／HF loader 档案；模型专属推理参数仍由 YAML 管理。以上目录依模型实际需要建立，不建立空目录，也不把模型专属逻辑移入共用 `engine/`。
 - **AC-12.5** Qwen3 与 Mage-VL 均由自身 manifest 和 Runtime 工厂装配，维持现有 API alias、网路设定、推理行为及文字 SSE 输出；Qwen token ID 仍在 API 边界增量 Detokenize，Mage-VL `text_delta` 路径不变。
 - **AC-12.6** 每个模型的三项测试均只使用该目录的 `test.yaml` 和模型 manifest；跨服务 alias／端点一致性由 `test_end2end.py` 的 Gateway 回应验证。
-- **AC-12.7** 新模型指南以模型目录为唯一接入主体，包含最小 manifest、Runtime 工厂和设定范例；文件不得要求维护全域模型登录清单或 Runner／Adapter 元件清单。
+- **AC-12.7** 新模型接入指南以模型目录为主体，逐项说明必需／按需文件、各文件应承载的内容、接入顺序、standard/custom 边界、Gateway 与 Live 的条件及验证方法；指南不要求提供模型实现代码范例，也不要求维护全局模型登录清单或 Runner／Adapter 元件清单。
 
 ### REQ-13：模型包按计算责任分层并使用明确注意力路径
 

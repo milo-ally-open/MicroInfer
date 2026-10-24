@@ -15,4 +15,4 @@ $env:VIDEO_API_KEY = '<Gateway API Key>'
 python tests/qwen3_0_6b/test_end2end.py --config tests/qwen3_0_6b/test.yaml
 ```
 
-Mage-VL 将目录名替换为 `mage_vl_4b`。结果 JSON 放在同模型目录的 `results/`；历史报告按模型归档。这三项测试不执行资料集精度评估。`checkpoints/val.md` 和 `checkpoints/val.xlsx` 是受保护的验收工作流文件。
+Mage-VL 将目录名替换为 `mage_vl_4b`。脚本把 JSON 摘要打印到标准输出，不会自动写入结果文件。需要归档时，可手动保存到同模型目录的 `results/`，并记录模型 revision、硬件和执行环境；不要把密钥、权重或媒体素材放入报告。这三项测试不执行资料集精度评估。`checkpoints/val.md` 和 `checkpoints/val.xlsx` 是受保护的验收工作流文件。

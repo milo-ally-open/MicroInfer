@@ -88,7 +88,7 @@ Qwen 模型拓扑及 Attention 等算子留在模型包；模型专属 `utils/` 
 
 模型包的 `configs/model.yaml` 中 `api.model_id` 是推论 API 接受及回传的识别码；上游 model repo ID 留在 `inference.yml` 的 `model.id`。`api.capabilities` 明确列出聊天输入模态、文字串流、`text_delta`／`token_ids` 输出、影片上传及 Live 能力；API app 依此挂载路由并拒绝不支援的输入。`api.input_processor` 与 `api.live_session_manager` 是依能力需要登记的工厂。特殊前处理、Tokenizer、权重载入、模型拓扑和 cache 逻辑仍由模型包负责。
 
-新模型最少实作 Runner／Adapter 并登记工厂和 YAML；不需写模型专属 `app.py` 或 `engine_core.py`。逐步生成 Adapter 维持 Engine 的 prepare／prefill／decode／finish／cancel 契约，Runner 持有模型 cache state 并依 request ID 回传批次结果。共用 KV Manager 的租约不替模型宣称支援相同的物理 cache 或 batch 语义。完整操作步骤及工厂签章见[新模型接入操作指南](model-integration.md)。
+新模型最少实作 Runner／Adapter 并登记工厂和 YAML；不需写模型专属 `app.py` 或 `engine_core.py`。逐步生成 Adapter 维持 Engine 的 prepare／prefill／decode／finish／cancel 契约，Runner 持有模型 cache state 并依 request ID 回传批次结果。共用 KV Manager 的租约不替模型宣称支援相同的物理 cache 或 batch 语义。各文件职责、Runtime 工厂接口和完整接入步骤见[新模型接入指南](model-integration.md)。
 
 Mage-VL 与 Qwen 均由共用入口装配；Mage 模型拓扑及输出型别位于 `models/mage_vl_4b/model/`，视觉 Encoder 与 StreamMind Gate 位于 `layers/`，逐步生成／替换注册等 Runtime 元件留在 `components/`；Qwen 拓扑与层亦各自分置于 `model/` 和 `layers/`。模型目录不保留未使用的 `app.py`／`engine_core.py` 包装档。
 

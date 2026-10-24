@@ -31,6 +31,8 @@
 
 - [x] **T-24 为独立计算文件补齐内联前向基线入口** — 范围：Mage-VL 与 Qwen3 模型层、视觉塔、Stepwise／Model Runner、KV pool、InputBatch 与 Sampler；交付：在每个值得独立验证的文件内直接写 `__main__` 输入、Engine 与 Transformers／PyTorch 基线、结果标记和断言；模型 YAML loader 文件以显式环境启动；纯数据结构及无前向职责文件不塞入空测试；覆盖：REQ-13 / AC-13.5；依赖：T-23；状态：完成。WSL `magevl-transformers` 下 20 个入口通过 CPU 数值／token 对照，覆盖注意力、RMSNorm、MLP、RoPE、Mage 视觉路径、两个 Runner 的 prefill/decode、文字增量、Qwen paged KV 和采样；VideoMamba 因环境缺少可选 `mamba_ssm` 明确跳过，其余投影层／分类头通过。另以 RTX 4060 对两层合成 Qwen3 执行单序列 CUDA prefill/decode 对照（5 个输入 token、1 个 decode token），与 Transformers 的最大绝对误差分别为 `5.96e-8` 和 `7.45e-8`；Mage 组件结构检查确认 696 个 checkpoint key 对齐，直接内联的注意力及文字 prefill/decode 对照通过；未启动真实模型服务。
 
+- [x] **T-25 优化模型接入指南与 README** — 范围：根 README、Inference README、Gateway README、Tests README 与新模型指南；交付：逐文件说明必需内容、接入顺序、standard/custom、Gateway/MediaMTX 条件和三项测试，不包含模型实现代码范例；覆盖：REQ-12 / AC-12.7；依赖：T-17；状态：完成；五份 README／指南的本地链接检查通过，Inference Spec validator 通过（13 REQ、66 AC、25 T）；未运行模型或服务测试。
+
 ## 本次验收纪录
 
 | 检查 | 状态 | 证据／限制 |
