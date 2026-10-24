@@ -1,27 +1,26 @@
-# Python environments and bytecode
-.venv/
+# Python 環境與快取
+**/.venv/
 __pycache__/
 *.py[cod]
+**/.cache/
 
-# Hugging Face 快取與模型權重（包含無副檔名的 blobs）
+# 本機模型權重與 Hugging Face 快取
 /checkpoints/**
 !/checkpoints/val.md
 !/checkpoints/val.xlsx
-**/.cache/
-**/models/
-!src/inference/models/
 *.safetensors
 *.bin
 *.pt
 *.pth
 
-# Runtime outputs
+# 本機執行輸出
 /logs/
 /results/
 *.log
 *.pid
 
-# Local secrets
+# 本機密鑰與 IDE 設定
 .env
 .env.*
 !.env.example
+.vscode/
