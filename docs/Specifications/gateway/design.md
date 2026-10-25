@@ -8,7 +8,7 @@
 ## 当前实作与目标
 
 - 当前程式位置／行为：src/gateway/ 已有 Go module、HTTP handler、设定 YAML、认证／设定／限流／观测套件及 server lifecycle；实际档案见 src/gateway/README.md。
-- 现有推论服务：src/inference/api/application/service_app.py 依模型登录组装 /health、/v1/models、/v1/chat/completions，以及模型已启用的影片／Live 路由。
+- 现有推论服务：src/inference/network/service.py 依模型登录组装 /health、/v1/models、/v1/chat/completions，以及模型已启用的影片／Live 路由。
 - 现有模型路由：`mage-vl-4b` → `microsoft/Mage-VL`（port 8001），`qwen3-0.6b` → `qwen3-0.6b`（port 8011）；各模型能力在 Inference Registry 与 Gateway YAML 对应登录。
 - 目标边界：Gateway 处理外部 HTTP/API Key/租户政策/限流/路由/转送/可观测性；推论服务处理模型与推论；MediaMTX 处理 RTSP／RTMP 媒体流。
 

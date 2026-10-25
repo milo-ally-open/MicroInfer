@@ -1,6 +1,6 @@
 """Qwen3 模型执行入口；内部运算元件留在本模型目录。"""
 
-from inference.engine.execution.worker import ModelRuntime
+from inference.engine.worker import ModelRuntime
 
 from .components.adapter import Qwen3ModelAdapter
 from .components.model_runner import Qwen3ModelRunner

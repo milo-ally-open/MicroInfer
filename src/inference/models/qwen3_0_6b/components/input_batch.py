@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from inference.engine.contracts import ExecutionPhase, ScheduledWorkItem
+from inference.engine.sequence import ExecutionPhase, ScheduledWorkItem
 
 
 @dataclass(frozen=True)

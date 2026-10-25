@@ -9,7 +9,7 @@
 
 改造前，Qwen3 Worker 会在生成步骤将 token ID 解码成文字；Worker 程序管理和 Engine Core RPC 集中在 `engine/worker.py`；Qwen Runner 在 forward 前组装批次张量。这使 API 输入处理、Engine 输出转换、执行器、硬体平台和 Runner 批次组装的责任边界仍不够清晰。
 
-既有 RTX 4060 验收及性能记录曾保存在 `checkpoints/val.md`、`checkpoints/val.xlsx`，现已按模型迁入根目录 `analysis/<model_alias>/`。这些是先前版本的基线证据；本次结构改造后的 SSE、Executor 与 InputBatch 行为仍需按 `tasks.md` 重新验收。
+既有 RTX 4060 验收及性能记录曾保存在 `checkpoints/val.md`、`checkpoints/val.xlsx`，现已按模型迁入根目录 `analysis/{model_alias}/`。这些是先前版本的基线证据；本次结构改造后的 SSE、Executor 与 InputBatch 行为仍需按 `tasks.md` 重新验收。
 
 ## 目标与决策
 
@@ -53,7 +53,7 @@
 
 - 不改 Go Gateway、Mage-VL 模型元件或既有模型服务 API；不把 API Server 与 Engine Core 改成远端服务。
 - 不引入 vLLM 或 nano-vLLM runtime 依赖，不复制其专用程式码，也不宣称 vLLM 相容或达到其效能。
-- 不在本次实作 Ray／多 GPU／Tensor Parallel、自订 CUDA/Triton Attention、PagedAttention kernel、prefix cache、KV offload、量化、CUDA Graph 或静态 GPU InputBatch。
+- 本次 REQ-17 增补原生 CUDA 单 token decode Attention prototype；不在本次实作 Triton、prefill CUDA kernel、prefix cache、KV offload、量化、CUDA Graph、静态 GPU InputBatch、Ray／多 GPU 或 Tensor Parallel。prototype 未完成目标 GPU 验收前不作为默认后端。
 - 不选定第二个模型；Qwen3-0.6B 是目前实验模型，Mage-VL 只作为既有共用 API／Engine 相容路径。
 - 不做模型资料集精度评测，不下载大型模型，不启动 GPU 或 MediaMTX 作为文件编辑流程的一部分。
 
@@ -63,7 +63,7 @@
 
 KV block 所有权仍分成 Engine 的逻辑 reservation 和 Qwen Worker 的 GPU 实体 page；本次不把这种映射描述成 Attention kernel 的分页直接读取。Executor 启动失败、逾时或正常关闭须维持 Worker 收尾行为。
 
-改造前的工作树已建立本地回复提交 `0cb3c56`（`feat: add native Qwen3-0.6B inference engine`）。它只在本地 Git 历史中，没有推送。此次五层改造也只保存在本地 Git 历史，不推送远端；既有验收数据现由 `analysis/<model_alias>/analysis.md`、`analysis.xlsx` 接续维护。
+改造前的工作树已建立本地回复提交 `0cb3c56`（`feat: add native Qwen3-0.6B inference engine`）。它只在本地 Git 历史中，没有推送。此次五层改造也只保存在本地 Git 历史，不推送远端；既有验收数据现由 `analysis/{model_alias}/analysis.md`、`analysis.xlsx` 接续维护。
 
 ## 完成条件
 
@@ -102,3 +102,29 @@ KV block 所有权仍分成 Engine 的逻辑 reservation 和 Qwen Worker 的 GPU
 ## Qwen3 算子分析与优化工作流
 
 本次依据使用者要求，把 Qwen3 各自带有 `__main__` 的计算模块串成可复跑的组件集成检查；逐模型三项测试改为从顶部执行的单一脚本，不使用自定义测试 helper。新增可选 Attention profile 模式，使用本机固定 snapshot 的第 0 层真实 Attention 权重、Qwen3 配置及 KV page 大小，量测 CUDA prefill/decode 并输出 PyTorch Profiler 明细。该模式只测单层算子，activation 为合成输入；不得把它描述成完整模型性能验收。Qwen3 算子的实测、分析、优化方向和验收状态记录在 `analysis/qwen3_0_6b/`；Mage-VL Gateway 历史验收事实放在 `analysis/mage_vl_4b/`。旧 `val.*` 文件名由各模型目录中的报告取代，并保留样本数与限制。
+
+## Qwen3 Engine 组件重构提案（T-31/T-32）
+
+使用者要求先将当前工作树提交为基线，再以 Qwen3 系统性重构 Engine 组件，并以原生 CUDA 代码建立真正按 block table 读取 KV 的 Attention 路径。基线提交为 `9258379 chore: checkpoint project changes before Qwen3 refactor`；该提交只在本地，不推送。
+
+本次在概念上参考 nano-vLLM 的 `Sequence`、`BlockManager`、`Scheduler`、`ModelRunner` 与 Engine 编排职责，但按本项目现有多进程架构落位：新增轻量 Engine request state 与 Block Manager，继续扩展当前唯一的 Token Scheduler 和 Engine Core；Qwen 专属 Runner 留在模型包，CUDA kernel 是 Runner 可选的计算后端。不会另外创建重复的 `model_engine.py`、`scheduler.py` 或共用模型 Runner，也不改变 API、Mage-VL Cache 或 Gateway。
+
+实现分成两个可独立检查的任务：T-31 统一 Engine request/sequence 状态与 KV block 所有权，保持现有准入时按最大输出预留的安全行为；T-32 建立 PyTorch C++/CUDA custom op 的分页 decode attention，并保留 PyTorch 参考/fallback。优先完成单 token decode；prefill kernel、Prefix Cache、按需扩容、抢占、CUDA Graph、多 GPU 与跨模型 kernel 复用留在后续独立任务，避免首轮同时改变过多语义。按需扩容必须先设计可证明不会互相等待的资源不足策略。只有 CUDA 数值验收与目标 GPU profile 实际完成后，才将此路径称为可用 CUDA PagedAttention。
+
+回退方式为关闭 CUDA backend 并使用 PyTorch 参考路径；Engine API 与请求协议保持不变。CUDA 扩展构建失败或后端 ABI 不兼容时，配置为 CUDA 的启动必须明确报错，不能悄悄退回仍声称使用 CUDA kernel。
+
+## Engine 扁平化与模型专属实现（T-33）
+
+使用者决定保持简单的模型插件组织：各模型包承载自身 Processor、Runner、Adapter、拓扑、Cache 计算、Sampling 和 kernels；共用 Engine 参考 nano-vLLM 的清晰执行流程，仅保留少数位于 `engine/` 根目录的关键文件。此次收敛只改变内部 Python 模块组织，不改变三个程序边界、请求协议、模型行为或 Gateway。
+
+将 Engine 既有 `core/`、`contracts/`、`scheduling/`、`cache/`、`execution/`、`transport/`、`bootstrap/` 和 `config/` 子 package 合并为平面 `sequence.py`、`block_manager.py`、`scheduler.py`、`inference_engine.py`、`worker.py`、`engine_client.py`、`config.py`、`bootstrap.py` 等模块；同一算法的 batch planner 并入 Scheduler，Engine 输出事件转换并入 Engine 编排。删除只用于 package 分层的 Executor Protocol，不增加注册中心或通用引擎插件体系。Qwen 模型插件导出轻量 Engine client 工厂，以便服务端示例只导入模型包；模型 manifest 与 YAML 仍是配置来源。
+
+REQ-15 的 Engine 目录分层决定由 REQ-18 取代，API package 目录要求保持。验收覆盖模块 import、Launcher 预检、双模型组件回归及文档路径一致性；不启动大型模型服务，不重复执行 GPU checkpoint 测量。
+
+## Network 扁平化与 API 行为保持（T-34）
+
+将共用 HTTP 层从 `inference.api` 重命名为 `inference.network`，并把应用装配、模型服务入口、HTTP schemas、serializers、工具调用协议、路由和输入／输出处理器直接放在 `network/` 根目录。扁平模块名描述具体职责，不保留 `application/`、`contracts/`、`processors/`、`routes/` 子 package。Launcher、模型包导入、Gateway 设计说明和当前架构文档同步新路径；HTTP 路由、schema、模型能力门控、Engine IPC 及三程序边界不变。
+
+## 共用 Media 元件归入 Processors（T-35）
+
+将共用视频辅助与 Live session 管理模块从 `inference.media` 移至 `inference.processors`，并同步 Engine、Network、Mage-VL 工厂／调用点及开发文档。`processors/` 作为可扩展的跨模型处理 package，承载通用的媒体／请求处理元件；模型专属 Tokenizer、输入格式和视觉预处理仍留在模型包。此次目录变更保持现有处理逻辑与 API 行为。

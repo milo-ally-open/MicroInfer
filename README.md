@@ -11,7 +11,7 @@
 
 模型包目录名是 Python 包名，公开 alias 是客户端选择模型的名称，二者不必相同。上游模型 ID 则记录在模型 inference.yml 的 model.id 中。Gateway 使用模型 alias 接收请求，并将请求映射到 Inference API 的 api.model_id。
 
-Inference 的 API、Engine Core、Scheduler、Executor 和 Worker 由两个模型共用；模型 Runtime、Processor、拓扑、权重载入和 Cache 行为留在模型包。项目参考 vLLM 与 nano-vLLM 的职责划分，但没有 vLLM backend、自定义 PagedAttention kernel、prefix cache 或其他未登记模型。
+Inference 的 API、Engine Core、Scheduler、Executor 和 Worker 由两个模型共用；模型 Runtime、Processor、拓扑、权重载入、Cache 与算子留在模型包。项目参考 vLLM 与 nano-vLLM 的职责划分，但没有 vLLM backend 或 prefix cache。Qwen3 模型包提供选用式原生 CUDA paged decode Attention；已在本机 RTX 4060 Laptop 完成构建、float16/bfloat16 数值对照、checkpoint 单层 profile 和 CUDA backend API/Gateway 验收。由于当前测量慢于 PyTorch 路径，模型 YAML 默认仍使用 PyTorch；不宣称性能提升或生产环境普遍适用。
 
 ## 启动与检查
 

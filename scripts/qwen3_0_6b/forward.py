@@ -29,7 +29,7 @@ import torch
 import yaml
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import inference
-from inference.engine.contracts import PreparedChatInput
+from inference.engine.sequence import PreparedChatInput
 from inference.models.qwen3_0_6b.processor import prepare_chat_input
 from inference.models.qwen3_0_6b.runtime import create_runtime
 from inference.models.qwen3_0_6b.utils import loader as inference_config

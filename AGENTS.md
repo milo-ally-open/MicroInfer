@@ -9,7 +9,7 @@
 - `src/inference/` 已有 Mage-VL-4B Transformers 推论服务，以及 Qwen3-0.6B 原生 PyTorch 推论引擎；共用 API／Engine 分层、Token Scheduler 与子程序 Model Worker。
 - `src/gateway/` 已实作 Go API 闸道 v1；目前能力与限制见 `src/gateway/README.md` 及 `docs/Specifications/gateway/`。
 - 目前登录模型为 `mage-vl-4b`（上游 `microsoft/Mage-VL`）及 `qwen3-0.6b`（上游 `Qwen/Qwen3-0.6B`）。不要把专案别名和 Hugging Face `repo_id` 混为一谈。
-- SGLang 与 vLLM inference backend 尚未实作；Inference Engine 参考 vLLM／nano-vLLM 的 API、Engine、Scheduler、KV 与 Worker 职责，但不宣称其相容性或效能。Mage-VL 的 KV 是逻辑 reservation；Qwen Worker 将 Engine block ID 对应至实体 GPU page，GQA 注意力计算前仍会 gather，尚非 PagedAttention kernel。Go 闸道 v1 已实作，但仍须依实际验收证据描述其能力，不代表已部署或通过真实模型整合。
+- SGLang 与 vLLM inference backend 尚未实作；Inference Engine 参考 vLLM／nano-vLLM 的 Engine、Scheduler、KV 与 Worker 职责，但不宣称其相容性或效能。Mage-VL 的 KV 是逻辑 reservation；Qwen Worker 将 Engine block ID 对应至实体 GPU page，PyTorch GQA Attention 仍会 gather；模型包另有选用式 native CUDA paged decode kernel，当前测量慢于 PyTorch，默认保持 PyTorch。Go 闸道 v1 已实作，但仍须依实际验收证据描述其能力，不代表已部署或通过真实模型整合。
 
 ## 重要目录与文件
 
@@ -21,20 +21,20 @@ scripts/mage_vl_4b/                      # Mage-VL 专属探索与诊断工具
 scripts/qwen3_0_6b/                      # Qwen3-0.6B 专属探索与诊断工具
 scripts/README.md                    # Scripts 工具使用说明
 src/gateway/                         # Go API 闸道与 route/stream/upstream/videoproxy 模组
-src/inference/api/                   # 共用 FastAPI app、schemas 与 routes
-src/inference/api/service_app.py     # 依模型登录建立共用 API app
-src/inference/engine/                # Engine Core、Token Scheduler、KV Cache Manager、Worker IPC
-src/inference/engine/model_bootstrap.py # 依模型登录建立共用 Engine Core／Worker
-src/inference/media/                 # 通用影片及即时工作阶段元件
+src/inference/network/               # 共用 FastAPI app、HTTP schemas、路由与处理器
+src/inference/network/service.py     # 依模型登录建立共用 API app
+src/inference/engine/                # 扁平 Engine 核心模块：Scheduler、KV block、Engine、Worker、IPC 与配置
+src/inference/engine/bootstrap.py    # 依模型 manifest 建立共用 Engine Core／Worker
+src/inference/processors/            # 跨模型共用的视频处理与 Live session 元件
 src/inference/models/<model>/        # 模型专属程式、configs/ 与 requirements/
 src/inference/models/mage_vl_4b/     # Mage-VL Model Runner、前处理、设定及依赖
 src/inference/launcher.py            # 推论启动器
 tests/                               # 逐模型测试：tests/<model_alias>/（三项测试与 test.yml）
 ```
 
-Inference 参考 vLLM／nano-vLLM 的 API Server、Engine Core、Scheduler、KV Cache Manager、Worker／Model Runner 职责拆分。API Server、Engine Core 与 Model Worker 为三个程序；Engine Core 逐轮排程 prompt prefill 与单 token decode。Mage-VL 的 Engine KV block 是逻辑 reservation；Qwen3 Worker 以同一 block ID 管理 GPU 实体 KV pages，Qwen Runner 支援同 phase 多序列批次 forward。没有 vLLM backend、PagedAttention kernel、prefix cache 或第二个原生模型。
+Inference 参考 vLLM／nano-vLLM 的 API Server、Engine Core、Scheduler、KV Cache Manager、Worker／Model Runner 职责，Engine 内部保持少数平面模块，不复制完整 vLLM 插件体系。API Server、Engine Core 与 Model Worker 为三个程序；Engine Core 逐轮排程 prompt prefill 与单 token decode。Mage-VL 的 Engine KV block 是逻辑 reservation；Qwen3 Worker 以同一 block ID 管理 GPU 实体 KV pages，Qwen Runner 支援同 phase 多序列批次 forward。没有 vLLM backend 或 prefix cache。
 
-`engine/batch_planner.py` 已由线上 Scheduler 呼叫；Mage-VL Runner 对相容的同阶段请求执行多序列 forward，不相容时逐请求执行。Mage-VL 视觉与文字骨干的注意力均由模型包实现；文字骨干亦自行组装 Qwen3 Attention、RMSNorm、MLP 与 Decoder layer，保留 Transformers 预训练权重及 Cache 介面。Mage-VL 的 Engine KV 是逻辑 reservation。Qwen3-0.6B 使用本地 PyTorch 计算图、批次 Runner 与 Worker 实体 KV pool；其配置／tokenizer／Safetensors 仍沿用 Hugging Face 生态接口。Qwen 的 GQA 会将 paged KV gather 为连续张量，尚无自订 PagedAttention kernel。模型专属探索工具依别名放在 `scripts/<model_alias>/`，不从 `src/` 汇入模组，且强制使用本机权重。
+`engine/scheduler.py` 直接包含线上批次规划；Mage-VL Runner 对相容的同阶段请求执行多序列 forward，不相容时逐请求执行。Mage-VL 视觉与文字骨干的注意力均由模型包实现；文字骨干亦自行组装 Qwen3 Attention、RMSNorm、MLP 与 Decoder layer，保留 Transformers 预训练权重及 Cache 介面。Mage-VL 的 Engine KV 是逻辑 reservation。Qwen3-0.6B 使用本地 PyTorch 计算图、批次 Runner 与 Worker 实体 KV pool；其配置／tokenizer／Safetensors 仍沿用 Hugging Face 生态接口。Qwen PyTorch GQA 仍会将 paged KV gather 为连续张量；可选 CUDA decode kernel 已有本机功能验收，但当前测量慢于 PyTorch，默认仍用 PyTorch。模型专属探索工具依别名放在 `scripts/<model_alias>/`，不从 `src/` 汇入模组，且强制使用本机权重。
 
 开始修改前先阅读根目录 `README.md`，并依任务阅读 `src/inference/README.md`、`src/gateway/README.md` 或 `scripts/README.md`。以实际工作树内容为准；若文件和程式码不一致，先查明差异，再只更新任务相关的内容。
 
@@ -50,7 +50,7 @@ Inference 参考 vLLM／nano-vLLM 的 API Server、Engine Core、Scheduler、KV 
 
 - 推理与模型前向计算默认使用 CUDA；仅当 `torch.cuda.is_available()` 为 false 时回退到 CPU。不要将实际推理设备硬编码为 CPU；权重分片读取、Tokenizer 和请求输入暂存于 CPU 不代表模型前向运行在 CPU。
 
-- 每个模型的 `configs/model.yml` 登记 alias、API 能力、Runtime／Processor 工厂及相对设定档名。Launcher 自动发现 `models/*/configs/model.yml`，启动时必须透过 `--model` 指定 alias，且相对设定路径以 manifest 的 `configs/` 目录为基准。所有模型共用 `api/service_app.py` 和 `engine/model_bootstrap.py`；新模型不需建立专属 `app.py` 或 `engine_core.py`。
+- 每个模型的 `configs/model.yml` 登记 alias、API 能力、Runtime／Processor 工厂及相对设定档名。Launcher 自动发现 `models/*/configs/model.yml`，启动时必须透过 `--model` 指定 alias，且相对设定路径以 manifest 的 `configs/` 目录为基准。所有模型共用 `network/service.py` 和 `engine/bootstrap.py`；新模型不需建立专属 `app.py` 或 `engine_core.py`。
 - 模型程式、设定和依赖清单集中在 `src/inference/models/<model>/`。依需要建立 `runtime.py`、`processor.py`、`model/`、`components/`、`layers/`、`utils/`、`loader.py`；不需建立空目录。推论参数、Scheduler／KV 与请求上限放对应模型 `configs/inference.yml`；模型服务位址放 `configs/network.yml`。MediaMTX sidecar 设定集中在 `deploy/mediamtx/mediamtx.yml`，不得登记到单一模型 manifest 或模型设定目录。
 - 模型推论参数放在模型包的 `configs/inference.yml`；API 绑定位址及模型连接的媒体端点放在 `configs/network.yml`；MediaMTX 服务本身的监听、认证与协定设定放在独立的 `deploy/mediamtx/mediamtx.yml`。新增或调整可调参数时，优先加入合适的 YAML，不要把实验超参数散落在 Python 或 shell 脚本。
 - API 启动时会依固定 Hugging Face revision 载入模型；缺少权重时可自动下载至根目录 `checkpoints/`。通用下载工具则使用 `scripts/download.py`，并要求明确指定 `--repo-id`、`--revision` 和 `--local-dir`。

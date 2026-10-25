@@ -366,8 +366,8 @@ def _set_runtime_environment(
 
 
 def _load_service_app() -> Any:
-    """载入唯一的共用 API app；模型差异由所选 manifest 提供。"""
-    app_module = importlib.import_module("inference.api.application.service_app")
+    """载入唯一的共用 Network app；模型差异由所选 manifest 提供。"""
+    app_module = importlib.import_module("inference.network.service")
     if not hasattr(app_module, "app"):
         raise AttributeError("The shared API service entrypoint does not export 'app'.")
     return app_module.app

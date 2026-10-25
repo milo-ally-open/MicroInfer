@@ -6,7 +6,7 @@ import json
 import uuid
 from typing import Any
 
-from inference.api.contracts.tool_calling import (
+from inference.network.tool_calling import (
     ChatOutputDelta,
     ParsedAssistantOutput,
     ParsedToolCall,

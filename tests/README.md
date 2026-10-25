@@ -6,7 +6,7 @@
 
 ## Qwen3-0.6B
 
-组件测试不载入完整模型权重、不启动推理服务。它在 meta device 对照模型结构，然后依序执行 8 个 Qwen3 模块自己的 __main__ 前向入口，覆盖模型、Attention、RMSNorm/MLP、RoPE、ModelRunner、Paged KV Cache、Sampler 和 InputBatch。前向优先使用 CUDA；CUDA 不可用时回退 CPU：
+组件测试不载入完整模型权重、不启动推理服务。它在 meta device 对照模型结构，然后依序执行 Qwen3 模块的 `__main__` 前向入口，覆盖模型、Attention、RMSNorm/MLP、RoPE、ModelRunner、Paged KV Cache、Sampler、InputBatch 和原生 CUDA paged decode。最后一项要求扩展已构建且 CUDA 可用，并对照多序列、异构上下文长度、非连续物理页、block 边界及非法元数据；其余模块前向优先使用 CUDA，CUDA 不可用时回退 CPU：
 
 ~~~powershell
 python tests/qwen3_0_6b/test_components.py --config tests/qwen3_0_6b/test.yml

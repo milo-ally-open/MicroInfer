@@ -1,0 +1,9 @@
+{
+  "model_alias": "qwen3-0.6b",
+  "attention_backend": "cuda",
+  "status": "passed",
+  "text_chunks": 31,
+  "ttft_seconds": 0.12077442099689506,
+  "total_seconds": 6.2014789350068895,
+  "credentials": "ephemeral local test key; deleted after test"
+}

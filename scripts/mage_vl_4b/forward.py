@@ -30,7 +30,7 @@ import yaml
 from PIL import Image
 from transformers import AutoModelForCausalLM, AutoProcessor, BitsAndBytesConfig, KernelConfig
 import inference
-from inference.engine.contracts import ExecutionPhase, ScheduledWorkItem
+from inference.engine.sequence import ExecutionPhase, ScheduledWorkItem
 from inference.models.mage_vl_4b import processor as inference_processor
 from inference.models.mage_vl_4b.runtime import create_runtime
 

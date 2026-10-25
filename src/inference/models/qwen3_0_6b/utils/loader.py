@@ -10,7 +10,7 @@ from typing import Any
 import torch
 from transformers import PreTrainedTokenizerBase, Qwen3Config
 
-from inference.engine.config.model_config import PROJECT_ROOT, selected_config
+from inference.engine.config import PROJECT_ROOT, selected_config
 
 
 # 模型设定由 Transformers Config 载入；服务参数由 YAML 一次载入。
@@ -44,6 +44,7 @@ KV_CACHE_CONFIG = ENGINE_CONFIG["kv_cache"]  # 实体 KV page pool 容量设定�
 KV_CACHE_BLOCK_SIZE_TOKENS = int(KV_CACHE_CONFIG["block_size_tokens"])  # 每个 KV page 的 Token 数。
 KV_CACHE_NUM_BLOCKS = int(KV_CACHE_CONFIG["num_blocks"])  # 实体 KV page 数量。
 KV_CACHE_CAPACITY_TOKENS = KV_CACHE_NUM_BLOCKS * KV_CACHE_BLOCK_SIZE_TOKENS  # KV page pool 可容纳的 Token 数。
+ATTENTION_BACKEND = str(ENGINE_CONFIG.get("attention_backend", "pytorch")).lower()  # Qwen KV Attention 后端。
 WORKER_STARTUP_TIMEOUT = float(RUNTIME_CONFIG["worker_startup_timeout_seconds"])  # Worker 启动逾时。
 WORKER_REQUEST_TIMEOUT = float(RUNTIME_CONFIG["worker_request_timeout_seconds"])  # Worker 请求逾时。
 ENGINE_CORE_STARTUP_TIMEOUT = float(RUNTIME_CONFIG["engine_core_startup_timeout_seconds"])  # Engine Core 启动逾时。
@@ -68,35 +69,45 @@ def _weight_files(snapshot: Path) -> tuple[Path, ...]:
 
 
 def load_safetensors(model: torch.nn.Module, snapshot: Path) -> int:
-    """载入且严格核对所有权重名称与 shape，回传已载入参数量。"""
-    from safetensors.torch import load_file
+    """先验证权重索引，再逐 tensor 载入，避免在 CPU 保留完整 checkpoint 副本。"""
+    from safetensors import safe_open
 
-    state: dict[str, torch.Tensor] = {}
-    for path in _weight_files(snapshot):
-        shard = load_file(str(path), device="cpu")
-        duplicate = state.keys() & shard.keys()
-        if duplicate:
-            raise ValueError(f"Duplicate checkpoint tensor: {sorted(duplicate)[0]}.")
-        state.update(shard)
-
+    files = _weight_files(snapshot)
     expected = model.state_dict()
-    missing = expected.keys() - state.keys()
-    unexpected = state.keys() - expected.keys()
+    expected_keys = set(expected)
+    checkpoint_keys: set[str] = set()
+    for path in files:
+        with safe_open(str(path), framework="pt", device="cpu") as checkpoint:
+            for name in checkpoint.keys():
+                if name in checkpoint_keys:
+                    raise ValueError(f"Duplicate checkpoint tensor: {name}.")
+                checkpoint_keys.add(name)
+                if name not in expected:
+                    continue
+                shape = tuple(checkpoint.get_slice(name).get_shape())
+                if shape != tuple(expected[name].shape):
+                    raise ValueError(
+                        f"Qwen3 checkpoint shape mismatch for {name}: "
+                        f"expected {tuple(expected[name].shape)}, received {shape}."
+                    )
+
+    missing = expected_keys - checkpoint_keys
+    unexpected = checkpoint_keys - expected_keys
     if missing or unexpected:
         raise ValueError(
             "Qwen3 checkpoint keys do not match the local model: "
             f"missing={sorted(missing)[:5]}, unexpected={sorted(unexpected)[:5]}."
         )
-    for name, parameter in expected.items():
-        if state[name].shape != parameter.shape:
-            raise ValueError(
-                f"Qwen3 checkpoint shape mismatch for {name}: "
-                f"expected {tuple(parameter.shape)}, received {tuple(state[name].shape)}."
-            )
-    result: Any = model.load_state_dict(state, strict=True)
-    if result.missing_keys or result.unexpected_keys:
-        raise ValueError(f"Qwen3 checkpoint load was incomplete: {result}.")
-    del expected, state
+
+    with torch.no_grad():
+        for path in files:
+            with safe_open(str(path), framework="pt", device="cpu") as checkpoint:
+                for name in checkpoint.keys():
+                    tensor = checkpoint.get_tensor(name)
+                    expected[name].copy_(tensor)
+                    del tensor
+
+    del expected
     model.tie_weights()
     return sum(parameter.numel() for parameter in model.parameters())
 

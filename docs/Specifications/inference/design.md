@@ -8,43 +8,49 @@ vLLM V1 官方架构将 API Server、Engine Core 和 GPU Worker 分成不同程�
 
 [nano-vLLM README](https://github.com/GeeeekExplorer/nano-vllm) 将自身描述为精简、可读的 vLLM 实作，展示其以较小程式结构承载 Engine、批次和最佳化概念。本专案参考其「用可读的核心流程学习／组织 Engine」方向；不把 README 中宣称的功能或 benchmark 当成本专案能力，也不将 nano-vLLM 加入执行依赖。
 
-本地现况以提交 `0cb3c56` 的 Qwen3-0.6B 原生计算图为基线：固定 revision 的 config／tokenizer／Safetensors 载入、自有 Qwen3 PyTorch 模型、批次 prefill/decode、Worker 实体 KV pool 和文字 SSE 已存在。Qwen3 的 RTX 4060 算子测量保存在 `analysis/qwen3_0_6b/`；Mage-VL Gateway 历史记录保存在 `analysis/mage_vl_4b/`。这些记录不能替代本次 token event／Executor／InputBatch 的回归验收。Mage-VL 仍使用 Transformers 模型路径。此处不把 SGLang、vLLM backend、PagedAttention Kernel、Ray 或第二个原生模型写成已完成。
+本地现况包含固定 revision 的 Qwen3 config／tokenizer／Safetensors 载入、自有 PyTorch 模型、批次 prefill/decode、Worker 实体 KV pool 和文字 SSE。Qwen3 模型包内另有选用式 native CUDA decode Attention；2026-10-25 已在本机 RTX 4060 Laptop 完成扩展构建、float16/bfloat16 多序列数值对照、固定 checkpoint 单层 profile、CUDA backend API 性能与 Gateway SSE 验收。该 prototype 当前慢于 PyTorch gather 路径，模型默认仍保持 PyTorch，不能据此宣称性能提升或生产环境普遍适用。测量记录保存在 `analysis/qwen3_0_6b/` 与 `tests/qwen3_0_6b/results/`。Mage-VL 仍使用 Transformers 模型路径；项目没有 SGLang/vLLM backend、Ray 或第二个原生模型。
 
 ## 五层责任与相依
 
 | 层 | 责任 | 本地程式边界 | 不拥有 |
 |---|---|---|---|
-| L1 接口与门面 | HTTP、OpenAI schema、模型输入 Tokenize、增量 Detokenize、SSE 和 Engine IPC client | `api/application/`、`api/routes/`、`api/contracts/`、`api/processors/`、`engine/transport/` | GPU tensor、Scheduler、KV pool、模型 forward |
-| L2 编排与调度 | Engine Core 请求状态、准入、Scheduler、逻辑 Cache reservation、Worker 结果事件化 | `engine/core/`、`engine/scheduling/`、`engine/cache/` | HTTP/SSE schema、实体 GPU tensor、模型拓扑 |
-| L3 执行抽象与 Worker | Executor 管理本机程序和 RPC；Platform 解析装置与资源观测；Worker 程序载入 Runner | `engine/core/ports.py`、`engine/execution/`、`engine/bootstrap/` | request policy、模型输入格式、HTTP |
+| L1 接口与门面 | HTTP、OpenAI schema、模型输入 Tokenize、增量 Detokenize、SSE 和 Engine IPC client | `network/`、`engine/engine_client.py` | GPU tensor、Scheduler、KV pool、模型 forward |
+| L2 编排与调度 | Engine Core 请求状态、准入、Scheduler、逻辑 Cache reservation、Worker 结果事件化 | `engine/inference_engine.py`、`engine/scheduler.py`、`engine/block_manager.py` | HTTP/SSE schema、实体 GPU tensor、模型拓扑 |
+| L3 执行与 Worker | Worker 管理本机子程序和 RPC；Platform 解析装置与资源观测；模型 Worker 载入 Runner | `engine/worker.py`、`engine/platform.py`、`engine/bootstrap.py` | request policy、模型输入格式、HTTP |
 | L4 模型运行时 | Runner 组装模型输入批次、forward、Cache 存取和 Sampling | 各模型 `components/model_runner.py`、模型批次及 Cache 元件 | OpenAI request／response、模型别名路由 |
 | L5 模型与算子 | 模型拓扑、层、Attention、权重映射和上游相容 | 各模型 `model/`、`layers/`、`utils/` | 共用 HTTP API、Engine 伫列和租户政策 |
 
-模型生态相容是跨层责任：API 端的 Chat Template／Tokenizer 在 L1 依模型建立输入；模型 config、Safetensors 权重映射和计算图在 L5。通用影片读取与 Live session 仍由既有 `media/` 持有；Mage-VL 的影片采样和 Processor 留在 Mage 模型包。五层以程式职责划界，不代表五个新 package 或五个 OS process。
+模型生态相容是跨层责任：API 端的 Chat Template／Tokenizer 在 L1 依模型建立输入；模型 config、Safetensors 权重映射和计算图在 L5。通用影片读取与 Live session 由 `processors/` 持有；Mage-VL 的影片采样和 Processor 留在 Mage 模型包。五层以程式职责划界，不代表五个新 package 或五个 OS process。
 
-## 共用 Inference package 边界
+## 共用 Inference 模块边界
 
-共用服务保持顶层 `api/` 与 `engine/` 两个可独立搬移的 Python package。文件按变化原因归档，模型包和 Gateway 不进入这两个 package：
+Network 将 HTTP 应用、协议、路由和处理器放在 `network/` 平面目录；Engine 采用扁平、可直读的关键模块，不为每个类再建立 package：
 
 ```text
-api/
-├── application/       # create_app 与依 manifest 装配的 service_app
-├── contracts/         # HTTP schemas、response serializers、共用 tool protocol
-├── processors/        # InputProcessor、Detokenizer、standard chat processor
-└── routes/            # HTTP endpoints，仅组合 API contracts/processors
+network/
+├── app.py                       # FastAPI app 与路由装配
+├── service.py                   # 依模型配置建立 API service
+├── schemas.py / serializers.py  # HTTP schema 与序列化
+├── tool_calling.py              # 共用 tool protocol
+├── *_processor.py               # API 输入与输出处理
+└── chat_completions.py 等       # HTTP endpoints
 
 engine/
-├── core/              # InferenceEngine、EngineOutputProcessor、Executor port
-├── contracts/         # API／Engine／Worker／模型 Adapter 间的可序列化类型与错误
-├── scheduling/        # Token Scheduler 与 batch planner
-├── cache/             # Engine 逻辑 KV reservation
-├── execution/         # LocalProcessExecutor、Worker、Platform、standard runtime
-├── transport/         # API Server 到 Engine Core 的 IPC client
-├── bootstrap/         # Engine Core 与 Model Worker composition root
-└── config/            # manifest、YAML 与 model factory 读取
+├── sequence.py          # 跨进程请求、批次、结果与进度状态
+├── block_manager.py     # Engine 侧 KV block lease
+├── scheduler.py         # prefill/decode 规划与 Token Scheduler
+├── inference_engine.py  # 请求生命周期、准入、执行、取消与事件分发
+├── worker.py            # Model Runtime、Worker 子程序与本机 Executor
+├── engine_client.py     # API Server 到 Engine Core 的 IPC client
+├── config.py            # manifest 与 YAML 读取
+├── bootstrap.py         # Engine Core 与 Model Worker 工厂
+├── platform.py          # Worker 设备及显存观测
+└── standard_text.py     # 受限的标准文字 Runner
 ```
 
-依赖方向由组合入口向下：API application 可组装 routes、processors、Engine transport；API processors 通过 `engine/contracts/` 传递 Engine 输入／错误，不导入 Engine Core 或 Worker 实作。`engine/core/` 面向 contracts、Scheduler、Cache、`core/ports.py` 定义的 Executor Protocol 及 `media/` 共用上传档案辅助，不直接依赖具体本机 Executor；进程执行细节留在 `execution/`，实例组合留在 `bootstrap/`。模型包可使用稳定的 Engine contracts、配置读取和执行能力，但不反向依赖 API routes、Engine Core 实作或其他模型包。各 package 以 `__init__.py` 明确边界，不用根目录兼容 wrapper 维持过时的平面模块路径。
+`sequence.py`、`block_manager.py`、`scheduler.py` 和 `inference_engine.py` 对应 Engine 的主要执行概念；IPC／子进程相关代码仍单独留在 `engine_client.py` 与 `worker.py`，避免把生命周期与并行通信揉成难以阅读的单体文件。Scheduler 的 batch planner 合并在同一文件。项目不额外维护 Executor Protocol package、通用插件注册中心或重复的 Engine facade。
+
+模型差异集中在 `models/{model_alias}/`：模型 Processor／Tokenizer、Runtime 工厂、Runner、Adapter、拓扑、Cache 计算、Sampling 与 kernels 均归模型包。Launcher 读取模型 manifest 选择工厂；共用 Engine 不按 alias 分支。API 与模型只依赖根目录的稳定 Engine 模块，不需要理解目录层级或组合入口。
 
 ## 程序拓朴
 
@@ -86,11 +92,11 @@ Engine Core 保持接收、准入、排程、Executor 执行、更新状态、�
 
 Token Scheduler 继续依 `max_num_seqs`、等待上限、`max_num_scheduled_tokens`、prefill chunk 和 batch wait 设定建批；批次按 request ID 回传结果。混合 prefill/decode 可同一次 Worker RPC 传输，Runner 仍按 phase 分批 forward。Sampler 保持在 L4 Worker，模型产生的 token 不交由 API 重新采样。
 
-`KVCacheManager` 是 L2 逻辑资源管理器。Mage-VL 对应 Transformers Cache request state；Qwen Engine block ID 映射到 Worker 内的实体 page pool。Qwen Attention 目前 gather paged K/V 后以分组矩阵乘法执行 GQA，因此本地 pool 具有物理分页存储，但不是直接 block-table kernel。Engine 的 reservation／容量统计与 Worker 实际页面使用量分开回报。
+`BlockManager` 是 L2 逻辑资源管理器。Mage-VL 对应 Transformers Cache request state；Qwen Engine block ID 映射到 Worker 内的实体 page pool。Qwen PyTorch Attention gather paged K/V 后以分组矩阵乘法执行 GQA；选用式 CUDA decode prototype 则直接按 block table 读取 page，prefill 仍走 PyTorch 路径。CUDA extension 与 API 路径已完成本机功能验收，但当前慢于 PyTorch，YAML 默认保持 PyTorch backend。Engine 的 reservation／容量统计与 Worker 实际页面使用量分开回报。
 
-## L3 Executor 与 Platform
+## L3 Worker 与 Platform
 
-`Executor` 是 Engine Core 使用的 process／execution contract。`LocalProcessExecutor` 拥有 spawn、Pipe RPC、ready handshake、request timeout、error transport 和 close。`worker.py` 保留子程序内执行模型 Adapter 的 `ModelWorker` contract 与 `InProcessModelWorker`；不得让 Engine Core直接依赖 Worker process 细节。
+`engine/worker.py` 直接包含 `LocalProcessExecutor`、子程序 Worker RPC 与 `ModelRuntime`／`InProcessModelWorker`；这是当前唯一的本机执行路径，不再单独维护 Executor Protocol package。`engine/bootstrap.py` 组合 Engine 和 Worker 工厂，Engine Core 通过 Worker 执行模型操作。
 
 `Platform` 是 Worker Model Runner 使用的 device／memory contract。模型优先使用 CUDA，只有 CUDA 不可用时才回退到 CPU。Qwen YAML 的 `runtime.platform: torch_cuda` 由 `create_platform()` 建立 `TorchCudaPlatform`；装置选择、VRAM／peak memory 观测及 CUDA cache 清理经该介面执行。未知名称在 Runner 载入前明确失败；Ray、NPU 和多 GPU 不在支援范围内。
 
@@ -108,7 +114,7 @@ Qwen 模型拓扑及 Attention 等算子留在模型包；模型专属 `utils/` 
 
 ## 新模型接入与共用装配
 
-`api/application/service_app.py` 读取 Launcher 设定的模型 alias，建立共用 `EngineClient`、API request limits、输入处理器和选用 Live manager。`engine/bootstrap/model_bootstrap.py` 从 manifest 载入模型 Runner／Adapter 工厂，建立 `InferenceEngine`、`LocalProcessExecutor` 和 `InProcessModelWorker`。Runner／Adapter 工厂使用 `module:attribute` 字串；工厂仅在相应程序中载入，因此 API process 不会汇入模型 Runner 或 GPU Runtime。
+`network/service.py` 读取 Launcher 设定的模型 alias，建立共用 `EngineClient`、API request limits、输入处理器和选用 Live manager。`engine/bootstrap.py` 从 manifest 载入模型 Runner／Adapter 工厂，建立 `InferenceEngine`、`LocalProcessExecutor` 和 `InProcessModelWorker`。Runner／Adapter 工厂使用 `module:attribute` 字串；工厂仅在相应程序中载入，因此 API process 不会汇入模型 Runner 或 GPU Runtime。
 
 模型包的 `configs/model.yml` 中 `api.model_id` 是推论 API 接受及回传的识别码；上游 model repo ID 留在 `inference.yml` 的 `model.id`。`api.capabilities` 明确列出聊天输入模态、文字串流、`text_delta`／`token_ids` 输出、影片上传及 Live 能力；API app 依此挂载路由并拒绝不支援的输入。`api.input_processor` 与 `api.live_session_manager` 是依能力需要登记的工厂。特殊前处理、Tokenizer、权重载入、模型拓扑和 cache 逻辑仍由模型包负责。
 
@@ -118,7 +124,7 @@ Mage-VL 与 Qwen 均由共用入口装配；Mage 的 `model/mage_vl.py` 明确�
 
 ### 标准文字模型预设元件
 
-`integration_profile: standard` 可省略模型专属 Runner、Adapter 和 `api.input_processor`。API Server 使用 `api/processors/default_chat_processor.py`；Worker 使用 `engine/execution/standard_text.py` 中的 `StandardTextModelRunner`／`StandardTextModelAdapter`。模型仍需提供薄的 `runtime.py` 工厂，以便共用 Worker 使用一致的 Runtime facade。
+`integration_profile: standard` 可省略模型专属 Runner、Adapter 和 `api.input_processor`。Network 使用 `network/default_chat_processor.py`；Worker 使用 `engine/standard_text.py` 中的 `StandardTextModelRunner`／`StandardTextModelAdapter`。模型仍需提供薄的 `runtime.py` 工厂，以便共用 Worker 使用一致的 Runtime facade。
 
 预设 Runner 以 `AutoModelForCausalLM` 载入固定 revision，仅支援单一计算装置，并优先使用 CUDA；CUDA 不可用时回退 CPU。模型类型仍限 decoder-only causal LM、可重用 `past_key_values`、文字 `chat_template` 和 token ID 输出。API 处理器只接收文字，不接受图片、影片或 Live。Scheduler 提交的 `execute_batch()` 仍按 request 逐项呼叫 forward，各 request 的 Cache／生成状态分开持有；这是可用的标准接入路径，不代表连续批次 forward、实体 block cache 或 PagedAttention。
 
@@ -126,7 +132,7 @@ Mage-VL 与 Qwen 均由共用入口装配；Mage 的 `model/mage_vl.py` 明确�
 
 ## 模型包结构与 manifest
 
-模型专属程式、设定和依赖以 `models/{model_alias}/` 为唯一扩充边界。共用 `api/`、`engine/`、`media/` 不按模型 alias 分叉；Launcher 只负责发现、检查与启动，模型 Runtime 工厂在 Worker 子程序建立模型实作。
+模型专属程式、设定和依赖以 `models/{model_alias}/` 为唯一扩充边界。共用 `network/`、`engine/`、`processors/` 不按模型 alias 分叉；`processors/` 可继续扩展视频等跨模型处理能力。Launcher 只负责发现、检查与启动，模型 Runtime 工厂在 Worker 子程序建立模型实作。
 
 ```text
 models/{model_alias}/
@@ -154,7 +160,7 @@ deploy/mediamtx/
 
 每个模型的 `configs/model.yml` 是该模型唯一的登记入口。Launcher 扫描 `models/*/configs/model.yml` 发现模型，并拒绝重复 alias；`list`／`validate` 可处理所有已发现模型，`start` 必须明确指定 `--model`。manifest 的设定路径是相对于 manifest 所在 `configs/` 目录解析；模型套件的 Runtime／API 工厂以 `module:attribute` 字串指定。
 
-`runtime.py:create_runtime()` 回传由 `engine.execution.worker.ModelRuntime` 封装的 Runner／Adapter，或提供相同方法契约的单一 facade。模型若使用共用标准文字元件，Runtime 工厂可只组合共用预设元件；模型特有程式依责任放入 `model/`、`layers/`、`components/` 与 `utils/loader.py`，不要求建立所有目录。Mage-VL 的 Transformers 子元件及 Qwen 的 PyTorch 拓扑均继续留在各自模型包。
+`runtime.py:create_runtime()` 回传由 `engine.worker.ModelRuntime` 封装的 Runner／Adapter，或提供相同方法契约的单一 facade。模型若使用共用标准文字元件，Runtime 工厂可只组合共用预设元件；模型特有程式依责任放入 `model/`、`layers/`、`components/` 与 `utils/loader.py`，不要求建立所有目录。Mage-VL 的 Transformers 子元件及 Qwen 的 PyTorch 拓扑均继续留在各自模型包。
 
 这种组织方式减少新增模型时需要编辑的共用档案数量，但不保证接入免写程式：新架构仍需实作其模型计算、权重载入、前处理与 Cache 适配。共用层只负责稳定的 API、Engine 与 Worker 契约。
 
@@ -184,7 +190,7 @@ Qwen `configs/inference.yml` 保存 model repo／revision、dtype/device、`runt
 
 ## 标准工具调用 adapter
 
-`api/contracts/tool_calling.py` 维护跨模型的 OpenAI-style tool definitions、assistant tool calls、role=tool 历史标准化及 JSON Schema 验证；此层不解析任何模型 marker。`api/routes/chat_completions.py` 依 app state capability 与 adapter，在普通 JSON 回应中加入 `tool_calls`，在 SSE 将 detokenized text 交给 adapter parser，再发送结构化 `delta.tool_calls`。
+`network/tool_calling.py` 维护跨模型的 OpenAI-style tool definitions、assistant tool calls、role=tool 历史标准化及 JSON Schema 验证；此层不解析任何模型 marker。`network/chat_completions.py` 依 app state capability 与 adapter，在普通 JSON 回应中加入 `tool_calls`，在 SSE 将 detokenized text 交给 adapter parser，再发送结构化 `delta.tool_calls`。
 
 模型 manifest 透过 `api.capabilities.tool_calling` 与 `api.tool_call_adapter` 启用能力。Qwen3 adapter 消费 tokenizer 生成的原生 JSON 工具调用块，并把 ID/name/arguments 转成共用类型；future model 用同一 Protocol 实现自己的输出解析。Qwen processor 将 OpenAI 标准 `tools` 和 tool-history messages传给上游 Chat Template。Launcher 检查能力和 factory 符号，启动时检查 adapter 实例接口。
 
@@ -199,3 +205,19 @@ Qwen `configs/inference.yml` 保存 model repo／revision、dtype/device、`runt
 阅读算子表时，先检查 `PagedKVCache.read_batch` 的 gather、padding、零初始化与张量复制，再对照 attention score/softmax/value aggregation 与 Q/K/V/O projection。Profiler 排序提示热点所在，不足以单凭某个 `aten::` 项判断 memory-bound 或 compute-bound；需结合 shape、CUDA 时间、分配量，并在必要时用 Nsight Systems 看调度/传输/空档、用 Nsight Compute 看候选 kernel 的硬件 counters。优化每次只改变一个路径，先复跑模块数值基线，再比较相同 workload 和环境下的 profiler 外延迟与显存，最后跑完整模型 API/Gateway 检查。
 
 每个模型在 `analysis/{model_alias}/` 维护一份 `analysis.md` 与一份 `analysis.xlsx`。Markdown 单表严格按“问题、解决方案、效果”组织，每行引用 Excel 中的证据 ID；Excel 保留该行的测量数据和验收状态。算子实现变更后在对应模型表中保留前后测量和验收结果。旧 `val.md/xlsx` 的记录已按模型 alias 迁入对应目录。
+
+## Qwen3 Engine 组件与原生 CUDA 后端（REQ-17）
+
+本次以现有 Engine contracts 与三程序拓扑为边界，采用 nano-vLLM 的职责概念，不复制其单体 Engine 结构：
+
+- `engine/sequence.py` 定义 Engine 可序列化的请求进度状态；Scheduler 不再维护另一份互不一致的 prompt/output/block 进度。它不承载 Worker Cache、GPU tensor、媒体内容或 API stream queue。
+- `engine/block_manager.py` 管理 Engine 侧空闲物理 block、request block table、准入时的原子容量保留和幂等释放。实际 KV tensor 由 Qwen Worker 的 `PagedKVCache` 持有。每个 `ScheduledWorkItem` 将带本轮一致的 block table；首轮保留完整最大序列容量，CUDA kernel 不分配 block。
+- 唯一 Scheduler 仍在 `engine/scheduler.py`，唯一请求编排器仍在 `engine/inference_engine.py`。后者等价承担模型服务的 Engine 编排职责，不另建会重复的 `model_engine.py`。模型专属 Runner 仍由 Qwen 模型包提供，Worker process/IPC 仍由 `engine/worker.py` 管理。
+- `models/qwen3_0_6b/kernels/cuda/` 在 Qwen3 模型包内提供 PyTorch C++/CUDA custom op 和 Python backend adapter。先实现单 token decode attention：用 block table 直接寻址实体 KV page，并以在线 softmax 处理完整上下文；禁止在 CUDA 路径先调用 `read_batch()` gather 成 dense K/V。prefill 初期继续走 PyTorch reference；其他模型的算子和构建入口由各自模型包拥有。
+- `attention_backend: pytorch|cuda` 由模型 YAML 控制。`pytorch` 是可在 CPU/CUDA 执行的 reference/fallback；显式选 `cuda` 时扩展不可载入或能力不符就启动失败，避免健康状态误报。Runner health 应返回实际 backend 名称。
+
+物理 KV page 的布局需让同一个 KV head 的 context 读取与 head-dimension 向量访问合并；实际维度次序以目标 GPU profile 为准，不在规格中预设最优。CUDA 入口应使用当前 PyTorch stream，不做每层 host/device 同步；block table、长度、偏移和 tensor shape/dtype/device 在 host launcher 验证，避免 kernel 越界。
+
+请求进度和 block 所有权按如下生命周期流转：prepare 后建立 Sequence；BlockManager 为最大序列长度原子分配 pages 并登记 lease；Scheduler 输出 work items 与 block table；Qwen Runner 接收 token/position/block table 并执行；finish/cancel/error 清除 Sequence 和 Engine blocks，并由 Worker 收尾对应 request page state。跨 Engine/Worker IPC 只传 ID、长度和小型 metadata，不传 GPU tensor。
+
+首轮不做 Prefix Cache、按需扩容、抢占、KV offload、CUDA Graph、Tensor Parallel 或 prefill CUDA kernel。最大序列预留维持当前容量准入保证；未来按需扩容必须连同资源不足时的抢占、终止或可证明安全的等待策略设计，避免多个请求持有部分 KV 后互相等待。PyTorch fallback 与现有数值参考保留。当前 CUDA kernel 已通过目标本机的多序列、异构 context 长度、物理页重排、block 边界与 checkpoint profile；但 decode profile 和 API 性能测量慢于 PyTorch 路径，因此仍不启用为默认后端。默认切换需有覆盖目标部署硬件与真实 workload 的性能优势证据。

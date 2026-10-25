@@ -8,8 +8,8 @@ from typing import Any
 import torch
 from transformers import PreTrainedTokenizerBase, Qwen3Config
 
-from inference.engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
-from inference.engine.execution.platform import Platform, create_platform
+from inference.engine.sequence import ExecutionPhase, ScheduledWorkItem, WorkerResult
+from inference.engine.platform import Platform, create_platform
 from ..utils import loader as config
 from ..utils.loader import load_model_config, load_safetensors, load_tokenizer
 from .input_batch import InputBatch
@@ -27,6 +27,7 @@ class Qwen3ModelRunner:
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.model_config: Qwen3Config | None = None
         self.cache: PagedKVCache | None = None
+        self.attention_backend = config.ATTENTION_BACKEND
         self._states: dict[str, dict[str, Any]] = {}
         self._sampler = Qwen3Sampler()
 
@@ -60,6 +61,7 @@ class Qwen3ModelRunner:
             head_dim=head_dim,
             device=device,
             dtype=dtype,
+            attention_backend=self.attention_backend,
         )
 
     @property
@@ -106,10 +108,10 @@ class Qwen3ModelRunner:
         state = self._state(request_id)
         if self.cache is None:
             raise RuntimeError("Qwen3 physical KV cache is not initialized.")
-        required_tokens = int(state["input_ids"].shape[-1]) + int(state["options"]["max_new_tokens"])
+        required_tokens = int(state["input_ids"].shape[-1])
         required_blocks = (required_tokens + config.KV_CACHE_BLOCK_SIZE_TOKENS - 1) // config.KV_CACHE_BLOCK_SIZE_TOKENS
         if len(block_ids) < required_blocks:
-            raise RuntimeError("Engine KV lease is smaller than the Qwen3 request's maximum sequence length.")
+            raise RuntimeError("Engine KV lease is smaller than the Qwen3 prompt.")
         self.cache.bind(request_id, block_ids)
         state["block_ids"] = tuple(block_ids)
 
@@ -127,6 +129,14 @@ class Qwen3ModelRunner:
         unsupported = [item.phase.value for item in requests if item.phase not in {ExecutionPhase.PREFILL, ExecutionPhase.DECODE}]
         if unsupported:
             raise ValueError(f"Unsupported Qwen3 execution phase: {unsupported[0]}")
+        if self.cache is None:
+            raise RuntimeError("Qwen3 physical KV cache is not initialized.")
+        for item in requests:
+            state = self._state(item.request_id)
+            blocks = tuple(item.cache_block_ids)
+            if blocks:
+                self.cache.extend(item.request_id, blocks)
+                state["block_ids"] = blocks
         if prefill_items:
             results.update(self._execute_prefill_batch(prefill_items))
         if decode_items:

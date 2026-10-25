@@ -125,7 +125,14 @@ class Qwen3ForCausalLM(nn.Module):
             or cache.dtype != embedding.dtype
             or input_ids.device != embedding.device
         ):
-            raise ValueError("Qwen3 model, input tensor and paged KV cache layouts must match.")
+            raise ValueError(
+                "Qwen3 model, input tensor and paged KV cache layouts must match: "
+                f"layers={cache.num_layers}/{len(self.model.layers)}, "
+                f"kv_heads={cache.num_key_value_heads}/{self.config.num_key_value_heads}, "
+                f"head_dim={cache.head_dim}/{expected_head_dim}, "
+                f"model_device={embedding.device}, input_device={input_ids.device}, "
+                f"cache_device={cache.device}, model_dtype={embedding.dtype}, cache_dtype={cache.dtype}."
+            )
         hidden_states = self.model.embed_tokens(input_ids)
         for layer_index, layer in enumerate(self.model.layers):
             hidden_states = layer.forward_batch(

@@ -7,9 +7,9 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from inference.engine.config.model_config import PROJECT_ROOT, selected_config
+from inference.engine.config import PROJECT_ROOT, selected_config
 
-from inference.media.live_sessions import LiveVideoSettings
+from inference.processors.live_sessions import LiveVideoSettings
 
 
 logger = logging.getLogger(__name__)

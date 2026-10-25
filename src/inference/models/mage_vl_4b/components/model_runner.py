@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from inference.engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
+from inference.engine.sequence import ExecutionPhase, ScheduledWorkItem, WorkerResult
 from ..utils import loader as config
 from .component_registry import MAGE_VL_COMPONENT_REGISTRY
 from ..utils.loader import load_mage_vl
@@ -164,7 +164,7 @@ if __name__ == "__main__":
         Qwen3ForCausalLM as TransformersQwen3ForCausalLM,
     )
 
-    from inference.engine.contracts import ExecutionPhase, ScheduledWorkItem
+    from inference.engine.sequence import ExecutionPhase, ScheduledWorkItem
     from ..model.configuration_mage_vl import MageVLConfig, MageVLVisionConfig
     from ..model.conditional_generation import MageVLForConditionalGeneration
 

@@ -34,6 +34,10 @@ namespaces = false
 inference = [
     "models/*/configs/*.yml",
     "models/*/requirements.txt",
+    "models/qwen3_0_6b/kernels/cuda/README.md",
+    "models/qwen3_0_6b/kernels/cuda/setup.py",
+    "models/qwen3_0_6b/kernels/cuda/csrc/*.cpp",
+    "models/qwen3_0_6b/kernels/cuda/csrc/*.cu",
 ]
 
 [tool.setuptools.dynamic]

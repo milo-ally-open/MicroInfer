@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import Any
 from transformers import PreTrainedTokenizerBase
 
-from inference.api.processors.input_processor import ChatInputProcessor, StreamOutputProcessor
-from inference.api.processors.output_processor import IncrementalDetokenizer
-from inference.api.contracts.tool_calling import normalize_chat_messages
-from inference.engine.contracts import PreparedChatInput
-from inference.engine.contracts import InferenceError
+from inference.network.input_processor import ChatInputProcessor, StreamOutputProcessor
+from inference.network.output_processor import IncrementalDetokenizer
+from inference.network.tool_calling import normalize_chat_messages
+from inference.engine.sequence import PreparedChatInput
+from inference.engine.sequence import InferenceError
 
 from .utils import loader as config
 from .utils.loader import load_tokenizer

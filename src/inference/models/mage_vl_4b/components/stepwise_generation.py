@@ -639,7 +639,7 @@ if __name__ == "__main__":
         Qwen3ForCausalLM as TransformersQwen3ForCausalLM,
     )
 
-    from inference.engine.contracts import ExecutionPhase, ScheduledWorkItem
+    from inference.engine.sequence import ExecutionPhase, ScheduledWorkItem
     from ..model.configuration_mage_vl import MageVLConfig, MageVLVisionConfig
     from ..model.conditional_generation import MageVLForConditionalGeneration
 

@@ -1,7 +1,7 @@
 # 实施与验收任务：Inference Engine 五层架构
 
 > 提案：[proposal.md](proposal.md)｜规格：[spec.md](spec.md)｜设计：[design.md](design.md)
-> 任务状态涵盖五层引擎、模型接入、REQ-14 标准工具调用与 REQ-16 算子分析工作流；模型分析、优化和验收记录按 alias 分别维护在根目录 `analysis/<model_alias>/`。
+> 任务状态涵盖五层引擎、模型接入、REQ-14 标准工具调用、REQ-16 算子分析及 REQ-17 Qwen3 Engine 组件重构；模型分析、优化和验收记录按 alias 分别维护在根目录 `analysis/{model_alias}/`。
 
 ## 任务清单
 
@@ -38,7 +38,16 @@
 
 - [x] **T-29 按职责整理共用 Inference packages** — 范围：共用 `api/`、`engine/`、Launcher、双模型 imports 与当前架构文档；交付：API 分为 `application/`、`contracts/`、`processors/`、`routes/`，Engine 分为 `core/`、`contracts/`、`scheduling/`、`cache/`、`execution/`、`transport/`、`bootstrap/`、`config/`；Executor Protocol 从进程实作分离至 `core/ports.py`；更新模块 imports、Launcher 路径与 Engine Worker factory；覆盖：REQ-15 / AC-15.1、AC-15.2、AC-15.3、AC-15.4；依赖：T-28；状态：WSL `magevl-transformers` CPU 下 27 个模块级前向入口、Mage/Qwen 两个 `test_components.py`、双模型 API/Engine/Runtime 导入 smoke、FastAPI route contract smoke、双模型 Engine bootstrap／Worker factory 解析及 Launcher list/validate 均通过；Mage checkpoint key 结构检查为 696 项匹配；Python AST 解析 103 个 Inference／Tests 档案通过。未启动模型服务或 GPU 推理。
 
-- [x] **T-30 建立直读测试脚本与 Qwen3 算子分析工作流** — 范围：双模型六个测试入口、Qwen3 组件入口集成执行、可选真实 checkpoint Attention profile、测试指南、Inference Spec 与逐模型 analysis 报告；交付：六个脚本均无自定义函数，Qwen3 默认组件测试执行 8 个模块 `__main__`，CUDA profile 记录 prefill/decode 算子和延迟；每个模型目录一份 Markdown 和一份 Excel，Markdown 单表按“问题、解决方案、效果”组织并用编号引用 Excel 证据；覆盖：REQ-16 / AC-16.1–AC-16.4；依赖：T-29；状态：2026-10-25 完成。WSL RTX 4060 上 Qwen3 8 个模块入口与 Mage-VL 组件入口通过；六个脚本 AST 检查确认没有自定义函数；Qwen3 算子记录位于 `analysis/qwen3_0_6b/`，历史 Mage-VL Gateway 验收位于 `analysis/mage_vl_4b/`；Artifact Tool 导出、重载及公式错误检查通过。未启动服务或执行 API 端到端／服务性能测试；单层合成 activation 数据仅用于算子定位，不代表整模或服务基线。
+- [x] **T-30 建立直读测试脚本与 Qwen3 算子分析工作流** — 范围：双模型六个测试入口、Qwen3 组件入口集成执行、可选真实 checkpoint Attention profile、测试指南、Inference Spec 与逐模型 analysis 报告；交付：六个脚本均无自定义函数，Qwen3 默认组件测试执行 8 个模块 `__main__`，CUDA profile 记录 prefill/decode 算子和延迟；每个模型目录一份 Markdown 和一份 Excel，Markdown 单表按“问题、解决方案、效果”组织并用编号引用 Excel 证据；覆盖：REQ-16 / AC-16.1、AC-16.2、AC-16.3、AC-16.4；依赖：T-29；状态：2026-10-25 完成。WSL RTX 4060 上 原有 Qwen3 8 个模块入口与 Mage-VL 组件入口通过；T-32 增加 CUDA kernel 入口后，当前 Qwen3 组件入口为 9 个；六个脚本 AST 检查确认没有自定义函数；Qwen3 算子记录位于 `analysis/qwen3_0_6b/`，历史 Mage-VL Gateway 验收位于 `analysis/mage_vl_4b/`；Artifact Tool 导出、重载及公式错误检查通过。未启动服务或执行 API 端到端／服务性能测试；单层合成 activation 数据仅用于算子定位，不代表整模或服务基线。
+
+- [x] **T-31 建立 Qwen3 Sequence 与 BlockManager 组件边界** — 范围：Engine contracts、Cache manager、TokenScheduler、Engine Core、ScheduledWorkItem、Qwen Adapter/Runner 与契约说明；交付：单一 Engine Sequence 进度对象、原子 KV block lease 和每轮 block table 传递；保留现有最大序列容量预留以及唯一 Scheduler、Engine Core、Qwen Runner 和 Mage-VL Cache 行为；覆盖：REQ-17 / AC-17.1、AC-17.2、AC-17.3；依赖：T-30；状态：2026-10-25 完成。Qwen3 组件入口验证 SequenceState 进度、BlockManager 容量不足不改租约、扩容与幂等释放，以及 Scheduler prefill→decode 的逐轮 block table 传递；Qwen3 CUDA 服务的 JSON/SSE 与 Gateway SSE 亦通过。
+- [x] **T-32 接入原生 CUDA Paged Decode Attention** — 范围：PyTorch C++/CUDA extension、PagedAttention backend、Qwen Attention/Runner、模型 YAML、数值对照入口和分析工作流；交付：CUDA decode kernel 直接按 block table 读取实体 KV page，PyTorch 路径保留为 reference/fallback，health 回报实际 backend；覆盖：REQ-17 / AC-17.4、AC-17.5、AC-17.6、AC-17.7；依赖：T-31；状态：2026-10-25 本机 RTX 4060 Laptop 完成验收。PyTorch 2.14.1+cu126 与 CUDA Toolkit 12.6 使用单 job 构建通过；float16/bfloat16、batch=3、context=[1,4,9]、重排物理页及 block 边界数值对照通过；固定 checkpoint 单层 CUDA profile 和 `attention_backend=cuda` 的 API/Gateway SSE 通过。该 prototype 在当前测量中慢于 PyTorch 路径，配置默认仍为 `pytorch`；不宣称性能提升或生产默认适用。
+
+- [x] **T-33 扁平化 Engine 核心模块并保持模型插件边界** — 范围：共用 `engine/`、Qwen3 插件入口、双模型 imports、Inference README 与 REQ-18 设计；交付：将 Engine 关键职责直接放在根目录模块，合并 Scheduler/batch planner、Engine/output translator 与 Worker/Executor，移除旧 Engine 子 package；模型 Processor／Runner／Adapter／算子仍留在模型包；覆盖：REQ-18 / AC-18.1、AC-18.2、AC-18.3、AC-18.4；依赖：T-31、T-32；状态：完成。`compileall`、双模型 Launcher `list/validate`、扁平模块及插件 factory 导入／生命周期 smoke、Qwen3 9 个组件模块入口和 Mage-VL meta/注意力/text prefill/decode 回归均通过；未启动 API/Gateway 服务，未载入完整 checkpoint。
+
+- [x] **T-34 扁平化并重命名共用 API 为 Network** — 范围：`src/inference/api/`、Launcher、Mage/Qwen API imports、Inference README、AGENTS、Gateway/Inference design 与 Spec；交付：将 API 职责模块移动至 `src/inference/network/` 根目录，移除旧子 package，Launcher 和模型插件使用 `inference.network`；HTTP 路由、schemas、SSE、工具调用、视频／Live 能力门控及 Engine IPC 保持不变；覆盖：REQ-19 / AC-19.1、AC-19.2、AC-19.3、AC-19.4；依赖：T-33；状态：完成。`compileall`、双模型 Launcher `list/validate`、Launcher 实际载入 `network.service`（未启动 Engine）、Network OpenAPI route/schema smoke、Qwen3 9 个 CUDA 模块入口、Mage-VL meta 组件与 696 个 checkpoint key 结构检查、Spec validator（19 REQ／97 AC／34 T）及 `git diff --check` 均通过；未载入 checkpoint tensor 或启动推理服务。
+
+- [x] **T-35 将共用 Media 元件迁入 Processors** — 范围：`src/inference/media/`、Engine／Network／Mage-VL imports、AGENTS、Inference README 与设计规格；交付：共享视频工具和 Live session 模块改由 `src/inference/processors/` 提供，全部调用点使用 `inference.processors`，并明确其跨模型扩展边界；处理行为和模型专属 Processor 边界保持不变；覆盖：REQ-20 / AC-20.1、AC-20.2、AC-20.3、AC-20.4；依赖：T-34；状态：完成。`compileall`、双模型 Launcher `list/validate`、视频／Live 共享 Processor 与 Network app/schema 导入 smoke、Spec validator（20 REQ／101 AC／35 T）及 `git diff --check` 通过；未启动服务或载入 checkpoint。
 
 ## 本次验收纪录
 
@@ -46,6 +55,14 @@
 |---|---|---|
 | 改造前本地回复提交 | 完成 | `0cb3c56 feat: add native Qwen3-0.6B inference engine`；本地提交，未推送。 |
 | 五层程式改造 | 契约与标准 Runner snapshot smoke 通过 | L1 Tokenize／Detokenize、L2 Engine output/event、L3 Executor／Platform 与 L4 InputBatch、Qwen 合成 Runner 有 CPU 测试；标准预设 Runner 已按 T-14 通过本机 Qwen snapshot CUDA smoke。原生 Qwen profile 的 API／SSE／并发／性能验收仍待 T-08。 |
+| REQ-17 Engine 生命周期 | 通过 | `tests/qwen3_0_6b/results/test_components.log`：SequenceState、BlockManager 原子容量失败/追加、幂等释放、Scheduler prefill→decode 与 block table 一致性；完整 Qwen3 9 个模块入口通过。 |
+| REQ-20 Processors 跨模型元件 | 通过 | `src/inference/media/` 已移除，源码、Network、Engine 与 Mage-VL 的共用处理器 imports 均使用 `inference.processors`；`compileall`、双模型 Launcher 预检、Processor/Network 导入 smoke、Spec validator（20 REQ、101 AC、35 T）及 `git diff --check` 通过。未启动服务或载入 checkpoint。 |
+| REQ-19 Network 平面模块 | 通过 | `compileall`、两个模型 Launcher `list/validate`、Launcher `_load_service_app()` 实际导入 `inference.network.service`（未启动 Engine）、Network OpenAPI path/schema smoke、双模型组件入口、Spec validator（19 REQ、97 AC、34 T）及 `git diff --check` 通过；没有载入模型权重或启动 API/Gateway 服务。 |
+| REQ-18 Engine 根目录模块 | 通过 | `compileall` 与 AST 解析、双模型 `inference launcher list/validate`、扁平 Engine／Qwen 插件 factory imports 和无权重 Sequence/BlockManager/Scheduler smoke 通过；Qwen3 9 个组件入口、Mage-VL 组件回归通过。执行时约 3.3–3.5 GiB RAM 可用；未并行运行或启动服务。 |
+| Qwen3 CUDA extension 与数值 | 通过 | 使用 `MAX_JOBS=1` 编译，RTX 4060 Laptop；float16/bfloat16 batch=3、context=[1,4,9]、非连续 page table、跨 block boundary 与非法 layer/page size 检查通过；profile 证据 `analysis/qwen3_0_6b/analysis.xlsx` QW-13/QW-14 及 `tests/qwen3_0_6b/results/qwen3_cuda_attention_profile.json`、`qwen3_pytorch_attention_profile.json`；同条件完整 Attention decode event 中位数 CUDA 10.813 ms、PyTorch 1.877 ms。 |
+| Qwen3 CUDA backend API 性能对照 | 功能通过；性能未提升 | CUDA backend 实际健康状态 `attention_backend=cuda`；3 次测量均生成 32 tokens。Engine API mean 6.118 s／5.26 tokens/s，Transformers baseline mean 1.187 s／27.17 tokens/s；原始输出在 `tests/qwen3_0_6b/results/test_performance_cuda.log`。 |
+| Qwen3 Gateway SSE 端到端 | 通过 | 临时本地 API Key，Gateway→Qwen CUDA backend 返回 31 个文字 chunks；TTFT 0.121 s，总时长 6.201 s；`tests/qwen3_0_6b/results/test_end2end_cuda.json`。测试后已停止服务并删除临时凭证。 |
+| Mage-VL 共用路径回归 | 通过 | `tests/mage_vl_4b/test_components.py --config tests/mage_vl_4b/test.yml`；696 个 checkpoint key、注意力以及 Qwen3 text prefill/decode 对照通过；记录 `tests/qwen3_0_6b/results/mage_component_regression.log`。 |
 | Inference Spec 结构与追踪 | 通过 | `validate_spec_group.py docs/Specifications/inference`：13 REQ、66 AC、24 T；需求／验收／任务追踪通过。 |
 | Python 单元／契约测试（旧测试目录） | 历史通过纪录 | 精简前在 WSL `magevl-transformers` 执行旧 `tests/inference/`：91 项通过、2 项选择性跳过；目前已按 REQ-08 改为逐模型三项测试，不再保留该目录。 |
 | Python 语法编译 | 历史通过纪录 | 精简前曾执行 `compileall`，涵盖 `src/inference/` 和旧 `tests/inference/`；新测试脚本由 T-18 另行检查。 |

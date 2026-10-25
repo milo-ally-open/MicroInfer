@@ -21,6 +21,7 @@ class PagedKVCache:
         head_dim: int,
         device: torch.device,
         dtype: torch.dtype,
+        attention_backend: str = "pytorch",
     ) -> None:
         dimensions = (num_layers, num_blocks, block_size_tokens, num_key_value_heads, head_dim)
         if any(value < 1 for value in dimensions):
@@ -30,17 +31,30 @@ class PagedKVCache:
         self.block_size_tokens = block_size_tokens
         self.num_key_value_heads = num_key_value_heads
         self.head_dim = head_dim
-        self.device = device
+        device = torch.device(device)
         self.dtype = dtype
+        self.attention_backend = str(attention_backend).lower()
+        if self.attention_backend not in {"pytorch", "cuda"}:
+            raise ValueError(f"Unsupported Qwen3 attention backend: {attention_backend}.")
+        if self.attention_backend == "cuda":
+            if device.type != "cuda":
+                raise ValueError("The native paged Attention backend requires a CUDA Worker device.")
+            from ..kernels.cuda import load_extension
+
+            load_extension()
         self.storage = torch.empty(
             (num_layers, 2, num_blocks, block_size_tokens, num_key_value_heads, head_dim),
             device=device,
             dtype=dtype,
         )
+        # 统一 `cuda` 与实际解析后的 `cuda:0`，避免模型与 cache 将同一装置误判为不同。
+        self.device = self.storage.device
         self._owners: list[str | None] = [None] * num_blocks
         self._request_blocks: dict[str, tuple[int, ...]] = {}
         # 将实际写入长度和租约分开保存，避免错误的 block table 读取未初始化 GPU tensor。
         self._written_lengths: dict[tuple[str, int], int] = {}
+        self._decode_metadata_key: tuple[object, ...] | None = None
+        self._decode_metadata: tuple[torch.Tensor, torch.Tensor] | None = None
         self._lock = threading.Lock()
 
     @property
@@ -62,8 +76,30 @@ class PagedKVCache:
             for block_id in blocks:
                 self._owners[block_id] = request_id
             self._request_blocks[request_id] = blocks
+            self._decode_metadata_key = None
             for layer_index in range(self.num_layers):
                 self._written_lengths[(request_id, layer_index)] = 0
+
+    def extend(self, request_id: str, block_ids: Sequence[int]) -> None:
+        """将 Engine 新分配的 page 追加到现有请求，不移动已写入的 KV。"""
+        blocks = tuple(int(block_id) for block_id in block_ids)
+        if not blocks or len(blocks) != len(set(blocks)):
+            raise ValueError("An extended KV block table must contain unique block IDs.")
+        if any(block_id < 0 or block_id >= self.num_blocks for block_id in blocks):
+            raise ValueError("An extended KV block table contains an ID outside the physical pool.")
+        with self._lock:
+            current = self._request_blocks.get(request_id)
+            if current is None:
+                raise RuntimeError(f"KV pages are not bound for request {request_id}.")
+            if len(blocks) < len(current) or blocks[: len(current)] != current:
+                raise RuntimeError("KV block table updates must append pages without reordering existing pages.")
+            occupied = [block_id for block_id in blocks[len(current) :] if self._owners[block_id] is not None]
+            if occupied:
+                raise RuntimeError(f"KV page {occupied[0]} is already owned by another request.")
+            for block_id in blocks[len(current) :]:
+                self._owners[block_id] = request_id
+            self._request_blocks[request_id] = blocks
+            self._decode_metadata_key = None
 
     def release(self, request_id: str) -> None:
         with self._lock:
@@ -74,6 +110,66 @@ class PagedKVCache:
             for key in tuple(self._written_lengths):
                 if key[0] == request_id:
                     del self._written_lengths[key]
+            self._decode_metadata_key = None
+
+    def decode_attention(
+        self,
+        query: torch.Tensor,
+        *,
+        layer_index: int,
+        request_ids: Sequence[str],
+        block_tables: Sequence[Sequence[int]],
+        lengths: Sequence[int],
+        scale: float,
+    ) -> torch.Tensor:
+        """用选定后端处理单 query-token batch，CUDA 路径直接读取实体 pages。"""
+        if self.attention_backend != "cuda":
+            raise RuntimeError("Paged decode Attention was called while the PyTorch backend is selected.")
+        if query.ndim != 3 or query.shape[0] != len(request_ids):
+            raise ValueError("Decode query batch and request metadata do not match.")
+        if not (len(request_ids) == len(block_tables) == len(lengths)) or not request_ids:
+            raise ValueError("Decode cache metadata must have matching non-empty batch dimensions.")
+        if len(request_ids) != len(set(request_ids)):
+            raise ValueError("Decode request IDs must be unique.")
+        if query.shape[1] < 1 or query.shape[1] % self.num_key_value_heads:
+            raise ValueError("Decode query heads must be a positive multiple of KV heads.")
+        if query.shape[2] != self.head_dim:
+            raise ValueError("Decode query head dimension does not match the KV pool.")
+        if query.device != self.device or query.dtype != self.dtype:
+            raise ValueError("Decode query device and dtype must match the KV pool.")
+        if not 0 <= layer_index < self.num_layers:
+            raise ValueError("Decode Attention layer index is outside the KV cache.")
+        normalized_tables = tuple(tuple(int(block_id) for block_id in table) for table in block_tables)
+        normalized_lengths = tuple(int(length) for length in lengths)
+        for request_id, table, length in zip(request_ids, normalized_tables, normalized_lengths, strict=True):
+            required_blocks = (length + self.block_size_tokens - 1) // self.block_size_tokens
+            if length < 1 or required_blocks > len(table):
+                raise RuntimeError("Decode context exceeds its reserved KV block table.")
+            if self._written_lengths.get((request_id, layer_index), 0) < length:
+                raise RuntimeError(f"Decode KV for {request_id} is not fully initialized.")
+            self._validate_owner(request_id, table)
+
+        metadata_key: tuple[object, ...] = (tuple(request_ids), normalized_tables, normalized_lengths)
+        if metadata_key != self._decode_metadata_key or self._decode_metadata is None:
+            table_width = max(len(table) for table in normalized_tables)
+            rows = [list(table) + [0] * (table_width - len(table)) for table in normalized_tables]
+            block_tensor = torch.tensor(rows, device=self.device, dtype=torch.int32).contiguous()
+            length_tensor = torch.tensor(normalized_lengths, device=self.device, dtype=torch.int32).contiguous()
+            self._decode_metadata_key = metadata_key
+            self._decode_metadata = (block_tensor, length_tensor)
+
+        from ..kernels.cuda import paged_decode_attention
+
+        block_tensor, length_tensor = self._decode_metadata
+        return paged_decode_attention(
+            query.contiguous(),
+            self.storage,
+            block_tensor,
+            length_tensor,
+            layer_index=layer_index,
+            block_size_tokens=self.block_size_tokens,
+            scale=scale,
+        )
 
     def write(
         self,

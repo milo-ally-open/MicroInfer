@@ -30,9 +30,16 @@ parser.add_argument(
     type=Path,
     help="将算子测量值写入机器可读 JSON；须同时指定 --profile-attention。",
 )
+parser.add_argument(
+    "--attention-backend",
+    choices=("pytorch", "cuda"),
+    help="指定 Attention profile 后端；CUDA 会在真实 checkpoint Attention decode 中调用 native op。",
+)
 args = parser.parse_args()
 if args.operator_report and not args.profile_attention:
     parser.error("--operator-report 必须与 --profile-attention 一起使用。")
+if args.attention_backend and not args.profile_attention:
+    parser.error("--attention-backend 必须与 --profile-attention 一起使用。")
 
 config_path = args.config.resolve()
 settings = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -50,6 +57,72 @@ os.environ["INFERENCE_NETWORK_CONFIG"] = str(inference_config_path.with_name("ne
 
 from inference.models.qwen3_0_6b.utils.loader import load_model_config
 from inference.models.qwen3_0_6b.model.qwen3 import Qwen3ForCausalLM
+from inference.engine.block_manager import BlockManager
+from inference.engine.sequence import ExecutionPhase, SequenceState, WorkerResult
+from inference.engine.scheduler import TokenScheduler
+
+sequence = SequenceState(
+    request_id="engine-sequence-check",
+    prompt_tokens_total=2,
+    max_output_tokens=2,
+)
+assert sequence.prompt_tokens_remaining == 2 and not sequence.waiting
+
+capacity_manager = BlockManager(block_size_tokens=4, capacity_tokens=8, bytes_per_token=16)
+first_lease = capacity_manager.reserve(
+    "block-manager-first", prompt_tokens=4, max_output_tokens=4, initial_tokens=4
+)
+second_lease = capacity_manager.reserve(
+    "block-manager-second", prompt_tokens=4, max_output_tokens=4, initial_tokens=4
+)
+assert first_lease is not None and second_lease is not None
+assert capacity_manager.ensure_capacity("block-manager-first", 5) is None
+assert capacity_manager.get("block-manager-first").block_ids == first_lease.block_ids
+capacity_manager.release("block-manager-second")
+capacity_manager.release("block-manager-second")
+extended_table = capacity_manager.ensure_capacity("block-manager-first", 5)
+assert extended_table is not None and len(extended_table) == 2
+capacity_manager.release("block-manager-first")
+capacity_manager.release("block-manager-first")
+assert capacity_manager.snapshot()["used_blocks"] == 0
+
+scheduler_manager = BlockManager(block_size_tokens=4, capacity_tokens=16)
+scheduler_lease = scheduler_manager.reserve(
+    "scheduler-sequence", prompt_tokens=2, max_output_tokens=2
+)
+assert scheduler_lease is not None
+scheduler = TokenScheduler(
+    max_num_seqs=1,
+    max_waiting_requests=0,
+    max_num_scheduled_tokens=8,
+    batch_wait_seconds=0,
+)
+scheduler.add_request(
+    "scheduler-sequence",
+    prompt_tokens=2,
+    max_output_tokens=2,
+    cache_block_ids=scheduler_lease.block_ids,
+)
+prefill_batch = scheduler.schedule_batch(scheduler_manager)
+assert prefill_batch is not None
+prefill_item = prefill_batch.work_items[0]
+assert prefill_item.phase is ExecutionPhase.PREFILL
+assert prefill_item.cache_block_ids == scheduler_lease.block_ids
+scheduler.complete_batch(
+    (WorkerResult("scheduler-sequence", token_id=17, generated_tokens=1, prompt_tokens_processed=2),)
+)
+decode_batch = scheduler.schedule_batch(scheduler_manager)
+assert decode_batch is not None
+decode_item = decode_batch.work_items[0]
+assert decode_item.phase is ExecutionPhase.DECODE
+assert decode_item.cache_block_ids == scheduler_lease.block_ids
+scheduler.complete_batch(
+    (WorkerResult("scheduler-sequence", token_id=23, generated_tokens=1, finished=True),)
+)
+scheduler.wait_idle()
+scheduler_manager.release("scheduler-sequence")
+assert scheduler.snapshot() == {"running": 0, "waiting": 0, "scheduled_rounds": 2}
+print("Qwen3 Engine Sequence, BlockManager and Scheduler lifecycle passed.")
 
 revision = str(inference_settings["model"]["revision"])
 config = load_model_config(snapshot, revision)
@@ -78,6 +151,7 @@ module_entrypoints = [
     ("inference.models.qwen3_0_6b.components.paged_kv_cache", inference_root / "models/qwen3_0_6b/components/paged_kv_cache.py"),
     ("inference.models.qwen3_0_6b.components.sampler", inference_root / "models/qwen3_0_6b/components/sampler.py"),
     ("inference.models.qwen3_0_6b.components.input_batch", inference_root / "models/qwen3_0_6b/components/input_batch.py"),
+    ("inference.models.qwen3_0_6b.kernels.cuda", inference_root / "models/qwen3_0_6b/kernels/cuda/__main__.py"),
 ]
 module_environment = os.environ.copy()
 for module_name, entrypoint in module_entrypoints:
@@ -110,6 +184,9 @@ if args.profile_attention:
     warmup_iterations = int(operator_settings.get("warmup_iterations", 2))
     iterations = int(operator_settings.get("iterations", 5))
     top_operators = int(operator_settings.get("top_operators", 20))
+    attention_backend = args.attention_backend or str(
+        inference_settings["engine"].get("attention_backend", "pytorch")
+    )
     if min(batch_size, prompt_tokens, iterations, top_operators) < 1 or warmup_iterations < 0:
         raise ValueError("operator_analysis 的 batch、token、iteration 与 operator 数必须有效。")
 
@@ -163,6 +240,7 @@ if args.profile_attention:
         head_dim=config.head_dim,
         device=device,
         dtype=dtype,
+        attention_backend=attention_backend,
     )
     prefill_hidden_states = torch.randn(
         batch_size, prompt_tokens, config.hidden_size, device=device, dtype=dtype
@@ -307,6 +385,7 @@ if args.profile_attention:
         "warmup_iterations": warmup_iterations,
         "measured_iterations": iterations,
         "layer_index": 0,
+        "attention_backend": attention_backend,
         "prefill_cuda_event_ms": {
             "samples": prefill_samples_ms,
             "median": statistics.median(prefill_samples_ms),

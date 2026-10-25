@@ -8,7 +8,7 @@
 
 ## 问题、解决方案、效果
 
-| 问题 | 解决方案（待验证） | 效果 | XLSX 证据 |
+| 问题 | 解决方案/实施方式 | 效果 | XLSX 证据 |
 |---|---|---|---|
 | Prefill `aten::copy_`：shape `[1,8,2,512,512]`，109.092 μs，Profiler allocation 0 bytes，3 次；这是 score 尺寸张量 copy。 | 先追踪 copy 来源；只有确认它影响耗时或显存后，再评估减少中间 copy。 | 尚未修改；本次只建立基线，没有优化效果数据。 | QW-01 |
 | Prefill `aten::mm`：`[512,1024] × [1024,1024]`，87.076 μs，2,097,152 bytes，2 次。 | 保留现状；扩大序列长度和 batch 测量后，再判断是否值得优化 projection。 | 尚未修改；本次只建立基线，没有优化效果数据。 | QW-02 |
@@ -22,7 +22,10 @@
 | Decode `aten::index`：KV page shape `[33,16,8,128]`，11.522 μs，2,162,688 bytes，2 次；trace 显示 KV page gather。 | 对 KV 长度 128/512/1024/2048、batch 1/4 量化 gather；再决定是否减少连续物化。 | Gather 基线已测；优化和优化后验收尚未执行。 | QW-10 |
 | Decode `aten::copy_`：K/V shape `[8,513,128]`，11.075 μs，Profiler allocation 0 bytes，2 次；将 gather 后 K/V 写入连续输出。 | 与 KV gather 一起测量，评估能否减少复制；保留 Cache 生命周期检查。 | 尚未修改；本次只建立基线，没有优化效果数据。 | QW-11 |
 | Decode `aten::bmm`：`[8,2,513] × [8,513,128]`，9.569 μs，4,096 bytes，1 次；用于 GQA Attention。 | 扫描更长 KV 后再判断算子占比和优化价值。 | 尚未修改；本次只建立基线，没有优化效果数据。 | QW-12 |
+| Decode 从分页 KV gather 到连续 K/V；旧路径没有直接依 block table 读取 page 的 kernel。 | 在 Qwen3 模型包加入 PyTorch C++/CUDA decode op，并以多序列、异构上下文和重排物理页对照 PyTorch 稠密参考。 | RTX 4060 Laptop 上 float16/bfloat16、context=[1,4,9] 的数值对照通过，最大误差为 0；同机同 shape checkpoint profile 确认执行 `qwen3_cuda::paged_decode`，kernel 614.267 μs。同 revision、GPU、shape、dtype 的完整 Attention decode event 中位数：CUDA 10.813 ms，PyTorch 1.877 ms；PyTorch `aten::index` gather 为 14.654 μs。该实现是功能原型，当前测量明显较慢，服务默认值继续保持 `pytorch`。 | QW-13、QW-14 |
 
 ## 验收结论
 
-Qwen3 的 8 个模块 `__main__` 对照测试通过：模型、Attention、RMSNorm/MLP、RoPE、ModelRunner、PagedKVCache、Sampler、InputBatch。本次没有修改算子，因此没有优化前后效果；未启动 Inference API，也未执行 API 端到端测试。CUDA Event 中位数为 prefill 2.784 ms、decode 1.459 ms，各 5 个样本且波动较大，只用于本机单层定位。Profiler allocation 是算子分组的内存活动，不是峰值显存；Profiler 耗时不能按行相加。
+REQ-17 验收在 2026-10-25 完成。Qwen3 组件测试的 9 个模块入口与 Engine Sequence/BlockManager/Scheduler 生命周期检查通过；新增 native CUDA 入口在本机 RTX 4060 Laptop 上测试 float16/bfloat16、多序列、异构上下文、物理页重排和 block 边界通过。PyTorch C++/CUDA extension 使用 `MAX_JOBS=1` 构建成功；真实 checkpoint 第 0 层 CUDA profile 和 CUDA backend 推理 API／Gateway SSE 均通过。性能脚本的 3 次测量中，CUDA Engine API 平均 6.118 秒、5.26 tokens/s，Transformers baseline 平均 1.187 秒、27.17 tokens/s；此结果明确不支持将当前 kernel 作为默认优化路径。
+
+QW-01–QW-12 保留原先 PyTorch gather 路径的 profiler 历史数据；QW-13/QW-14 是本轮 CUDA 与 PyTorch 同机、同 revision、同 shape、同 dtype 对照；完整 Attention decode CUDA event 中位数约为 PyTorch 的 5.76 倍。单层输入为合成 activation，模型 revision 与权重来自本机固定 snapshot；结果不代表完整服务吞吐规律。Profiler allocation 是算子分组的内存活动，不是峰值显存；Profiler 耗时不能按行相加。详细测试输出保存在 `tests/qwen3_0_6b/results/`，短测结果不构成 SLA。

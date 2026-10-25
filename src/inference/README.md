@@ -14,6 +14,35 @@
 
 目前登记的 alias 是 mage-vl-4b 和 qwen3-0.6b。模型 API 位址分别由各自的 configs/network.yml 决定。
 
+## 最简模型引擎使用示例
+
+以下以 Qwen3-0.6B 为例，在 Python 服务端导入模型插件包并建立 Engine。插件会读取自己的 manifest 与 YAML，再启动独立 Engine Core 和 Model Worker；Scheduler、KV 管理和模型 Runtime 仍由 Engine 负责。
+
+Qwen3 模型依赖、CUDA PyTorch 和 `configs/inference.yml` 指定的本机 checkpoint 必须已准备好：
+
+```python
+from inference.models.qwen3_0_6b import create_engine_client
+
+def main():
+    engine = create_engine_client()
+    engine.start()
+    try:
+        result = engine.generate_chat({
+            "model": "qwen3-0.6b",
+            "messages": [{"role": "user", "content": "用一句话介绍分页 KV Cache。"}],
+            "max_tokens": 128,
+        })
+        print(result.content)
+    finally:
+        engine.close()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+`generate_chat()` 返回 `InferenceResult`，生成文本位于 `result.content`。模型插件根据包内 manifest/YAML 选择模型；部署 wheel 时可在进程环境中设置 `INFERENCE_PROJECT_ROOT` 指向 checkpoints 和运行配置所在目录。将 Engine 嵌入长驻服务时，应在服务启动／关闭钩子中分别调用 `engine.start()`／`engine.close()`，不要为每个请求重新创建 Engine。
+
 ## 标准工具调用协议
 
 共用 `POST /v1/chat/completions` 支援标准 function tool 请求与历史消息字段：`tools`、`tool_choice: "auto"/"none"`、`assistant.tool_calls`、`role: "tool"`／`tool_call_id`、非串流 `finish_reason: "tool_calls"` 和 SSE `delta.tool_calls`。首版每轮只接受一个调用；`parallel_tool_calls: true`、指定某个函数的 `tool_choice` 对象及 `strict: true` 会明确回错。工具 definitions 与模型生成参数都通过 JSON Schema 验证。
@@ -60,16 +89,19 @@ MediaMTX 是独立 sidecar，不属于模型包、manifest 或 Launcher。配置
 
 | 组件 | 位置 | 职责 |
 | --- | --- | --- |
-| API Server | `api/application/`、`api/routes/`、`api/contracts/`、`api/processors/` | 应用装配、OpenAI 风格请求、模型输入处理、增量 Detokenize、JSON/SSE 输出。 |
-| Engine Core | `engine/core/` | 请求生命周期、调度循环和输出事件分发。 |
-| Scheduler 与 KV 管理 | `engine/scheduling/`、`engine/cache/` | 建立 prefill/decode 批次并管理 Engine 侧逻辑资源租约。 |
-| Executor 与 Worker | `engine/execution/`、`engine/transport/` | 子进程、IPC、模型操作调用及资源清理。 |
-| 服务启动与配置 | `engine/bootstrap/`、`engine/config/` | 组合 Engine／Worker，读取启动器选定的模型及运行配置。 |
+| API Server | `network/` | `app.py` 装配应用；`service.py` 建立模型服务；`schemas.py`、`serializers.py`、`tool_calling.py` 管理 HTTP 协议；各路由和输入／输出处理器直接放在此目录。 |
+| 共用 Processors | `processors/` | 视频文件读写与元数据／影格辅助、Live session 管理等跨模型处理能力；可按后续需求增加共用处理模块。 |
+| Engine Core | `engine/inference_engine.py` | 请求生命周期、调度循环和输出事件分发。 |
+| Scheduler 与 KV 管理 | `engine/scheduler.py`、`engine/block_manager.py` | 建立 prefill/decode 批次并管理 Engine 侧逻辑资源租约。 |
+| Worker 与 IPC | `engine/worker.py`、`engine/engine_client.py` | 子进程、IPC、模型操作调用及资源清理。 |
+| 服务启动与配置 | `engine/bootstrap.py`、`engine/config.py` | 组合 Engine／Worker，读取启动器选定的模型及运行配置。 |
 | 模型 Runtime | models/{package_name}/ | 模型载入、拓扑、模型专属输入与 Cache 行为。 |
 
-共用程式按职责放入独立 Python package：`api/application/` 负责建构与注入，`api/contracts/` 定义 HTTP schema／序列化／工具协议，`api/processors/` 负责模型输入与生成输出转换；`engine/core/` 负责生命周期编排，跨层资料结构集中于 `engine/contracts/`，调度、Cache、执行、IPC transport、启动组装和配置各自归档。Engine Core 透过 `core/ports.py` 依赖 Executor Protocol，并使用 `media/` 的共用上传档案辅助；具体子程序执行实作留在 `execution/`。模型包使用稳定契约及所需的 Worker／Platform／Config 能力，不依赖 API 路由或 Engine bootstrap。
+API 层以 `network/` 作为单一平面目录，包含应用装配、模型服务入口、schemas、serializers、工具调用协议、HTTP 路由和处理器。Engine 保留少量根目录模块：`sequence.py` 定义跨进程请求资料，`scheduler.py` 管理逐轮批次，`block_manager.py` 管理 Engine 侧 KV 租约，`inference_engine.py` 编排请求，`worker.py` 管理 Worker 与本机执行，`engine_client.py` 负责 API 到 Engine Core 的 IPC，`config.py`／`bootstrap.py` 负责读取模型设定和装配。模型包继续拥有模型专属 Processor、Runner、Adapter、拓扑和算子；Engine 不额外维护插件注册框架。
 
-模型 Runner 批次接口不代表一定执行合并 forward。Qwen3 使用实体 KV page pool，但 Attention 前仍 gather KV pages；尚无自定义 PagedAttention kernel。Mage-VL 使用 Transformers Cache，Engine KV 管理仍是逻辑 reservation。项目借鉴 vLLM/nano-vLLM 的组件职责，不表示兼容 vLLM，也不代表支持尚未实现的后端或优化。
+`processors/` 放跨模型可复用的请求处理组件，例如 `video.py` 的上传视频与媒体读取辅助，以及 `live_sessions.py` 的 Live session 管理。模型 tokenizer、chat template、模型输入格式和视觉预处理仍由模型包负责；新增共用处理能力时可在此扩展，不需把通用模块塞入 Network 或某个模型包。
+
+模型 Runner 批次接口不代表一定执行合并 forward。Qwen3 使用实体 KV page pool；PyTorch backend 的 Attention 会 gather KV pages。Qwen3 模型包内的选用式 native CUDA 单 token decode Attention 已在本机 RTX 4060 Laptop 完成构建、float16/bfloat16 数值对照、checkpoint 单层 profile 和 CUDA backend API/Gateway SSE 验收。当前测试显示它慢于 PyTorch 路径，所以 YAML 默认仍选 `pytorch`；不宣称性能提升或生产环境普遍适用。Mage-VL 使用 Transformers Cache，Engine KV 管理仍是逻辑 reservation。项目借鉴 vLLM/nano-vLLM 的组件职责，不表示兼容 vLLM。
 
 ### Mage-VL 模型组件地图
 

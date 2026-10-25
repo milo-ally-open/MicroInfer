@@ -5,14 +5,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from inference.engine.contracts import (
+from inference.engine.sequence import (
     ExecutionPhase,
     InferenceResult,
     PreparedChatInput,
     ScheduledWorkItem,
     WorkerResult,
 )
-from inference.engine.contracts import InferenceError
+from inference.engine.sequence import InferenceError
 from ..utils import loader as config
 from ..processor import build_sampling_params, prepare_chat_input
 
@@ -27,6 +27,7 @@ class Qwen3ModelAdapter:
     def health_info(self) -> dict[str, Any]:
         return {
             "backend": "qwen3_native_torch",
+            "attention_backend": self.model_runner.attention_backend,
             "model": config.MODEL_ALIAS,
             "revision": config.MODEL_REVISION,
             "platform": self.model_runner.platform.name,
