@@ -569,8 +569,16 @@ class EngineClient:
                 self._connection = None
                 self._engine_core_pid = None
 
-def create_engine_client_for_package(model_package: ModuleType) -> EngineClient:
-    """读取插件包内的 manifest/YAML，并建立对应模型的 EngineClient。"""
+def create_engine_client_for_package(
+    model_package: ModuleType,
+    *,
+    inference_config_path: str | Path | None = None,
+    network_config_path: str | Path | None = None,
+) -> EngineClient:
+    """读取插件 manifest 和指定 YAML，并建立对应模型的 EngineClient。
+
+    未指定的 YAML 路径取自模型 manifest。显式提供的相对路径以当前工作目录为基准。
+    """
     package_file = getattr(model_package, "__file__", None)
     if not isinstance(package_file, str):
         raise TypeError("Model plugin must be an importable package with a __file__ path.")
@@ -587,19 +595,31 @@ def create_engine_client_for_package(model_package: ModuleType) -> EngineClient:
     if not isinstance(alias, str) or not alias.strip():
         raise ValueError(f"Model plugin manifest must define a non-empty alias: {manifest_path}")
 
-    inference_config_path = launcher._resolve_path(
-        str(manifest.get("inference_config", "")),
-        "Inference configuration",
-        base_dir=manifest_path.parent,
+    def resolve_config_path(
+        override: str | Path | None, manifest_value: Any, description: str
+    ) -> Path:
+        if override is None:
+            return launcher._resolve_path(
+                str(manifest_value or ""), description, base_dir=manifest_path.parent
+            )
+        path = Path(override).expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        path = path.resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"{description} not found: {path}")
+        return path
+
+    selected_inference_config = resolve_config_path(
+        inference_config_path, manifest.get("inference_config"), "Inference configuration"
     )
-    network_config_path = launcher._resolve_path(
-        str(manifest.get("network_config", "")),
-        "Network configuration",
-        base_dir=manifest_path.parent,
+    selected_network_config = resolve_config_path(
+        network_config_path, manifest.get("network_config"), "Network configuration"
     )
-    inference_config = launcher._read_yaml(inference_config_path)
+    inference_config = launcher._read_yaml(selected_inference_config)
+    launcher._read_yaml(selected_network_config)
     launcher._set_runtime_environment(
-        alias, manifest_path, inference_config_path, network_config_path, inference_config
+        alias, manifest_path, selected_inference_config, selected_network_config, inference_config
     )
 
     runtime = inference_config.get("runtime", {})

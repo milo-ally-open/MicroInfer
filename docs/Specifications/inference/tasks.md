@@ -49,6 +49,8 @@
 
 - [x] **T-35 将共用 Media 元件迁入 Processors** — 范围：`src/inference/media/`、Engine／Network／Mage-VL imports、AGENTS、Inference README 与设计规格；交付：共享视频工具和 Live session 模块改由 `src/inference/processors/` 提供，全部调用点使用 `inference.processors`，并明确其跨模型扩展边界；处理行为和模型专属 Processor 边界保持不变；覆盖：REQ-20 / AC-20.1、AC-20.2、AC-20.3、AC-20.4；依赖：T-34；状态：完成。`compileall`、双模型 Launcher `list/validate`、视频／Live 共享 Processor 与 Network app/schema 导入 smoke、Spec validator（20 REQ／101 AC／35 T）及 `git diff --check` 通过；未启动服务或载入 checkpoint。
 
+- [x] **T-36 支持服务端 Engine client 显式指定 YAML** — 范围：Qwen3 插件工厂、共用 Engine client 配置解析、Inference README、Inference proposal/spec/design；交付：`create_engine_client()` 支持显式传入 inference/network YAML 路径，验证文件并加载配置，未传入时兼容 manifest 默认值；服务端代码示例展示完整调用；不启动 Engine 或加载权重；覆盖：REQ-21 / AC-21.1、AC-21.2、AC-21.3、AC-21.4；依赖：T-35；状态：完成。`magevl-transformers` 配置加载 smoke 验证 manifest 默认路径、显式临时 YAML 的 timeout 参数覆盖、环境路径传递、缺失／非法 YAML 拒绝，并确认 Engine 子进程未启动；Python 编译、双模型 Launcher validate、Spec validator（21 REQ／105 AC／36 T）及 `git diff --check` 通过。未载入 checkpoint 或初始化 GPU。
+
 ## 本次验收纪录
 
 | 检查 | 状态 | 证据／限制 |
@@ -56,6 +58,7 @@
 | 改造前本地回复提交 | 完成 | `0cb3c56 feat: add native Qwen3-0.6B inference engine`；本地提交，未推送。 |
 | 五层程式改造 | 契约与标准 Runner snapshot smoke 通过 | L1 Tokenize／Detokenize、L2 Engine output/event、L3 Executor／Platform 与 L4 InputBatch、Qwen 合成 Runner 有 CPU 测试；标准预设 Runner 已按 T-14 通过本机 Qwen snapshot CUDA smoke。原生 Qwen profile 的 API／SSE／并发／性能验收仍待 T-08。 |
 | REQ-17 Engine 生命周期 | 通过 | `tests/qwen3_0_6b/results/test_components.log`：SequenceState、BlockManager 原子容量失败/追加、幂等释放、Scheduler prefill→decode 与 block table 一致性；完整 Qwen3 9 个模块入口通过。 |
+| REQ-21 Engine client 显式 YAML 配置 | 通过 | Qwen3 插件工厂默认 manifest 配置、显式 inference/network YAML、实际 timeout 覆盖、环境路径传递、缺失文件与非法 YAML 边界均通过；未启动 Engine 或加载权重。Python 编译、双模型 Launcher validate、Spec validator（21 REQ、105 AC、36 T）和 `git diff --check` 通过。 |
 | REQ-20 Processors 跨模型元件 | 通过 | `src/inference/media/` 已移除，源码、Network、Engine 与 Mage-VL 的共用处理器 imports 均使用 `inference.processors`；`compileall`、双模型 Launcher 预检、Processor/Network 导入 smoke、Spec validator（20 REQ、101 AC、35 T）及 `git diff --check` 通过。未启动服务或载入 checkpoint。 |
 | REQ-19 Network 平面模块 | 通过 | `compileall`、两个模型 Launcher `list/validate`、Launcher `_load_service_app()` 实际导入 `inference.network.service`（未启动 Engine）、Network OpenAPI path/schema smoke、双模型组件入口、Spec validator（19 REQ、97 AC、34 T）及 `git diff --check` 通过；没有载入模型权重或启动 API/Gateway 服务。 |
 | REQ-18 Engine 根目录模块 | 通过 | `compileall` 与 AST 解析、双模型 `inference launcher list/validate`、扁平 Engine／Qwen 插件 factory imports 和无权重 Sequence/BlockManager/Scheduler smoke 通过；Qwen3 9 个组件入口、Mage-VL 组件回归通过。执行时约 3.3–3.5 GiB RAM 可用；未并行运行或启动服务。 |

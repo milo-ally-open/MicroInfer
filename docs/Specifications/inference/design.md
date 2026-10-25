@@ -126,6 +126,10 @@ Mage-VL 与 Qwen 均由共用入口装配；Mage 的 `model/mage_vl.py` 明确�
 
 `integration_profile: standard` 可省略模型专属 Runner、Adapter 和 `api.input_processor`。Network 使用 `network/default_chat_processor.py`；Worker 使用 `engine/standard_text.py` 中的 `StandardTextModelRunner`／`StandardTextModelAdapter`。模型仍需提供薄的 `runtime.py` 工厂，以便共用 Worker 使用一致的 Runtime facade。
 
+## 嵌入式 Engine 的 YAML 选择
+
+模型插件的 `create_engine_client()` 可接收可选 `inference_config_path` 和 `network_config_path`。插件 manifest 仍决定模型 alias、Runtime 和 API 能力；传入路径只覆盖两份运行 YAML。未传入时沿用 manifest 相对 `configs/` 目录声明的路径。显式绝对路径直接使用，显式相对路径相对调用进程当前工作目录解析。工厂在返回 Engine client 前读取两份 YAML 并校验顶层 mapping，再把规范化路径和 manifest 写入 Worker 子进程将继承的环境。模型 YAML 中相对 checkpoint 路径仍由 `INFERENCE_PROJECT_ROOT` 解析。配置选择或 YAML 校验失败时，不启动 Engine Core、Worker 或模型加载。
+
 预设 Runner 以 `AutoModelForCausalLM` 载入固定 revision，仅支援单一计算装置，并优先使用 CUDA；CUDA 不可用时回退 CPU。模型类型仍限 decoder-only causal LM、可重用 `past_key_values`、文字 `chat_template` 和 token ID 输出。API 处理器只接收文字，不接受图片、影片或 Live。Scheduler 提交的 `execute_batch()` 仍按 request 逐项呼叫 forward，各 request 的 Cache／生成状态分开持有；这是可用的标准接入路径，不代表连续批次 forward、实体 block cache 或 PagedAttention。
 
 预检以 YAML 与 AST 确认 capability／方法合同，不 import 工厂或权重。Worker 在模型载入前再次检查实例方法；如架构使用 encoder-decoder、`device_map` 多装置、不可重用 Cache，或需要自订采样／影音流程，应改登记 `custom` 并提供模型 Runner／Adapter。即使预检通过，将模型标成标准相容前仍需以固定 revision snapshot 实际验证 Cache 延续和 token 输出。

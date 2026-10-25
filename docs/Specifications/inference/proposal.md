@@ -128,3 +128,7 @@ REQ-15 的 Engine 目录分层决定由 REQ-18 取代，API package 目录要求
 ## 共用 Media 元件归入 Processors（T-35）
 
 将共用视频辅助与 Live session 管理模块从 `inference.media` 移至 `inference.processors`，并同步 Engine、Network、Mage-VL 工厂／调用点及开发文档。`processors/` 作为可扩展的跨模型处理 package，承载通用的媒体／请求处理元件；模型专属 Tokenizer、输入格式和视觉预处理仍留在模型包。此次目录变更保持现有处理逻辑与 API 行为。
+
+## 服务端 Engine client 显式加载 YAML（T-36）
+
+模型插件在服务端代码中创建 Engine client 时，可按部署环境传入 `inference.yml` 与 `network.yml` 路径。模型包 manifest 仍负责模型身份和 Runtime 工厂；显式配置覆盖相应默认路径，未传入的文件仍从 manifest 解析。显式相对路径按进程当前工作目录解析，配置文件在创建 client 时加载和验证，配置错误不启动 Engine 子进程。模型 YAML 中相对 checkpoint 路径仍按 `INFERENCE_PROJECT_ROOT` 解析。

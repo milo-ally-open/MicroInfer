@@ -1,13 +1,31 @@
-# MediaMTX Sidecar 配置
+# MediaMTX 部署
 
-MediaMTX 是独立的实时媒体 sidecar，不属于推理引擎，也不属于任何单一模型包。服务配置统一放在本目录，部署时与推理 API 分别启动和停止。
+MediaMTX 是独立的实时媒体 sidecar，用于接收 RTSP/RTMP 推流。它不属于 Gateway、Inference Engine 或单一模型插件。图片和上传视频文件流程不依赖 MediaMTX。
 
-从项目根目录运行已安装的 MediaMTX 二进制：
+## 前置条件
+
+- 已安装 MediaMTX 二进制，并可通过 `mediamtx` 命令调用。
+- 已启动支持 Live 视频的 Inference 服务。当前默认回调指向 Mage-VL Inference：`http://127.0.0.1:8001/v1/live/mediamtx/auth`。
+- 如果推流客户端不在本机，需按部署网络配置防火墙、主机名和对外地址。
+
+## 启动
+
+从仓库根目录启动：
 
 ```bash
 mediamtx deploy/mediamtx/mediamtx.yml
 ```
 
-默认配置只启用 RTSP/TCP 和 RTMP 输入，并通过 HTTP 调用推理 API 的 `/v1/live/mediamtx/auth` 授权回调。默认回调地址为 `http://127.0.0.1:8001`。如果推理 API 地址或端口改变，需要更新 `mediamtx.yml` 中的 `authHTTPAddress`；如果改变 RTSP/RTMP 监听端口，还要同步更新使用 Live 功能的模型 `configs/network.yml` 中的客户端连接端口。
+当前配置启用 RTSP/TCP（端口 `8554`）和 RTMP（端口 `1935`），并通过 HTTP 调用 Inference 的授权回调。HLS、WebRTC、SRT、MediaMTX API、metrics 和 pprof 均关闭。
 
-模型 manifest 不登记 MediaMTX 配置路径。模型的 `network.yml` 只保存推理服务使用的 RTSP/RTMP 地址和返回给发布客户端的公开主机名；协议监听、授权回调及 MediaMTX 自身的运行选项只在本目录维护。
+MediaMTX 与 Inference 分别启动和停止。停止服务前，应先结束活动 Live session，再停止媒体 sidecar。
+
+## 配置
+
+服务自身的协议监听、授权回调和运行选项只在 [`mediamtx.yml`](mediamtx.yml) 配置。若 Inference 地址或端口变化，更新 `authHTTPAddress`；若改变 RTSP/RTMP 监听端口，同时更新使用 Live 的模型 `configs/network.yml`。
+
+模型 `network.yml` 记录推理服务连接 MediaMTX 所需的地址和发布端公开主机名，不用于配置 MediaMTX 服务本身。模型 manifest 不登记该 sidecar 配置。
+
+## 网络路径
+
+Live 控制请求经 Gateway 转发到 Inference；MediaMTX 的 HTTP 授权回调直接访问 Inference。发布客户端依据 Live 响应中的地址直接向 MediaMTX 推流。Gateway 不转发 RTSP/RTMP 封包。

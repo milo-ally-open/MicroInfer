@@ -1,55 +1,104 @@
 # VideoStreamAPI
 
-本项目提供面向视频理解业务的模型推理 API 与独立的 Go API Gateway。Gateway 负责外部接入、认证、租户限流、模型路由和请求转发；Inference 负责模型加载、输入处理、生成及 GPU 资源管理。两者分别配置、启动和验收。
+VideoStreamAPI 提供视频理解推理服务和独立的 Go API Gateway。Inference 负责模型加载、输入处理与生成；Gateway 负责客户端接入、认证、限流、模型路由和请求转发。两者分别配置、启动和验收。
 
-## 当前模型
+## 功能概览
 
-| Gateway 公开 alias | 模型包目录 | 当前能力 | 实现方式 |
+- OpenAI 风格聊天 API，支持文本 SSE 输出。
+- Mage-VL-4B 支持图片聊天、视频上传理解和 Live 视频会话。
+- Qwen3-0.6B 支持纯文本聊天和标准 function tool calling 协议。
+- Inference 使用独立 Engine Core 与 Model Worker 进程；Qwen3 支持批次 Runner 和模型包内可选 CUDA decode attention。
+- Gateway 提供 API Key 认证、租户限流、能力检查、SSE 转发、健康检查和 Prometheus 格式指标。
+
+## 模型
+
+| 对外别名 | 模型包 | 已实现能力 | 推理实现 |
 | --- | --- | --- | --- |
-| mage-vl-4b | src/inference/models/mage_vl_4b/ | 图片聊天、文字 SSE、视频上传、Live | Mage-VL Transformers Runtime |
-| qwen3-0.6b | src/inference/models/qwen3_0_6b/ | 纯文字聊天、文字 SSE、标准工具调用 | 模型包内 PyTorch 计算图与批次 Runner |
+| `mage-vl-4b` | `src/inference/models/mage_vl_4b/` | 图片聊天、文本 SSE、视频上传、Live | Mage-VL Transformers Runtime |
+| `qwen3-0.6b` | `src/inference/models/qwen3_0_6b/` | 文本聊天、文本 SSE、工具调用 | 模型包内 PyTorch 计算图与批次 Runner |
 
-模型包目录名是 Python 包名，公开 alias 是客户端选择模型的名称，二者不必相同。上游模型 ID 则记录在模型 inference.yml 的 model.id 中。Gateway 使用模型 alias 接收请求，并将请求映射到 Inference API 的 api.model_id。
+项目别名、Python 模型包名和上游 Hugging Face `repo_id` 是不同标识。别名由客户端选择；上游模型 ID 记录在模型配置中；Inference API 使用 manifest 中的 `api.model_id`。
 
-Inference 的 API、Engine Core、Scheduler、Executor 和 Worker 由两个模型共用；模型 Runtime、Processor、拓扑、权重载入、Cache 与算子留在模型包。项目参考 vLLM 与 nano-vLLM 的职责划分，但没有 vLLM backend 或 prefix cache。Qwen3 模型包提供选用式原生 CUDA paged decode Attention；已在本机 RTX 4060 Laptop 完成构建、float16/bfloat16 数值对照、checkpoint 单层 profile 和 CUDA backend API/Gateway 验收。由于当前测量慢于 PyTorch 路径，模型 YAML 默认仍使用 PyTorch；不宣称性能提升或生产环境普遍适用。
+## 架构
 
-## 启动与检查
+```text
+客户端 ──HTTP/SSE──> Go Gateway ──HTTP/SSE──> Inference Network
+                         │                          │
+                         │                          ├── Engine Core
+                         │                          └── Model Worker / 模型插件
+                         └── Live 控制 API               │
+客户端 ─────────────RTSP/RTMP──────────────> MediaMTX
+```
 
-Inference 使用 `src/inference/pyproject.toml` 注册为 `inference` Python 包，发行名称和导入命名空间都为 `inference`。开发时在所选模型环境中安装 editable package 和对应模型 extra；基础安装不会安装所有模型依赖：
+`src/inference/network/` 提供共用 HTTP 服务和路由；`engine/` 管理请求调度、KV block、Worker 与进程通信；`processors/` 承载跨模型视频和 Live 处理能力；模型专属 Runtime、Processor、Runner、拓扑和算子位于 `models/<model>/`。Gateway 不加载模型，也不转发 RTSP/RTMP 媒体封包。
+
+项目参考 vLLM 和 nano-vLLM 的职责划分，不提供 vLLM backend，也没有 Prefix Caching。Mage-VL 的 Engine KV 是逻辑 reservation。Qwen3 使用实体 KV page pool；PyTorch Attention 仍会 gather KV pages。Qwen3 模型包提供可选 native CUDA 单 token decode attention，但当前测量慢于 PyTorch 路径，默认配置仍使用 PyTorch。
+
+## 快速开始
+
+### 环境准备
+
+- Python 3.10 或更新版本。
+- Go 工具链，用于运行 Gateway。
+- 与目标设备匹配的 PyTorch/CUDA 环境。PyTorch wheel 需单独安装；项目不会替用户选择 CUDA wheel。
+- 模型权重可由 Inference 按固定 revision 获取，也可按模型配置准备在本地 `checkpoints/`。
+
+### 安装并检查 Inference
+
+在所选模型的 Python 环境中，从仓库根目录安装对应 extra：
 
 ```bash
-# Mage-VL 环境
+# Mage-VL
 python -m pip install -e "src/inference[mage-vl]"
 
-# Qwen3 环境（先安装与 CUDA 匹配的 PyTorch）
+# 或 Qwen3
 python -m pip install -e "src/inference[qwen3]"
 ```
 
-PyTorch/CUDA wheel 不由 model extra 自动选择，需按目标机器安装。两个 extra 分别读取模型目录内的 `requirements.txt`。安装后可用 `inference list`、`inference validate --model mage-vl-4b` 检查，再用 `inference start --model mage-vl-4b` 启动。开发 editable 安装会以仓库根目录作为项目根；部署 wheel 时通过 `INFERENCE_PROJECT_ROOT` 指定 checkpoints 和运行设定所在目录。当前 alias 为 mage-vl-4b 和 qwen3-0.6b。Inference API 位址由各自模型的 configs/network.yml 决定：Mage-VL 默认监听 127.0.0.1:8001，Qwen3 默认监听 127.0.0.1:8011；Gateway 默认监听 127.0.0.1:8000。
-推理优先使用 CUDA；仅当 CUDA 不可用时回退到 CPU。CPU 模式下模型量化会停用，运行速度和可容纳模型大小会受主机内存限制。
+检查模型并启动 Inference：
 
-模型服务参数放在对应模型的 configs/inference.yml。Inference 服务启动、设定说明和独立 MediaMTX 部署方法见 [Inference README](src/inference/README.md)。
+```bash
+inference list
+inference validate --model qwen3-0.6b
+inference start --model qwen3-0.6b
+```
 
-## Qwen3 标准工具调用
+Inference 默认监听地址由模型的 `configs/network.yml` 决定：Mage-VL 为 `127.0.0.1:8001`，Qwen3 为 `127.0.0.1:8011`。`validate` 不载入权重或初始化 GPU。推理优先使用 CUDA；仅在 CUDA 不可用时回退 CPU。
 
-Qwen3 的 `POST /v1/chat/completions` 支援 OpenAI 风格 `tools`、`tool_choice: "auto"/"none"`、assistant `tool_calls`、tool 结果消息及 SSE `delta.tool_calls`。Inference 解析模型原生输出并回传标准工具调用；与 OpenAI 兼容部署方式一致，工具由客户端／Agent 应用执行，再将 `role: "tool"` 结果通过同一 Chat Completions 接口送回模型。Gateway 只负责认证、租户政策、能力检查与转送，不执行工具。
+### 启动 Gateway
 
-工具调用部署只需启动 Qwen3 Inference（`127.0.0.1:8011`）和 Gateway（`127.0.0.1:8000`）。最简 OpenAI SDK 对话、客户端工具执行循环及现有视频理解 API 示例见 [tests/client.py](tests/client.py)；Inference 与 Gateway 启动说明见 [Inference README](src/inference/README.md) 和 [Gateway README](src/gateway/README.md)。
+Gateway 默认监听 `127.0.0.1:8000`。按 [Gateway README](src/gateway/README.md) 配置 API Key 和 HMAC 密钥，再从 `src/gateway/` 启动：
 
-## 新模型接入
+```bash
+go run ./cmd/gateway --config configs/gateway.yml
+```
 
-新模型以一个模型包为主体接入，不复制 API Server、Engine Core 或 Worker。建议按以下顺序准备：
+当前 Gateway 配置包含两个模型的上游地址。需要 `/readyz` 返回就绪时，两个对应的 Inference 服务都必须已启动。
 
-1. 固定上游模型 revision，确认输入模态、Tokenizer/Processor、Cache、输出方式和设备需求。
-2. 新建模型目录；填写 configs/model.yml、configs/inference.yml 和 configs/network.yml。
-3. 新增 runtime.py 工厂，并按需要增加 processor.py、utils/loader.py、model/、layers/、components/ 和 requirements.txt。
-4. 在 tests/{package_name}/ 准备 test.yml、test_components.py、test_performance.py 和 test_end2end.py。
-5. 需要经 Gateway 对外开放时，再更新 src/gateway/configs/gateway.yml；使用 Live 时另行配置 deploy/mediamtx/。
+## 配置
 
-完整的文件清单、各字段职责、能力限制、测试次序和 Gateway/MediaMTX 条件见 [新模型接入指南](docs/Specifications/inference/model-integration.md)。本文不提供模型实现代码示例。
+| 配置 | 用途 |
+| --- | --- |
+| `src/inference/models/<model>/configs/model.yml` | 模型别名、API 能力和 Runtime 工厂 |
+| `src/inference/models/<model>/configs/inference.yml` | 模型、Scheduler、KV、请求限制和 Runtime 参数 |
+| `src/inference/models/<model>/configs/network.yml` | Inference 监听地址及模型使用的媒体端点 |
+| `src/gateway/configs/gateway.yml` | Gateway 监听地址、模型路由、政策和上游设定 |
+| `deploy/mediamtx/mediamtx.yml` | 独立 MediaMTX sidecar 配置 |
 
-## API 与测试
+密钥通过环境变量或仓库外的受保护文件提供，不要提交到 Git。模型权重和 Hub 缓存位于被忽略的 `checkpoints/` 目录。
 
-Gateway 提供 OpenAI 风格聊天 API、视频上传理解与 Live 会话 API。现有路由能力依模型 manifest 和 Gateway 配置限制；聊天文字 SSE 不代表视频输入必须逐帧或逐 token 返回。RTSP/RTMP 媒体流由发布端直连 MediaMTX，不通过 Gateway 转发。
+## 文档
 
-逐模型的三个测试入口位于 tests/mage_vl_4b/ 和 tests/qwen3_0_6b/，分别检查模型结构与组件、比较真实 Inference API 性能、通过 Gateway 验证端到端调用。Qwen3 组件入口可集成运行模块级前向对照，并以可选 CUDA Profiler 分析 Attention；Qwen3 算子分析、优化和验收工作流见 `analysis/qwen3_0_6b/analysis.md` 与 `analysis.xlsx`。测试方式见 [Tests README](tests/README.md)。这些测试不做模型数据集精度评估。
+- [Inference 服务、模型引擎和模型接入](src/inference/README.md)
+- [Gateway 配置、认证和运行](src/gateway/README.md)
+- [逐模型测试与算子分析](tests/README.md)
+- [模型下载与离线分析工具](scripts/README.md)
+- [MediaMTX 部署](deploy/mediamtx/README.md)
+- [新模型接入指南](docs/Specifications/inference/model-integration.md)
+- [Qwen3 CUDA attention 说明](src/inference/models/qwen3_0_6b/kernels/cuda/README.md)
+
+## 开发与验证
+
+逐模型测试入口位于 `tests/<model_alias>/`。组件检查不载入完整模型权重；性能测试需要模型权重、GPU 和 Inference API；端到端测试需要 Gateway、Inference、API Key 及相应素材。具体命令和前置条件见 [Tests README](tests/README.md)。
+
+现有测试不执行数据集精度评估。单层算子 profile、功能 smoke 和少量性能样本不构成整模型吞吐保证或 SLA。视频文字 SSE 表示生成文本以事件形式返回，不代表视频输入逐帧回传。

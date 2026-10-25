@@ -1,13 +1,22 @@
 """Qwen3-0.6B 模型插件与推论服务入口。"""
 
 from importlib import import_module
+from pathlib import Path
 
-from inference.engine.engine_client import create_engine_client_for_package
+from inference.engine.engine_client import EngineClient, create_engine_client_for_package
 
 
-def create_engine_client():
-    """建立由本模型 manifest/YAML 配置的共用 Engine Core client。"""
-    return create_engine_client_for_package(import_module(__name__))
+def create_engine_client(
+    *,
+    inference_config_path: str | Path | None = None,
+    network_config_path: str | Path | None = None,
+) -> EngineClient:
+    """建立本模型 Engine client，可显式指定 inference.yml 和 network.yml。"""
+    return create_engine_client_for_package(
+        import_module(__name__),
+        inference_config_path=inference_config_path,
+        network_config_path=network_config_path,
+    )
 
 
 __all__ = ["create_engine_client"]

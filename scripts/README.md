@@ -1,55 +1,72 @@
-# 模型下载与逐算子分析
+# 模型下载与离线分析
 
-`scripts/` 保存模型下载和离线模型分析工具；`tests/` 保存组件、性能与端到端测试。两者分开维护，脚本不会调用或导入 `tests/`。
+`scripts/` 提供通用模型下载器，以及按模型组织的本机前向和算子分析工具。逐模型组件、性能与端到端测试属于 `tests/`，两类脚本分开维护。
 
-模型权重和 Hub 快取放在根目录 `checkpoints/`，该目录由 `.gitignore` 忽略。逐算子分析结果的原始 JSON 建议放在 `artifacts/`，工作簿位于 `analysis/<model_alias>/analysis.xlsx`。
+## 模型下载
 
-## 下载本机模型
+下载器要求显式指定上游 Hugging Face `repo_id`、固定 revision 和本地目录。项目别名不能替代上游 `repo_id`。
 
-通用下载器要求明确指定上游模型 `repo_id`、固定 revision 和本机目录。不要把专案 alias 当作 Hugging Face `repo_id`。
-
-```powershell
-python scripts/download.py `
-  --repo-id Qwen/Qwen3-0.6B `
-  --revision c1899de289a04d12100db370d81485cdf75e47ca `
+```bash
+python scripts/download.py \
+  --repo-id Qwen/Qwen3-0.6B \
+  --revision c1899de289a04d12100db370d81485cdf75e47ca \
   --local-dir checkpoints/Qwen3-0.6B-c1899de
 
-python scripts/download.py `
-  --repo-id microsoft/Mage-VL `
-  --revision d88b153285f1633a61b2f693c59c8576693af185 `
+python scripts/download.py \
+  --repo-id microsoft/Mage-VL \
+  --revision d88b153285f1633a61b2f693c59c8576693af185 \
   --local-dir checkpoints/microsoft-Mage-VL-d88b153
 ```
 
-`scripts/download.py --help` 会列出完整参数。公开模型不需 token；下载私有或受限模型时将 Hugging Face token 放入环境变量，不要写入脚本或提交到 Git。
+运行 `python scripts/download.py --help` 查看全部参数。公开模型通常不需要 token；下载受限模型时，通过环境变量提供 Hugging Face token。权重和缓存保存在根目录 `checkpoints/`，该目录不会纳入 Git。
 
-## 逐算子分析流程
+## 逐模型目录
 
-每个模型目录采用相同流程：`forward.py` 从本机权重执行模型 forward，以 PyTorch Profiler 按算子名称和输入 shape 汇总 CPU/CUDA 时间、调用次数及内存变化，写出原始 JSON；`analysis.py` 只读该 JSON 并将原始字段写入单工作表 XLSX。两个模型的 `forward.py` 都分段运行 Transformers 基线与项目 `inference` Runtime，并在输出及 XLSX 中以 `transformers`、`inference` 区分。脚本不收命令列参数；权重和推理设定从各自目录下的 `model.yml`、`inference.yml` 与 `network.yml` 读取，不引用 `src/inference/models/` 内的设定档。提示词、输入图片和输出 JSON 路径在各自脚本顶部调整。Profiler 包住模型前向或 ModelRunner 工作项，不包含 HTTP、Gateway 或 Engine Core 排程时间。XLSX 转换不载入模型、不初始化 GPU，也不运行测试。
+```text
+scripts/
+├── download.py
+├── mage_vl_4b/
+│   ├── forward.py
+│   ├── analysis.py
+│   └── model.yml / inference.yml / network.yml
+└── qwen3_0_6b/
+    ├── forward.py
+    ├── analysis.py
+    └── model.yml / inference.yml / network.yml
+```
 
-CUDA 可用时，前向分析和性能基线使用 CUDA；只有 CUDA 不可用时才回退 CPU。CPU 回退结果记录执行设备，不能作为 GPU 性能结果解读。
+每个模型目录保存一份独立配置副本；模型插件实际配置仍位于 `src/inference/models/<model>/configs/`。修改分析配置时，请确认脚本副本和模型配置意图一致。模型专属脚本只使用本机权重，不从 `src/` 导入脚本模块。
 
-这些设定档是模型包配置的本地副本；需要更新模型配置时，请同步更新对应的脚本副本。`network.yml` 也保留在脚本目录，因为 Mage-VL Runtime 的模型模块会在导入时读取网络设定。
+## 前向与算子报告
 
-Qwen3-0.6B 采集文字 prefill 和单 token decode：
+`forward.py` 使用本机模型权重分别运行 Transformers 基线和项目模型实现，以 PyTorch Profiler 汇总算子、输入 shape、CPU/CUDA 时间及内存变化，并将结果写入 `artifacts/`。这些脚本不接受命令行参数；输入图片、提示词和输出文件路径由脚本顶部及目录内 YAML 配置。
 
-```powershell
+Qwen3 示例：
+
+```bash
 python scripts/qwen3_0_6b/forward.py
-
-python scripts/qwen3_0_6b/analysis.py `
-  --input artifacts/qwen3-0.6b-forward.json
+mkdir -p artifacts
+python scripts/qwen3_0_6b/analysis.py \
+  --input artifacts/qwen3-0.6b-forward.json \
+  --output artifacts/qwen3-0.6b-operator-report.xlsx
 ```
 
-Mage-VL-4B 使用其脚本目录内的模型设定副本和本机图片。默认图片为仓库根目录 `test.jpg`；更换输入时编辑 `scripts/mage_vl_4b/forward.py` 顶部的 `INPUT_IMAGE_PATH`。如需调整本机权重路径或推理参数，编辑 `scripts/mage_vl_4b/inference.yml`；载入时强制离线。
+Mage-VL 默认读取仓库根目录的 `test.jpg`。运行前请确认图片存在，或修改 `scripts/mage_vl_4b/forward.py` 中的 `INPUT_IMAGE_PATH`：
 
-```powershell
+```bash
 python scripts/mage_vl_4b/forward.py
-
-python scripts/mage_vl_4b/analysis.py `
-  --input artifacts/mage-vl-image-forward.json
+mkdir -p artifacts
+python scripts/mage_vl_4b/analysis.py \
+  --input artifacts/mage-vl-image-forward.json \
+  --output artifacts/mage-vl-operator-report.xlsx
 ```
 
-两份 `forward.py` 都会在终端显示 Transformers、Inference 两段 profiler 表格；完整算子清单写入 JSON，随后交给对应 `analysis.py` 生成 XLSX。
+`analysis.py --input` 必须指向已有的 JSON 报告。使用 `--output` 指定新工作簿路径，避免覆盖模型分析目录中维护的历史 `analysis.xlsx`。Profiler 只分析模型前向或 Runner 工作项，不包括 HTTP、Gateway 或 Engine Core 排程延迟。
 
-## 测试目录
+CUDA 可用时工具使用 CUDA；仅在 CUDA 不可用时回退 CPU。CPU 结果会记录设备，不能作为 GPU 性能结果解读。Profiler 有采集开销；分析结果用于定位热点，不代表服务性能提升或 SLA。
 
-组件、性能和端到端验收脚本统一位于 `tests/<model_alias>/`，独立使用该目录的 `test.yml`。请参考 [tests/README.md](../tests/README.md)。`scripts/<model>/` 只放分析入口和该模型独立的配置副本，不放置测试入口或测试配置。
+## 结果归档与测试
+
+可重复的算子优化证据维护在 `analysis/<model_alias>/analysis.md` 和 `analysis.xlsx`。原始 JSON 可以归档至 `artifacts/`，并记录模型 revision、设备、dtype、输入 shape、warmup 和迭代次数。
+
+组件、服务性能与 Gateway 端到端测试位于 `tests/<model_alias>/`，使用该目录的 `test.yml`。测试命令和运行条件见 [Tests README](../tests/README.md)。

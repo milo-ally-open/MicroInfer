@@ -202,6 +202,19 @@
 
 **验证方式**：Python 编译、旧导入路径搜索、双模型 Launcher 预检、共享 Processor 与 Network app 导入 smoke、逐模型组件检查及 Spec validator；不要求加载完整 checkpoint 或启动服务。
 
+### REQ-21：模型插件 Engine client 支持显式 YAML 配置路径
+
+**需求**：服务端代码可在创建模型插件 Engine client 时显式指定推理 YAML 和网络 YAML；未指定的配置继续从模型 manifest 解析。配置选择完成后，Engine Core 和 Worker 都使用同一组已解析路径。
+
+**验收条件**
+
+- **AC-21.1** Qwen3 模型插件的 `create_engine_client()` 接受可选 `inference_config_path` 和 `network_config_path`，参数支持 `str` 与 `Path`；未指定时分别使用模型 manifest 的 `inference_config`、`network_config`。
+- **AC-21.2** 显式路径会被解析为存在的文件并实际读取为 YAML mapping；显式相对路径以调用进程当前工作目录为基准，缺少文件或 YAML 格式／顶层结构错误时创建阶段明确失败。
+- **AC-21.3** 成功创建时，将解析后的模型 manifest、推理 YAML、网络 YAML 和模型 alias 写入运行环境；Engine client 使用该配置构建限制，后续 Engine Core／Worker 读取同一路径。创建 client 本身不启动子进程、不载入权重或初始化 GPU。
+- **AC-21.4** 服务端代码示例展示显式传入两份 YAML；无权重配置加载 smoke、Launcher 双模型预检、Python 编译和 Spec validator 通过。
+
+**验证方式**：使用模型包默认配置和显式配置路径分别建立 Engine client，核对配置环境变量和已解析 YAML；检查缺失路径／非法 YAML 错误；不调用 `start()`，不启动 Worker 或加载权重。
+
 ## Engine 简化需求追踪
 
 | 上游条款 | REQ | 模块 | 任务 ID | AC | 验收证据／状态 |
