@@ -5,14 +5,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from engine.contracts import (
+from inference.engine.contracts import (
     ExecutionPhase,
     InferenceResult,
     PreparedChatInput,
     ScheduledWorkItem,
     WorkerResult,
 )
-from engine.errors import InferenceError
+from inference.engine.contracts import InferenceError
 from ..utils import loader as config
 from ..processor import build_sampling_params, prepare_chat_input
 

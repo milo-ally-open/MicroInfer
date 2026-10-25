@@ -21,6 +21,8 @@ class SiglipMLP(nn.Module):
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     from transformers.models.siglip2.configuration_siglip2 import Siglip2VisionConfig
     from transformers.models.siglip2.modeling_siglip2 import Siglip2MLP
 
@@ -38,4 +40,4 @@ if __name__ == "__main__":
     print("==========baseline==========")
     print(f"shape={tuple(baseline_output.shape)}, sample={baseline_output[0, 0, :4].tolist()}")
     torch.testing.assert_close(engine_output, baseline_output, atol=1e-6, rtol=1e-6)
-    print("Mage-VL SigLIP MLP matches the Transformers baseline on CPU.")
+    print(f"Mage-VL SigLIP MLP matches the Transformers baseline on {test_device}.")

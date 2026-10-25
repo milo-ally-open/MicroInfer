@@ -29,7 +29,7 @@ src/inference/media/                 # 通用影片及即时工作阶段元件
 src/inference/models/<model>/        # 模型专属程式、configs/ 与 requirements/
 src/inference/models/mage_vl_4b/     # Mage-VL Model Runner、前处理、设定及依赖
 src/inference/launcher.py            # 推论启动器
-tests/                               # 逐模型测试：tests/<model_alias>/（三项测试与 test.yaml）
+tests/                               # 逐模型测试：tests/<model_alias>/（三项测试与 test.yml）
 ```
 
 Inference 参考 vLLM／nano-vLLM 的 API Server、Engine Core、Scheduler、KV Cache Manager、Worker／Model Runner 职责拆分。API Server、Engine Core 与 Model Worker 为三个程序；Engine Core 逐轮排程 prompt prefill 与单 token decode。Mage-VL 的 Engine KV block 是逻辑 reservation；Qwen3 Worker 以同一 block ID 管理 GPU 实体 KV pages，Qwen Runner 支援同 phase 多序列批次 forward。没有 vLLM backend、PagedAttention kernel、prefix cache 或第二个原生模型。
@@ -48,16 +48,18 @@ Inference 参考 vLLM／nano-vLLM 的 API Server、Engine Core、Scheduler、KV 
 
 ## 设定与权重
 
-- 每个模型的 `configs/model.yaml` 登记 alias、API 能力、Runtime／Processor 工厂及相对设定档名。Launcher 自动发现 `models/*/configs/model.yaml`，启动时必须透过 `--model` 指定 alias，且相对设定路径以 manifest 的 `configs/` 目录为基准。所有模型共用 `api/service_app.py` 和 `engine/model_bootstrap.py`；新模型不需建立专属 `app.py` 或 `engine_core.py`。
+- 推理与模型前向计算默认使用 CUDA；仅当 `torch.cuda.is_available()` 为 false 时回退到 CPU。不要将实际推理设备硬编码为 CPU；权重分片读取、Tokenizer 和请求输入暂存于 CPU 不代表模型前向运行在 CPU。
+
+- 每个模型的 `configs/model.yml` 登记 alias、API 能力、Runtime／Processor 工厂及相对设定档名。Launcher 自动发现 `models/*/configs/model.yml`，启动时必须透过 `--model` 指定 alias，且相对设定路径以 manifest 的 `configs/` 目录为基准。所有模型共用 `api/service_app.py` 和 `engine/model_bootstrap.py`；新模型不需建立专属 `app.py` 或 `engine_core.py`。
 - 模型程式、设定和依赖清单集中在 `src/inference/models/<model>/`。依需要建立 `runtime.py`、`processor.py`、`model/`、`components/`、`layers/`、`utils/`、`loader.py`；不需建立空目录。推论参数、Scheduler／KV 与请求上限放对应模型 `configs/inference.yml`；模型服务位址放 `configs/network.yml`。MediaMTX sidecar 设定集中在 `deploy/mediamtx/mediamtx.yml`，不得登记到单一模型 manifest 或模型设定目录。
 - 模型推论参数放在模型包的 `configs/inference.yml`；API 绑定位址及模型连接的媒体端点放在 `configs/network.yml`；MediaMTX 服务本身的监听、认证与协定设定放在独立的 `deploy/mediamtx/mediamtx.yml`。新增或调整可调参数时，优先加入合适的 YAML，不要把实验超参数散落在 Python 或 shell 脚本。
 - API 启动时会依固定 Hugging Face revision 载入模型；缺少权重时可自动下载至根目录 `checkpoints/`。通用下载工具则使用 `scripts/download.py`，并要求明确指定 `--repo-id`、`--revision` 和 `--local-dir`。
-- `checkpoints/` 内的大型权重及快取由 `.gitignore` 忽略；`checkpoints/val.md` 和 `checkpoints/val.xlsx` 必须保留为可追踪文件。不要删除、搬移或覆盖这两个工作流文件。
+- `checkpoints/` 内的大型权重及快取由 `.gitignore` 整体忽略。分析报告按模型 alias 放在根目录 `analysis/<model_alias>/`，每个模型目录维护一份 `analysis.md` 和一份 `analysis.xlsx`；Markdown 按“问题、解决方案、效果”汇报，逐项编号并指向 Excel 证据；更新时保留历史记录与来源限制。
 - 不要在 Git 中加入模型权重、快取、私密金钥或 API token。认证资料由环境变数或安全设定提供。
 
 ## 修改与验证方式
 
-- 测试按模型放在 `tests/<model_alias>/`，每个模型维护 `test_components.py`、`test_performance.py`、`test_end2end.py` 和明确传入的 `test.yaml`；结果放同目录 `results/`。执行方式见 `tests/README.md`。`test_performance.py` 需要足以同时执行服务与直接基线生成的装置记忆体；只执行元件对照时不载入权重或初始化 GPU。
+- 测试按模型放在 `tests/<model_alias>/`，每个模型维护 `test_components.py`、`test_performance.py`、`test_end2end.py` 和明确传入的 `test.yml`；结果放同目录 `results/`。执行方式见 `tests/README.md`。`test_performance.py` 需要足以同时执行服务与直接基线生成的装置记忆体；只执行元件对照时不载入权重或初始化 GPU。
 
 - 先检查相关程式、设定、文件和现有工作树修改，再进行最小范围的变更。保留使用者已有的未提交修改，不要用整档覆写方式抹除它们。
 - 不要自行下载大型模型、启动 GPU 推论服务、修改远端伺服器或推送远端仓库；只有在使用者明确要求时才执行。

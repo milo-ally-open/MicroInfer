@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inference"
+dynamic = ["version", "optional-dependencies"]
+description = "LYGCloud model-independent inference API and engine"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi==0.142.4",
+    "pydantic>=2.0",
+    "Pillow>=10.0",
+    "PyYAML==6.0.3",
+    "python-multipart==0.0.24",
+    "uvicorn[standard]==0.54.0",
+    "websockets>=12.0",
+]
+
+[project.scripts]
+inference = "inference.launcher:main"
+
+[tool.setuptools]
+include-package-data = true
+package-dir = {"" = ".."}
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["inference*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+inference = [
+    "models/*/configs/*.yml",
+    "models/*/requirements.txt",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "inference.__version__" }
+
+[tool.setuptools.dynamic.optional-dependencies]
+mage-vl = { file = ["models/mage_vl_4b/requirements.txt"] }
+qwen3 = { file = ["models/qwen3_0_6b/requirements.txt"] }

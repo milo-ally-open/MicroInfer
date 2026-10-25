@@ -1,11 +1,11 @@
 # 推论引擎五层行为规格
 
 > 提案：[proposal.md](proposal.md)｜技术设计：[design.md](design.md)｜实施与验收：[tasks.md](tasks.md)
-> 本规格描述 Qwen3-0.6B 实验改造及应保持的共用服务行为。已完成、进行中和待验收的状态以 `tasks.md` 为准。
+> 本规格描述 Qwen3-0.6B 实验改造及应保持的共用服务行为。已完成、进行中和待验收的状态以 `tasks.md` 为准。工具调用增补由 REQ-14 追踪。
 
 ### REQ-01：L1 接口与门面维持 API 契约
 
-- **AC-01.1** `GET /health`、`GET /v1/models`、`POST /v1/chat/completions` 的路径、HTTP 方法、模型别名和 OpenAI response schema 维持现有行为；Qwen3 仍只登录文字聊天能力。
+- **AC-01.1** `GET /health`、`GET /v1/models`、`POST /v1/chat/completions` 的路径、HTTP 方法、模型别名和 OpenAI response schema 维持现有行为；Qwen3 只登录纯文字输入，可另外宣告其标准工具调用能力。
 - **AC-01.2** 共用 `api/` 不汇入模型包，不载入模型权重、GPU Runtime 或模型专属计算图。
 - **AC-01.3** Qwen `InputProcessor` 在 API Server 程序读取模型 YAML 指定的本机 Tokenizer／Chat Template，将请求转为包含 alias、token IDs 和 sampling params 的 `PreparedChatInput`；该资料可经 IPC 传递，且 API 程序不执行模型 forward。
 - **AC-01.4** Qwen Worker 回传 token ID 后，API 增量 Detokenize 并发出文字 SSE；完成时输出尚未送出的文字、finish reason、usage 和 `data: [DONE]`，串流合并文字须等于完整生成文字。
@@ -33,7 +33,7 @@
 - **AC-04.1** Engine Core 只依赖 `Executor` 呼叫生命周期、RPC、批次执行、健康资讯和关闭；Engine 不自行建立 Pipe 或操作 multiprocessing process。
 - **AC-04.2** `LocalProcessExecutor` 以 `spawn` 启动本机 Model Worker 子程序，完成 ready handshake 后才回报可执行，并保留既有 timeout、错误和 graceful close 行为。
 - **AC-04.3** Worker 在自己的程序内载入模型与 Runtime；API Server 不载入模型权重，Engine Core 不持有 GPU tensor。
-- **AC-04.4** `Platform` 定义装置解析、记忆体观测与资源释放契约；Qwen YAML 选用已实作的 `torch_cuda`。未知平台必须明确失败；未实作的 Ray、CPU、NPU 和多 GPU 不得出现在支援清单。
+- **AC-04.4** `Platform` 定义装置解析、记忆体观测与资源释放契约；推理优先使用 CUDA，只有 CUDA 不可用时才回退 CPU。未知平台必须明确失败；未实作的 Ray、NPU 和多 GPU 不得出现在支援清单。
 - **AC-04.5** 进程 IPC／执行层的 fake Worker 测试验证 API Server、Engine Core 与 Worker PID 隔离，并覆盖 startup、RPC、stream、cancel、timeout、错误和关闭。
 
 ### REQ-05：L4 Model Runner 以 InputBatch 执行批次模型呼叫
@@ -59,7 +59,7 @@
 
 ### REQ-08：以精简的逐模型测试验证模型接入
 
-- **AC-08.1** 每个已登录模型目录 `tests/{model_alias}/` 恰有三个测试入口：`test_components.py`、`test_performance.py`、`test_end2end.py`，及一份 `test.yaml`；不再维护独立的 `tests/inference/`、`tests/gateway/`、`tests/end2end/` 测试树。
+- **AC-08.1** 每个已登录模型目录 `tests/{model_alias}/` 恰有三个测试入口：`test_components.py`、`test_performance.py`、`test_end2end.py`，及一份 `test.yml`；不再维护独立的 `tests/inference/`、`tests/gateway/`、`tests/end2end/` 测试树。
 - **AC-08.2** `test_components.py` 以指定的本机固定 snapshot 和 `meta` device 比较模型包计算图与 Transformers 原生基线，依序输出 `==========engine===========` 和 `==========baseline==========`，不得载入权重或建立 CUDA context。
 - **AC-08.3** `test_performance.py` 使用相同本机 snapshot、输入与生成上限，比较已启动的 Inference API 和 Transformers 原生直接生成；输出样本数、平均延迟、生成 token 数及平均 token/s。该测试需模型、GPU 与可用 Inference API，不宣称固定 SLA。
 - **AC-08.4** `test_end2end.py` 以设定的模型 alias 从 Go Gateway 发送请求，验证 HTTP 成功、文字 SSE 内容及公开 alias；Mage-VL 同时验证图片 SSE 和影片上传，Qwen 验证纯文字 SSE。测试需 Gateway、相应 Inference API、API Key 和本机素材。
@@ -67,7 +67,7 @@
 
 ### REQ-09：新模型沿用共用服务装配
 
-- **AC-09.1** 新模型在 `models/{model_alias}/configs/model.yaml` 登记设定路径、Runtime 工厂及 API 识别码；Launcher 自动发现模型 manifest，`start` 必须明确指定 `--model`。Launcher 使用同一个 `api/service_app.py`，Engine 使用同一组 Engine Core／Worker bootstrap，不要求模型包提供 `app.py` 或 `engine_core.py`。
+- **AC-09.1** 新模型在 `models/{model_alias}/configs/model.yml` 登记设定路径、Runtime 工厂及 API 识别码；Launcher 自动发现模型 manifest，`start` 必须明确指定 `--model`。Launcher 使用同一个 `api/application/service_app.py`，Engine 使用同一组 Engine Core／Worker bootstrap，不要求模型包提供 `app.py` 或 `engine_core.py`。
 - **AC-09.2** GPU Worker 呼叫 Runner 的 `load()`、`gpu_status()`、`close()`；Adapter 依既有 Engine 操作契约完成准备、Cache 绑定、批次执行、finish 和 cancel，并按 request ID 回传独立结果。
 - **AC-09.3** Tokenizer／Chat Template、视讯与 Live 整合以可选工厂及登录栏位加入；未登记的路由不出现在 API。`api.model_id` 与 YAML 中的上游 repo ID 分开设定。
 - **AC-09.4** Mage-VL 与 Qwen3 经共用服务入口启动；Mage-VL 的影片／Live 路由与文字增量、Qwen 的文字 API 与逐 token SSE、finish usage 和 `[DONE]` 行为维持现有契约。
@@ -80,7 +80,7 @@
 - **AC-10.3** 共用 Chat route 依已登记模态和输出能力拒绝不支援的输入／串流；影片与 Live API 只在相应 capability 为 true 时加入服务，Live manager 缺漏时启动失败。
 - **AC-10.4** 新模型的结构比较由 `tests/{model_alias}/test_components.py` 输出模型包与 Transformers 原生模组树；Launcher `validate` 继续负责 manifest／工厂 AST 预检，不需要额外测试目录。
 - **AC-10.5** 新模型指南区分标准相容路径与自订模型路径，列出标准预设实作的架构、Cache、Tokenizer、装置和采样限制；不相容模型必须登记 custom 并由模型包适配。
-- **AC-10.6** Inference manifest 与 Gateway 设定的别名及路由由实际 Gateway 端到端测试验证；部署端点与能力差异依模型 `test.yaml` 和 Gateway YAML 维护，不宣称此项测试静态比对全部设定栏位。
+- **AC-10.6** Inference manifest 与 Gateway 设定的别名及路由由实际 Gateway 端到端测试验证；部署端点与能力差异依模型 `test.yml` 和 Gateway YAML 维护，不宣称此项测试静态比对全部设定栏位。
 
 ### REQ-11：符合契约的文字模型可使用标准预设 Runner
 
@@ -88,7 +88,7 @@
 
 **验收条件**
 
-- **AC-11.1** Given `integration_profile: standard` 且模型未覆写元件工厂，When 共用 API／Worker 启动，Then 分别使用 `api/default_chat_processor.py`、`engine/standard_text.py` 的预设元件；明确登记的工厂可逐项覆写预设。
+- **AC-11.1** Given `integration_profile: standard` 且模型未覆写元件工厂，When 共用 API／Worker 启动，Then 分别使用 `api/processors/default_chat_processor.py`、`engine/execution/standard_text.py` 的预设元件；明确登记的工厂可逐项覆写预设。
 - **AC-11.2** Given 标准文字聊天请求，When API 处理输入，Then 预设 InputProcessor 使用固定 revision Tokenizer 的 `chat_template` 产生 `PreparedChatInput`，只接受文字内容，并以同一 Tokenizer 提供非串流解码和增量文字 SSE。
 - **AC-11.3** Given 标准 Runner 收到 Scheduler 的 prefill／decode work item，When 执行 Worker batch，Then 每个 request 使用自己的 `past_key_values`、Cache 长度及采样状态，依序执行 work items 并按 ID 回传 token 结果；Runner 不宣称此预设实作会合并模型 forward 或使用物理 PagedAttention。
 - **AC-11.4** Given 模型宣告图片／影片／Live、encoder-decoder、`device_map` 多装置或无法重用 `past_key_values`，When 执行标准 profile 预检或 Worker 载入，Then 明确拒绝或要求切换 `custom`；不得退回完整 `generate()` 绕过 Token Scheduler。
@@ -101,11 +101,11 @@
 **验收条件**
 
 - **AC-12.1** 每个模型包以 `models/{model_alias}/runtime.py` 提供 `create_runtime()` 工厂；该工厂回传单一 Runtime facade，符合 Worker 的 load、health、generation、batch、finish、cancel、GPU status 及 close 契约。
-- **AC-12.2** 每个模型的 `configs/model.yaml` 登记 alias、display name、profile、backend、Runtime 工厂、推论／网路设定档名及 API 能力；MediaMTX 不在模型 manifest 中登记，其独立配置位于 `deploy/mediamtx/mediamtx.yml`。模型相对设定路径以 manifest 所在的 `configs/` 目录解析。
-- **AC-12.3** Launcher 由 `models/*/configs/model.yaml` 自动发现模型，拒绝重复 alias、缺失设定及非法工厂宣告；`start` 不依赖全域模型登录档，且必须指定 `--model`。
+- **AC-12.2** 每个模型的 `configs/model.yml` 登记 alias、display name、profile、backend、Runtime 工厂、推论／网路设定档名及 API 能力；MediaMTX 不在模型 manifest 中登记，其独立配置位于 `deploy/mediamtx/mediamtx.yml`。模型相对设定路径以 manifest 所在的 `configs/` 目录解析。
+- **AC-12.3** Launcher 由 `models/*/configs/model.yml` 自动发现模型，拒绝重复 alias、缺失设定及非法工厂宣告；`start` 不依赖全域模型登录档，且必须指定 `--model`。
 - **AC-12.4** 模型拓扑置于模型包 `model/`；模型层置于 `layers/`；Runtime 支援元件置于 `components/`；模型设定、Transformers Config／Tokenizer／Processor 选择、snapshot 与权重载入集中于 `utils/loader.py`。不再为相同职责拆分多个设定／HF loader 档案；模型专属推理参数仍由 YAML 管理。以上目录依模型实际需要建立，不建立空目录，也不把模型专属逻辑移入共用 `engine/`。
 - **AC-12.5** Qwen3 与 Mage-VL 均由自身 manifest 和 Runtime 工厂装配，维持现有 API alias、网路设定、推理行为及文字 SSE 输出；Qwen token ID 仍在 API 边界增量 Detokenize，Mage-VL `text_delta` 路径不变。
-- **AC-12.6** 每个模型的三项测试均只使用该目录的 `test.yaml` 和模型 manifest；跨服务 alias／端点一致性由 `test_end2end.py` 的 Gateway 回应验证。
+- **AC-12.6** 每个模型的三项测试均只使用该目录的 `test.yml` 和模型 manifest；跨服务 alias／端点一致性由 `test_end2end.py` 的 Gateway 回应验证。
 - **AC-12.7** 新模型接入指南以模型目录为主体，逐项说明必需／按需文件、各文件应承载的内容、接入顺序、standard/custom 边界、Gateway 与 Live 的条件及验证方法；指南不要求提供模型实现代码范例，也不要求维护全局模型登录清单或 Runner／Adapter 元件清单。
 
 ### REQ-13：模型包按计算责任分层并使用明确注意力路径
@@ -117,5 +117,67 @@
 - **AC-13.1** Mage-VL 的模型拓扑／Config／输出型别位于 `models/mage_vl_4b/model/`，视觉 Encoder 与模型层位于 `layers/`，Runner／Adapter／生成生命周期元件位于 `components/`，载入流程位于 `utils/loader.py`；旧 `components/` 模型拓扑汇入路径不得残留。
 - **AC-13.2** Qwen3 自有 GQA 与 Mage-VL 视觉注意力明确执行 QKᵀ、softmax 与权重乘 V；两个模型包的执行程式不得呼叫 `F.scaled_dot_product_attention()`，Mage-VL 文字骨干及其 Transformers 基线均固定选用模型包注册的分块 eager attention。
 - **AC-13.3** 逐模型 `test_components.py`、`test_performance.py`、`test_end2end.py` 均以目前固定本机 snapshot／设定实际执行并通过；性能对照须两侧生成相同设定的 token 数，端到端须验证 Gateway SSE 与模型已宣告的多模态路由。
-- **AC-13.4** Mage-VL 视觉 Attention 类别与模组分别使用 `MultiHeadAttention`、`multi_head_attention.py` 命名；模型模组中的 CPU 对照程式直接置于 `if __name__ == "__main__":` 区块，不再透过测试函式包装呼叫。
+- **AC-13.4** Mage-VL 视觉 Attention 类别与模组分别使用 `MultiHeadAttention`、`multi_head_attention.py` 命名；模型模组中的前向对照程式直接置于 `if __name__ == "__main__":` 区块，CUDA 可用时默认使用 CUDA，仅在不可用时回退 CPU，不再透过测试函式包装呼叫。
 - **AC-13.5** 每个含独立数值计算的模型层、视觉组件、KV/采样执行组件及模型前向文件，在文件内的 `if __name__ == "__main__":` 直接写小型基线对照；入口输出 `==========engine===========` 与 `==========baseline==========`，对比 Transformers 或等价 PyTorch 基线并断言数值／输出一致，不通过辅助测试函数包装。纯配置、输出数据结构和无前向计算的适配文件不强制添加入口；需要模型 YAML 环境的 Runner 入口须在开发文档说明启动环境。
+- **AC-13.6** Mage-VL 由 `model/mage_vl.py` 明确组装视觉塔、Qwen3 文本骨干和多模态前向；视觉特征、placeholder 注入及 StreamMind Gate 位于独立模块。视觉 RoPE、Patch、Attention、Encoder stack 分文件维护；旧 `multimodal_model.py`／`vision_encoder.py` 导入路径保持兼容，重构不得改变 checkpoint state-dict key 路径。
+- **AC-13.7** Mage-VL 新增计算模块的内联入口对照固定 revision 官方 `modeling_mage_vl.py` 的小型前向；Qwen3 模型、层和 Runner 对照 Transformers Qwen3。对照载入随机小型模型参数，不载入大型 checkpoint tensor；前向优先使用 CUDA，仅在 CUDA 不可用时回退 CPU；只验证模块前向与结构兼容，不将其作为真实权重／GPU 服务验收。
+
+### REQ-14：以标准 Chat Completions 格式支援模型工具调用
+
+**需求**：共用 Inference API 接受标准 function tool message/schema，模型包以 manifest adapter 将原生输出转换成 JSON 或 SSE 标准工具调用；Inference 不执行工具。
+
+**验收条件**
+
+- **AC-14.1** Given模型 manifest 登记 `tool_calling=true` 和 `api.tool_call_adapter`，When启动/validate，Then检查 adapter factory 路径及 `parse_output`、`create_stream_parser` 方法；无 adapter 的模型不得宣告该 capability，Mage-VL 保持 false。
+- **AC-14.2** Given Qwen3 `tools` 与 `tool_choice="auto"`，When原生 JSON 工具调用块有效且 Schema 符合，Then回应标准 `assistant.tool_calls`、唯一 call ID、JSON 字串 arguments 和 `finish_reason="tool_calls"`；一般文字行为保持原契约。
+- **AC-14.3** Given标准 SSE 生成跨 chunk Qwen tool-call marker/name/arguments，When解析输出，Then以 `delta.tool_calls` 分片输出且不把 Qwen marker 泄漏到文字；完整 marker 结束时需验证 JSON 与 tool Schema，失败时发 error event 且不产生有效 tool_calls finish。
+- **AC-14.4** Given调用方送 `tool_choice="auto"` 或 `"none"`，When进入模板/生成，Then只向模型呈现 auto 模式的 tool definitions；函数指定型对象、`parallel_tool_calls=true`、`strict=true`、非法定义或参数必须明确拒绝，不静默放宽。
+- **AC-14.5** Given历史包含标准 assistant function calls 与关联 `role="tool"` message，When Qwen InputProcessor 标记 token，Then保留 tool_call ID、名称、参数、结果与 Chat Template 顺序，并拒绝孤儿、重复 ID 或未闭合调用历史。
+- **AC-14.6** Given模型输出函数名称不在该轮允许工具清单、JSON arguments 非 object 或不符 JSON Schema，When adapter解析，Then返回 invalid tool-call 错误；不得将结果呈现为可执行工具调用。
+
+**验证方式**：Qwen adapter 对 JSON/SSE 的 chunk-split 与 Schema 案例、Inference API contract；真实 Qwen revision 的 JSON/SSE smoke。客户端工具执行范例透过既有 Gateway `/v1/chat/completions` 验收，不增加专用 Agent endpoint。实际状态见本规格与 Gateway `tasks.md`。
+
+## 工具调用需求追踪
+
+| 上游条款 | REQ | 模块 | 任务 ID | AC | 验收证据/状态 |
+|---|---|---|---|---|---|
+| 使用者要求第2、4点：标准非流式协议和 tool-call SSE delta | REQ-14 | `api/contracts/schemas.py`、`api/contracts/tool_calling.py`、`api/routes/chat_completions.py`、Qwen `processor.py`／`tool_calling.py` | T-26 | AC-14.2–AC-14.6 | Qwen 本机模型的非流式客户端工具循环和 SSE tool-call delta 已实测；完整 Gateway 请求受 Windows Application Control 阻挡 |
+| 使用者要求为后续工具调用底座保持通用 | REQ-14 | Launcher、`api/application/service_app.py`、model manifest | T-26 | AC-14.1、AC-14.2 | Qwen adapter 已登记；Mage false；后续模型以自身 adapter 接入 |
+
+### REQ-15：共用 Inference 程式按职责分包
+
+**需求**：API 与 Engine 的共用程式依变化原因和职责组织为可独立搬移的 Python packages；模型专属计算仍由模型包持有，外部 API 与执行行为不因整理目录改变。
+
+**验收条件**
+
+- **AC-15.1** API 共用模块按 `application/`、`contracts/`、`processors/`、`routes/` 分组；应用装配、OpenAI schema／序列化／工具协议、输入输出转换与 HTTP route 分别归属对应 package。
+- **AC-15.2** Engine 共用模块按 `core/`、`contracts/`、`scheduling/`、`cache/`、`execution/`、`transport/`、`bootstrap/`、`config/` 分组；Engine Core 依赖共享契约、Scheduler、KV 管理、`core/ports.py` 的 Executor Protocol 及现有 `media/` 文件辅助，不直接依赖 `execution/` 的本机执行器实现或模型包。
+- **AC-15.3** 依赖方向保持单向：API processors 与模型包通过 `engine/contracts/` 交换跨进程类型；`engine/contracts/` 不依赖 FastAPI、Pydantic、模型包或 GPU runtime；Engine Core 不依赖 API schema／route 或模型包；组合入口只放在 API application 与 Engine bootstrap。
+- **AC-15.4** Launcher、模型 manifest factory、所有 Python import、README 与当前设计文件使用新模块路径；`launcher.py list/validate`、模块 import smoke、双模型 `test_components.py` 与模块级 CPU 前向入口通过；不增加或改变 HTTP endpoint、请求／回应 schema、模型能力或运行配置。
+
+**验证方式**：Python 语法解析、模块导入、Launcher `list`／`validate`、逐模型 `test_components.py`，以及适用的 Engine／API contract 测试；真实 GPU 服务性能不是目录重构的验收条件。
+
+## 目录标准需求追踪
+
+| 上游条款 | REQ | 模块 | 任务 ID | AC | 验收证据／状态 |
+|---|---|---|---|---|---|
+| 使用者要求按高内聚、低耦合整理共用 Inference 目录，保持统一且可整体搬移 | REQ-15 | `api/{application,contracts,processors,routes}/`、`engine/{core,contracts,scheduling,cache,execution,transport,bootstrap,config}/` | T-29 | AC-15.1–AC-15.4 | 以 import graph、Launcher 预检、逐模型组件测试和 API contract 检查验收 |
+
+### REQ-16：逐模型脚本与 Qwen3 算子分析形成可重复工作流
+
+**需求**：逐模型组件、性能与端到端入口以直读的单一 Python 脚本呈现；Qwen3 组件入口集成执行模块内的 `__main__` 基线，并提供可选的本机 Attention 算子分析；各模型的 Markdown 以表格严格说明“问题、解决方案、效果”，Excel 以编号数据作为对应证据。
+
+**验收条件**
+
+- **AC-16.1** Qwen3 `test_components.py` 不载入完整 checkpoint 权重，对照模型结构并依序执行 8 个 Qwen3 模块 `__main__`；模块前向默认使用 CUDA，仅在 CUDA 不可用时回退 CPU；失败时明确指出模块路径并以非零状态停止。
+- **AC-16.2** Mage-VL 与 Qwen3 的 `test_components.py`、`test_performance.py`、`test_end2end.py` 均为顶层顺序脚本，不定义自有 `main()` 或测试辅助函数；命令列仍明确要求 `--config`。
+- **AC-16.3** Qwen3 `--profile-attention` 从本机固定 revision 载入第 0 层 Attention checkpoint 权重，依配置记录执行设备、dtype、batch/token shape、KV block size、warmup、iteration 与可用峰值显存，分开报告 prefill/decode 延迟及 Profiler 可用的 CPU/CUDA op、shape、memory；CUDA 可用时默认使用 CUDA，合成 activation 与单层测量限制须同结果一起声明。
+- **AC-16.4** 报告按模型 alias 放在根目录 `analysis/<model_alias>/`，每个模型目录仅维护一份 `analysis.md` 和一份 `analysis.xlsx`。Markdown 表格按“问题、解决方案、效果”组织，并引用对应 Excel 证据 ID；Excel 保留测量值、验收条件和状态。Qwen3 表可追加算子变更的前后数据，历史 Mage-VL Gateway 结果保存在 Mage-VL 目录。旧 `val.md/xlsx` 不再作为维护入口。
+
+**验证方式**：双模型测试脚本 AST 检查没有自定义函数、Qwen3 组件模块入口集成检查、Qwen3 固定 snapshot 单层 CUDA Profiler、Inference Spec validator、工作簿导入/内容检查/渲染/导出。模型服务与 Gateway 只有在实际启动并通过请求后才记录端到端通过。
+
+## 算子分析需求追踪
+
+| 上游条款 | REQ | 模块 | 任务 ID | AC | 验收证据/状态 |
+|---|---|---|---|---|---|
+| 使用者要求集成检查 Qwen3 各模块 `__main__`、测试入口改成直接易读脚本、实做算子分析并形成长期工作流 | REQ-16 | `tests/{qwen3_0_6b,mage_vl_4b}/`、Qwen3 `layers/attention.py`、`analysis/qwen3_0_6b/analysis.md`、`analysis.xlsx` | T-30 | AC-16.1–AC-16.4 | 实作完成后以 WSL 本机环境、固定 Qwen snapshot、RTX 4060 和 Artifact Tool 实测；状态以本任务验收纪录为准 |

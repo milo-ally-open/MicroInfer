@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from media.live_sessions import LiveSessionManager
+from inference.media.live_sessions import LiveSessionManager
 
 from .utils import loader as config
 

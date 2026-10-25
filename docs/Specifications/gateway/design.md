@@ -3,12 +3,12 @@
 > 关联规格：[spec.md](spec.md)<br>
 > 关联提案：[proposal.md](proposal.md)<br>
 > 任务追踪：[tasks.md](tasks.md)<br>
-> 状态：Go Gateway v1 已依本设计实作；双模型能力路由依 REQ-13 增补，验收证据与尚未执行项目见 tasks.md。
+> 状态：Go Gateway v1 已实作；双模型能力路由、Qwen 标准 tool capability 及仓库无关 module path 依 REQ-13 至 REQ-15 增补；验收进度见 tasks.md。
 
 ## 当前实作与目标
 
 - 当前程式位置／行为：src/gateway/ 已有 Go module、HTTP handler、设定 YAML、认证／设定／限流／观测套件及 server lifecycle；实际档案见 src/gateway/README.md。
-- 现有推论服务：src/inference/api/service_app.py 依模型登录组装 /health、/v1/models、/v1/chat/completions，以及模型已启用的影片／Live 路由。
+- 现有推论服务：src/inference/api/application/service_app.py 依模型登录组装 /health、/v1/models、/v1/chat/completions，以及模型已启用的影片／Live 路由。
 - 现有模型路由：`mage-vl-4b` → `microsoft/Mage-VL`（port 8001），`qwen3-0.6b` → `qwen3-0.6b`（port 8011）；各模型能力在 Inference Registry 与 Gateway YAML 对应登录。
 - 目标边界：Gateway 处理外部 HTTP/API Key/租户政策/限流/路由/转送/可观测性；推论服务处理模型与推论；MediaMTX 处理 RTSP／RTMP 媒体流。
 
@@ -23,6 +23,8 @@
 | `internal/videoproxy/` | 验证 multipart `Content-Length`，以串流方式转送 request body，观测本文读取完成时间 |
 
 上述套件只处理 Gateway 的 HTTP 边界，不载入模型或代理 RTSP／RTMP 媒体封包。
+
+Gateway Go module 使用稳定的中性 module path `example.com/videostreamapi/gateway`，内部 import 均以该路径为前缀。模块路径不从 Git remote、代码托管账号或仓库名称生成；迁移仓库时保持不变。该路径只属于 Go 编译／包识别，不构成公开 HTTP API、模型 alias 或部署端点。
 
 ## 元件与资料流
 
@@ -64,7 +66,7 @@ Gateway 非敏感设定位于 src/gateway/configs/gateway.yml。设定至少涵�
 | listener | host、port；预设 127.0.0.1:8000 |
 | upstream | 共用推论服务 fallback URL；本机预设值 http://127.0.0.1:8001 |
 | defaults | 视讯及 Live 的预设模型别名 |
-| model routes | 每模型公开别名、上游模型识别码、上游 URL 和 text/image/stream/video/live 能力；目前登录 Mage-VL 与 Qwen3-0.6B |
+| model routes | 每模型公开别名、上游模型识别码、上游 URL 和 text/image/stream/tool/video/live 能力；目前登录 Mage-VL 与 Qwen3-0.6B |
 | request limits | 聊天、视讯 multipart、即时工作阶段本文上限 |
 | timeouts | 上游连线、一般回应、SSE 闲置及整体逾时 |
 | tenant policies | 每租户请求速率、突发容量及必要的并行限制 |
@@ -85,11 +87,14 @@ Gateway 非敏感设定位于 src/gateway/configs/gateway.yml。设定至少涵�
 ## 模型路由与回应改写
 
 - Gateway 启动时载入每模型路由。聊天请求以 `model` 选公开别名，未设定或未知 alias 在呼叫上游前以 HTTP 400 拒绝；依 capability 拒绝纯文字 Mage 请求及含图片的 Qwen 请求，两者都支援文字 SSE。
+- Qwen route另有 `tool_calling=true`；标准 Chat tools 请求由 Gateway透传到 Inference，不解读模型参数或执行工具。调用方透过同一个 `/v1/chat/completions` endpoint 发送 tool result message。
 - 聊天上游依路由使用 `microsoft/Mage-VL` 或 `qwen3-0.6b`，回应 JSON／SSE 的 model 栏位改回该请求的专案 alias。
 - GET /v1/models 仅回传公开别名，不暴露上游 repo_id。
 - SSE parser 以事件为单位处理 data 栏位，只改写合法 JSON 的 model 栏位；注解、keep-alive、[DONE] 及非 JSON 控制资料保持不变。每个事件即时刷新，不聚合整条串流。
 
 影片路由使用可选 query `model`，以便不读取或重建 multipart 本文也能选择上游；预设模型由 `defaults.video_model` 设定。Live 建立 JSON 使用可选 `model`（预设 `defaults.live_model`）。Gateway 在转送前检查 `video_upload`／`live_video`，不支援时拒绝。Inference route capability 不在 Gateway 内推导；模型端到端测试验证 Gateway 公开 alias 与实际请求路径，部署端点和 capability 需人工维护同步。
+
+不新增 Agent Chat route 或额外上游。工具调用与普通聊天共用 `/v1/chat/completions` 的认证、租户限流、alias 路由、请求上限和 SSE 转发；工具执行由客户端／Agent 应用自行负责。
 
 ## 视讯本文与 Content-Length
 
@@ -150,4 +155,6 @@ Gateway 非敏感设定位于 src/gateway/configs/gateway.yml。设定至少涵�
 | 日期 | 变更 |
 |---|---|
 | 2026-10-20 | 建立 Gateway 技术设计草稿 |
+| 2026-10-25 | 增加 Qwen tool capability；按 OpenAI 兼容模式使用现有 Chat route，工具由调用端执行 |
+| 2026-10-25 | 将 Go module 与内部 imports 改为仓库无关的稳定命名空间，避免编译及诊断信息绑定代码托管地址 |
 

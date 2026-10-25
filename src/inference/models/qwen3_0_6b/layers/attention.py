@@ -143,6 +143,8 @@ class Qwen3Attention(nn.Module):
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     from transformers import Qwen3Config
     from transformers.models.qwen3.modeling_qwen3 import (
         Qwen3Attention as TransformersQwen3Attention,
@@ -170,7 +172,7 @@ if __name__ == "__main__":
         head_dim=config.head_dim,
         rms_norm_eps=config.rms_norm_eps,
         rope_theta=config.rope_theta,
-        device=torch.device("cpu"),
+        device=test_device,
         dtype=torch.float32,
     ).eval()
     engine.load_state_dict(baseline.state_dict(), strict=True)
@@ -180,7 +182,7 @@ if __name__ == "__main__":
         block_size_tokens=4,
         num_key_value_heads=config.num_key_value_heads,
         head_dim=config.head_dim,
-        device=torch.device("cpu"),
+        device=test_device,
         dtype=torch.float32,
     )
     request_id = "attention-forward-check"
@@ -215,4 +217,4 @@ if __name__ == "__main__":
         torch.testing.assert_close(engine_output, baseline_output, atol=1e-5, rtol=1e-5)
     finally:
         cache.release(request_id)
-    print("Qwen3 paged attention matches the Transformers eager baseline on CPU.")
+    print(f"Qwen3 paged attention matches the Transformers eager baseline on {test_device}.")

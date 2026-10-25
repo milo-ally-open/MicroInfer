@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"gitee.com/milo-ally-intern/LYGCloudModelAPI/src/gateway/internal/config"
+	"example.com/videostreamapi/gateway/internal/config"
 )
 
 // Client 管理连线推论服务时共用的 HTTP transport。

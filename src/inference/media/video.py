@@ -12,7 +12,7 @@ from typing import Any, BinaryIO, Callable
 
 from PIL import Image
 
-from engine.errors import InferenceError
+from inference.engine.contracts import InferenceError
 
 
 def uploaded_video_path(filename: str | None, directory: str | Path) -> Path:

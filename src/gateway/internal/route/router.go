@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"gitee.com/milo-ally-intern/LYGCloudModelAPI/src/gateway/internal/config"
+	"example.com/videostreamapi/gateway/internal/config"
 )
 
 type ErrorWriter func(http.ResponseWriter, int, string, string, string)

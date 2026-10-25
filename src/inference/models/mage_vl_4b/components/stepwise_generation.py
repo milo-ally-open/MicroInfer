@@ -630,6 +630,8 @@ class MageVLStepwiseGeneration:
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     from types import SimpleNamespace
 
     from transformers import Qwen3Config
@@ -637,7 +639,7 @@ if __name__ == "__main__":
         Qwen3ForCausalLM as TransformersQwen3ForCausalLM,
     )
 
-    from engine.contracts import ExecutionPhase, ScheduledWorkItem
+    from inference.engine.contracts import ExecutionPhase, ScheduledWorkItem
     from ..model.configuration_mage_vl import MageVLConfig, MageVLVisionConfig
     from ..model.conditional_generation import MageVLForConditionalGeneration
 
@@ -722,4 +724,4 @@ if __name__ == "__main__":
     finally:
         if request_id in engine._states:
             engine.cancel(request_id)
-    print("Mage-VL stepwise text streaming matches the Transformers prefill/decode baseline on CPU.")
+    print(f"Mage-VL stepwise text streaming matches the Transformers prefill/decode baseline on {test_device}.")

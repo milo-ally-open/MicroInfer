@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
+from inference.engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
 from ..utils import loader as config
 from .component_registry import MAGE_VL_COMPONENT_REGISTRY
 from ..utils.loader import load_mage_vl
@@ -129,16 +129,21 @@ class MageVLModelRunner:
         return self.processor.batch_decode(generated_ids.unsqueeze(0), skip_special_tokens=True)[0].strip()
 
     def gpu_status(self) -> dict[str, Any]:
-        if self.model is None or not torch.cuda.is_available():
+        if self.model is None:
             return {}
+        if not torch.cuda.is_available():
+            return {"device": "cpu"}
         free, total = torch.cuda.mem_get_info()
         return {"gpu": torch.cuda.get_device_name(0), "vram_free_bytes": free, "vram_total_bytes": total}
 
     def peak_memory(self) -> dict[str, int]:
+        if not torch.cuda.is_available():
+            return {"peak_allocated": 0, "peak_reserved": 0}
         return {"peak_allocated": torch.cuda.max_memory_allocated(), "peak_reserved": torch.cuda.max_memory_reserved()}
 
     def reset_peak_memory(self) -> None:
-        torch.cuda.reset_peak_memory_stats()
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
 
     def close(self) -> None:
         self._stepwise.clear()
@@ -150,6 +155,8 @@ class MageVLModelRunner:
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     from types import SimpleNamespace
 
     from transformers import Qwen3Config
@@ -157,7 +164,7 @@ if __name__ == "__main__":
         Qwen3ForCausalLM as TransformersQwen3ForCausalLM,
     )
 
-    from engine.contracts import ExecutionPhase, ScheduledWorkItem
+    from inference.engine.contracts import ExecutionPhase, ScheduledWorkItem
     from ..model.configuration_mage_vl import MageVLConfig, MageVLVisionConfig
     from ..model.conditional_generation import MageVLForConditionalGeneration
 
@@ -243,4 +250,4 @@ if __name__ == "__main__":
         assert engine_decode.finished and engine_decode.finish_reason == "length"
     finally:
         runner.cancel_generation(request_id)
-    print("Mage-VL ModelRunner text deltas match Transformers prefill/decode on CPU.")
+    print(f"Mage-VL ModelRunner text deltas match Transformers prefill/decode on {test_device}.")

@@ -192,13 +192,15 @@ class PagedKVCache:
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     cache = PagedKVCache(
         num_layers=1,
         num_blocks=3,
         block_size_tokens=2,
         num_key_value_heads=2,
         head_dim=3,
-        device=torch.device("cpu"),
+        device=test_device,
         dtype=torch.float32,
     )
     request_id = "cache-forward-check"
@@ -241,5 +243,5 @@ if __name__ == "__main__":
         torch.testing.assert_close(engine_value, baseline_value, atol=0, rtol=0)
     finally:
         cache.release(request_id)
-    print("Qwen3 paged KV cache matches the dense append baseline on CPU.")
+    print(f"Qwen3 paged KV cache matches the dense append baseline on {test_device}.")
 

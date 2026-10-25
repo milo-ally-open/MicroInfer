@@ -10,7 +10,6 @@ import ipaddress
 import math
 import os
 import re
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -18,10 +17,10 @@ import yaml
 
 
 INFERENCE_ROOT = Path(__file__).resolve().parent
-PROJECT_ROOT = INFERENCE_ROOT.parents[1]
+PROJECT_ROOT = Path(
+    os.environ.get("INFERENCE_PROJECT_ROOT", str(INFERENCE_ROOT.parents[1]))
+).expanduser().resolve()
 MODELS_ROOT = INFERENCE_ROOT / "models"
-if str(INFERENCE_ROOT) not in sys.path:
-    sys.path.insert(0, str(INFERENCE_ROOT))
 PROTECTED_ENV = {
     "CUDA_VISIBLE_DEVICES",
     "HF_HOME",
@@ -30,6 +29,7 @@ PROTECTED_ENV = {
     "HF_HUB_DOWNLOAD_TIMEOUT",
     "INFERENCE_CONFIG",
     "INFERENCE_NETWORK_CONFIG",
+    "INFERENCE_PROJECT_ROOT",
     "INFERENCE_MODEL_ALIAS",
     "INFERENCE_MODEL_MANIFEST",
 }
@@ -46,7 +46,7 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 def _discover_models() -> dict[str, dict[str, Any]]:
     """从各模型目录的 manifest 发现模型，不依赖全域登录档。"""
     models: dict[str, dict[str, Any]] = {}
-    for manifest_path in sorted(MODELS_ROOT.glob("*/configs/model.yaml")):
+    for manifest_path in sorted(MODELS_ROOT.glob("*/configs/model.yml")):
         model = _read_yaml(manifest_path)
         alias = model.get("alias")
         if not isinstance(alias, str) or not alias.strip():
@@ -56,7 +56,7 @@ def _discover_models() -> dict[str, dict[str, Any]]:
         model["_manifest_path"] = str(manifest_path.resolve())
         models[alias] = model
     if not models:
-        raise ValueError(f"No models/*/configs/model.yaml manifests found under {MODELS_ROOT}")
+        raise ValueError(f"No models/*/configs/model.yml manifests found under {MODELS_ROOT}")
     return models
 
 
@@ -67,7 +67,7 @@ def _validate_model_manifest(alias: str, model: dict[str, Any]) -> dict[str, Any
         raise ValueError("integration_profile must be standard or custom.")
     backend = str(model.get("backend", "")).strip()
     if not backend:
-        raise ValueError("Every model manifest must define backend in configs/model.yaml.")
+        raise ValueError("Every model manifest must define backend in configs/model.yml.")
     manifest_path = Path(str(model.get("_manifest_path", ""))).resolve()
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Model manifest not found: {manifest_path}")
@@ -83,7 +83,7 @@ def _validate_model_manifest(alias: str, model: dict[str, Any]) -> dict[str, Any
         raise ValueError("network configuration must contain an api mapping.")
     runtime_factory = model.get("runtime_factory")
     if not isinstance(runtime_factory, str) or not runtime_factory.strip():
-        raise ValueError("Every model manifest must define runtime_factory in configs/model.yaml.")
+        raise ValueError("Every model manifest must define runtime_factory in configs/model.yml.")
     runtime_source = _resolve_factory_source(runtime_factory, "runtime")
     _, _, runtime_symbol = runtime_factory.partition(":")
     if runtime_symbol not in _factory_symbols(runtime_source):
@@ -104,7 +104,7 @@ def _validate_model_manifest(alias: str, model: dict[str, Any]) -> dict[str, Any
         raise ValueError("api.capabilities.chat_inputs must contain text and/or image.")
     if len(set(chat_inputs)) != len(chat_inputs):
         raise ValueError("api.capabilities.chat_inputs must not contain duplicates.")
-    for name in ("streaming", "video_upload", "live_video"):
+    for name in ("streaming", "tool_calling", "video_upload", "live_video"):
         if not isinstance(capabilities.get(name), bool):
             raise ValueError(f"api.capabilities.{name} must be a boolean.")
     output_mode = capabilities.get("output_mode")
@@ -117,9 +117,9 @@ def _validate_model_manifest(alias: str, model: dict[str, Any]) -> dict[str, Any
     if output_mode == "token_ids" and not input_processor:
         if profile != "standard":
             raise ValueError("token_ids output requires api.input_processor for detokenization.")
-        if not (INFERENCE_ROOT / "api" / "default_chat_processor.py").is_file():
+        if not (INFERENCE_ROOT / "api" / "processors" / "default_chat_processor.py").is_file():
             raise FileNotFoundError("Default standard chat input processor is missing.")
-        processor_source = INFERENCE_ROOT / "api" / "default_chat_processor.py"
+        processor_source = INFERENCE_ROOT / "api" / "processors" / "default_chat_processor.py"
         processor_class = "DefaultChatInputProcessor"
     elif input_processor:
         processor_source = _resolve_factory_source(str(input_processor), "input_processor")
@@ -137,6 +137,24 @@ def _validate_model_manifest(alias: str, model: dict[str, Any]) -> dict[str, Any
             raise ValueError(
                 f"input_processor factory {processor_class} is missing methods: {', '.join(sorted(missing))}."
             )
+
+    tool_adapter_factory = api_settings.get("tool_call_adapter")
+    if capabilities["tool_calling"]:
+        if not isinstance(tool_adapter_factory, str) or not tool_adapter_factory.strip():
+            raise ValueError("tool_calling requires api.tool_call_adapter in configs/model.yml.")
+        tool_adapter_source = _resolve_factory_source(tool_adapter_factory, "tool_call_adapter")
+        _, _, tool_adapter_class = tool_adapter_factory.partition(":")
+        if tool_adapter_class not in _factory_symbols(tool_adapter_source):
+            raise ValueError(f"tool-call adapter factory symbol {tool_adapter_class!r} is not declared in {tool_adapter_source}.")
+        missing_tool_adapter_methods = {"parse_output", "create_stream_parser"} - _factory_class_methods(
+            tool_adapter_source, tool_adapter_class
+        )
+        if missing_tool_adapter_methods:
+            raise ValueError(
+                f"tool-call adapter {tool_adapter_class} is missing methods: {', '.join(sorted(missing_tool_adapter_methods))}."
+            )
+    elif tool_adapter_factory:
+        raise ValueError("api.tool_call_adapter must not be set when tool_calling capability is false.")
     inference_api = inference_config.get("api")
     if not isinstance(inference_api, dict):
         raise ValueError("inference configuration must contain an api mapping.")
@@ -190,6 +208,7 @@ def _validate_model_manifest(alias: str, model: dict[str, Any]) -> dict[str, Any
         "backend": backend,
         "chat_inputs": ",".join(chat_inputs),
         "output_mode": output_mode,
+        "tool_calling": capabilities["tool_calling"],
         "video_upload": capabilities["video_upload"],
         "live_video": capabilities["live_video"],
     }
@@ -208,7 +227,7 @@ def _resolve_path(value: str, description: str, *, base_dir: Path | None = None)
 
 def _list_models(models: dict[str, dict[str, Any]]) -> None:
     """列出自模型 manifest 发现的模型与设定。"""
-    print("MODEL\tPROFILE\tBACKEND\tSTATUS\tINPUTS\tOUTPUT\tVIDEO\tLIVE\tMANIFEST")
+    print("MODEL\tPROFILE\tBACKEND\tSTATUS\tINPUTS\tOUTPUT\tTOOLS\tVIDEO\tLIVE\tMANIFEST")
     for alias, model in sorted(models.items()):
         if not isinstance(model, dict):
             print(f"{alias}\t\tinvalid-model-manifest")
@@ -226,7 +245,8 @@ def _list_models(models: dict[str, dict[str, Any]]) -> None:
             f"{alias} ({display_name})\t{validated['profile'] if status == 'valid' else model.get('integration_profile', '')}\t"
             f"{validated['backend'] if status == 'valid' else model.get('backend', '')}\t{status}\t"
             f"{validated['chat_inputs'] if status == 'valid' else ''}\t{validated['output_mode'] if status == 'valid' else ''}\t"
-            f"{validated['video_upload'] if status == 'valid' else ''}\t{validated['live_video'] if status == 'valid' else ''}\t"
+            f"{validated['tool_calling'] if status == 'valid' else ''}\t{validated['video_upload'] if status == 'valid' else ''}\t"
+            f"{validated['live_video'] if status == 'valid' else ''}\t"
             f"{manifest}"
         )
 
@@ -236,7 +256,10 @@ def _resolve_factory_source(factory_path: str, name: str) -> Path:
     module_name, separator, attribute = factory_path.partition(":")
     if not separator or not module_name or not attribute:
         raise ValueError(f"Model {name} factory must use 'module:attribute' notation.")
-    module_path = INFERENCE_ROOT.joinpath(*module_name.split("."))
+    module_parts = module_name.split(".")
+    if module_parts[0] != "inference":
+        raise ValueError(f"Model {name} factory must use the 'inference.*' package namespace.")
+    module_path = INFERENCE_ROOT.joinpath(*module_parts[1:])
     source = module_path.with_suffix(".py")
     if source.is_file():
         return source
@@ -344,7 +367,7 @@ def _set_runtime_environment(
 
 def _load_service_app() -> Any:
     """载入唯一的共用 API app；模型差异由所选 manifest 提供。"""
-    app_module = importlib.import_module("api.service_app")
+    app_module = importlib.import_module("inference.api.application.service_app")
     if not hasattr(app_module, "app"):
         raise AttributeError("The shared API service entrypoint does not export 'app'.")
     return app_module.app

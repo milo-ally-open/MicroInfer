@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from engine.contracts import ExecutionPhase, ScheduledWorkItem
+from inference.engine.contracts import ExecutionPhase, ScheduledWorkItem
 
 
 @dataclass(frozen=True)
@@ -66,6 +66,8 @@ class InputBatch:
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     work_items = (
         ScheduledWorkItem("request-a", phase=ExecutionPhase.PREFILL, token_budget=2, prompt_offset=0),
         ScheduledWorkItem("request-b", phase=ExecutionPhase.PREFILL, token_budget=3, prompt_offset=4),
@@ -80,7 +82,7 @@ if __name__ == "__main__":
         lengths,
         offsets,
         block_tables,
-        device=torch.device("cpu"),
+        device=test_device,
     )
     baseline_ids = torch.nn.utils.rnn.pad_sequence(sequences, batch_first=True, padding_value=0)
     print("==========engine===========")
@@ -91,4 +93,4 @@ if __name__ == "__main__":
     assert engine_batch.request_ids == ("request-a", "request-b")
     assert engine_batch.position_offsets == offsets
     assert engine_batch.block_tables == block_tables
-    print("Qwen3 InputBatch matches the padded PyTorch baseline on CPU.")
+    print(f"Qwen3 InputBatch matches the padded PyTorch baseline on {test_device}.")

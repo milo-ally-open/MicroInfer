@@ -14,8 +14,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
-from api.schemas import LiveSessionCreateRequest, LiveSessionResponse, LiveSessionStopResponse
-from media.live_sessions import LiveSessionLimitError, LiveSessionNotFoundError
+from inference.api.contracts.schemas import LiveSessionCreateRequest, LiveSessionResponse, LiveSessionStopResponse
+from inference.media.live_sessions import LiveSessionLimitError, LiveSessionNotFoundError
 
 
 router = APIRouter()

@@ -162,6 +162,8 @@ class Qwen3ForCausalLM(nn.Module):
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM as TransformersQwen3ForCausalLM
 
     torch.manual_seed(17)
@@ -180,7 +182,7 @@ if __name__ == "__main__":
     config.rope_parameters = {"rope_type": "default", "rope_theta": config.rope_theta}
     config._attn_implementation = "eager"
     reference = TransformersQwen3ForCausalLM(config).eval()
-    implementation = Qwen3ForCausalLM(config, dtype=torch.float32, device="cpu").eval()
+    implementation = Qwen3ForCausalLM(config, dtype=torch.float32, device=test_device).eval()
     implementation.load_state_dict(reference.state_dict(), strict=True)
 
     request_id = "qwen3-parity"
@@ -191,7 +193,7 @@ if __name__ == "__main__":
         block_size_tokens=4,
         num_key_value_heads=config.num_key_value_heads,
         head_dim=config.head_dim,
-        device=torch.device("cpu"),
+        device=test_device,
         dtype=torch.float32,
     )
     cache.bind(request_id, block_table)
@@ -243,4 +245,4 @@ if __name__ == "__main__":
     print("==========baseline==========")
     print(f"prefill={expected_prefill.logits[0, -1, :4].tolist()}")
     print(f"decode={expected_decode.logits[0, -1, :4].tolist()}")
-    print("Qwen3 local model with paged KV matches Transformers eager Prefill and Decode on CPU.")
+    print(f"Qwen3 local model with paged KV matches Transformers eager Prefill and Decode on {test_device}.")

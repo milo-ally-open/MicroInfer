@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"gitee.com/milo-ally-intern/LYGCloudModelAPI/src/gateway"
+	"example.com/videostreamapi/gateway"
 )
 
 func main() {

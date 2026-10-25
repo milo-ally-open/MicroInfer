@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Any
 from transformers import PreTrainedTokenizerBase
 
-from api.input_processor import ChatInputProcessor, StreamOutputProcessor
-from api.output_processor import IncrementalDetokenizer
-from engine.contracts import PreparedChatInput
-from engine.errors import InferenceError
+from inference.api.processors.input_processor import ChatInputProcessor, StreamOutputProcessor
+from inference.api.processors.output_processor import IncrementalDetokenizer
+from inference.api.contracts.tool_calling import normalize_chat_messages
+from inference.engine.contracts import PreparedChatInput
+from inference.engine.contracts import InferenceError
 
 from .utils import loader as config
 from .utils.loader import load_tokenizer
@@ -72,16 +73,23 @@ def build_sampling_params(request_body: dict[str, Any]) -> dict[str, Any]:
 
 
 def prepare_chat_input(tokenizer: PreTrainedTokenizerBase, request_body: dict[str, Any]) -> PreparedChatInput:
-    messages = normalize_text_messages(request_body.get("messages"))
+    messages = normalize_chat_messages(request_body.get("messages"))
+    tools = request_body.get("tools") or []
+    tool_choice = request_body.get("tool_choice", "auto" if tools else "none")
+    template_tools = tools if tool_choice == "auto" else None
+    if template_tools:
+        messages = _with_single_tool_call_policy(messages)
     options = build_sampling_params(request_body)
     try:
-        inputs = tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            enable_thinking=bool(config.GENERATION_CONFIG.get("enable_thinking", False)),
-        )
+        template_options: dict[str, Any] = {
+            "tokenize": True,
+            "add_generation_prompt": True,
+            "return_dict": True,
+            "enable_thinking": bool(config.GENERATION_CONFIG.get("enable_thinking", False)),
+        }
+        if template_tools:
+            template_options["tools"] = template_tools
+        inputs = tokenizer.apply_chat_template(messages, **template_options)
     except Exception as exc:
         raise ValueError(f"Could not format Qwen3 chat messages: {exc}") from exc
 
@@ -106,23 +114,20 @@ def prepare_chat_input(tokenizer: PreTrainedTokenizerBase, request_body: dict[st
     )
 
 
-def normalize_text_messages(raw_messages: Any) -> list[dict[str, str]]:
-    if not isinstance(raw_messages, list) or not raw_messages:
-        raise ValueError("messages must be a non-empty list.")
-    messages: list[dict[str, str]] = []
-    for message in raw_messages:
-        if not isinstance(message, dict):
-            raise ValueError("Each message must be an object.")
-        role = str(message.get("role", ""))
-        content = message.get("content", "")
-        if isinstance(content, list):
-            parts = []
-            for part in content:
-                if not isinstance(part, dict) or part.get("type") != "text":
-                    raise ValueError("Qwen3-0.6B accepts text-only message content.")
-                parts.append(str(part.get("text", "")))
-            content = "".join(parts)
-        if not isinstance(content, str):
-            raise ValueError("Qwen3 message content must be text.")
-        messages.append({"role": role, "content": content})
-    return messages
+def normalize_text_messages(raw_messages: Any) -> list[dict[str, Any]]:
+    """旧呼叫点的兼容名称；工具历史由共用标准化器完整保留。"""
+    return normalize_chat_messages(raw_messages)
+
+
+def _with_single_tool_call_policy(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Qwen3 上游模板允许同轮多调用；首版在提示中限制为单个调用。"""
+    policy = (
+        "For this turn, call at most one function. If another function is needed, "
+        "wait for the first tool result before requesting the next function."
+    )
+    result = [dict(message) for message in messages]
+    if result and result[0].get("role") == "system":
+        result[0]["content"] = f"{result[0].get('content', '')}\n\n{policy}".strip()
+    else:
+        result.insert(0, {"role": "system", "content": policy})
+    return result

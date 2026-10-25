@@ -148,6 +148,8 @@ class Qwen3Attention(nn.Module):
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     from transformers import Qwen3Config
     from transformers.models.qwen3.modeling_qwen3 import (
         Qwen3Attention as TransformersQwen3Attention,
@@ -199,4 +201,4 @@ if __name__ == "__main__":
     print("==========baseline==========")
     print(f"shape={tuple(baseline_output.shape)}, sample={baseline_output[0, 0, :4].tolist()}")
     torch.testing.assert_close(engine_output, baseline_output, atol=1e-5, rtol=1e-5)
-    print("Qwen3 attention matches the Transformers eager baseline on CPU.")
+    print(f"Qwen3 attention matches the Transformers eager baseline on {test_device}.")

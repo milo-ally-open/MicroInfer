@@ -90,6 +90,8 @@ class MultiHeadAttention(nn.Module):
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     torch.manual_seed(7)
     reference = nn.MultiheadAttention(24, 4, batch_first=True).eval()
     implementation = MultiHeadAttention(24, 4).eval()
@@ -120,4 +122,4 @@ if __name__ == "__main__":
     print(f"shape={tuple(actual.shape)}, sample={actual[0, 0, :4].tolist()}")
     print("==========baseline==========")
     print(f"shape={tuple(expected.shape)}, sample={expected[0, 0, :4].tolist()}")
-    print("MultiHeadAttention matches torch.nn.MultiheadAttention on CPU.")
+    print(f"MultiHeadAttention matches torch.nn.MultiheadAttention on {test_device}.")

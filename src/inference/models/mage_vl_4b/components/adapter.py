@@ -7,10 +7,10 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
-from engine.contracts import InferenceResult
-from engine.errors import InferenceError
-from media.video import probe_video_metadata, sample_video_frames
+from inference.engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
+from inference.engine.contracts import InferenceResult
+from inference.engine.contracts import InferenceError
+from inference.media.video import probe_video_metadata, sample_video_frames
 
 from ..utils import loader as config
 from .. import processor

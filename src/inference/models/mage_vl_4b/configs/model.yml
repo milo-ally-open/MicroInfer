@@ -1,0 +1,17 @@
+alias: mage-vl-4b
+display_name: Mage-VL-4B
+integration_profile: custom
+backend: transformers
+runtime_factory: inference.models.mage_vl_4b.runtime:create_runtime
+inference_config: inference.yml
+network_config: network.yml
+api:
+  model_id: microsoft/Mage-VL
+  capabilities:
+    chat_inputs: [image]
+    streaming: true
+    tool_calling: false
+    output_mode: text_delta
+    video_upload: true
+    live_video: true
+  live_session_manager: inference.models.mage_vl_4b.live:create_live_session_manager

@@ -7,7 +7,7 @@
 ## 接入原则
 
 - 模型专属代码、配置和依赖集中在一个模型包中；API、Engine Core、Scheduler、Executor 和 Worker 继续共用。
-- Launcher 通过模型包内的 configs/model.yaml 自动发现模型，不维护全局模型清单。
+- Launcher 通过模型包内的 configs/model.yml 自动发现模型，不维护全局模型清单。
 - 只要现有 API 能力和 Runtime 契约能够表达新模型，就不修改共用 API、Engine 或 Launcher。
 - 不把模型计算图、Tokenizer、权重映射和模型 Cache 放入共用 engine/。
 - Gateway 是独立服务。只有需要通过 Gateway 对客户端开放时，才修改 Gateway 配置。
@@ -54,7 +54,7 @@
 
 | 文件 | 必需性 | 文件中应写入什么 |
 | --- | --- | --- |
-| src/inference/models/{package_name}/configs/model.yaml | 必需 | 模型 alias、展示名称、integration_profile、backend 标识、Runtime 工厂路径、推理与网络配置文件名、Inference API 的 api.model_id，以及真实已实现的能力宣告。配置路径相对于此 manifest 的目录解析。 |
+| src/inference/models/{package_name}/configs/model.yml | 必需 | 模型 alias、展示名称、integration_profile、backend 标识、Runtime 工厂路径、推理与网络配置文件名、Inference API 的 api.model_id，以及真实已实现的能力宣告。配置路径相对于此 manifest 的目录解析。 |
 | src/inference/models/{package_name}/configs/inference.yml | 必需 | 上游 model.id 和固定 revision；dtype、device 或 device_map、量化和权重载入选项；runtime 的本机模型路径、离线行为、平台和超时；API 请求大小及上下文上限；generation 默认值；engine 的并发、等待队列、token 预算、prefill 分块和 KV 容量；确实使用的优化项。 |
 | src/inference/models/{package_name}/configs/network.yml | 必需 | Inference API 监听 host 和 port。使用 Live 时，还记录推理服务连接 MediaMTX 的 RTSP/RTMP 地址及返回给发布端的公开主机名。顶层必须有 api 网络设定。 |
 
@@ -124,16 +124,16 @@ MediaMTX 配置集中在 deploy/mediamtx/mediamtx.yml，由部署者独立启动
 
 ### 8. 为模型建立三项测试
 
-在 tests/{package_name}/ 下维护该模型的三项测试及一份 test.yaml：
+在 tests/{package_name}/ 下维护该模型的三项测试及一份 test.yml：
 
 | 文件 | 应验证的内容 | 依赖 |
 | --- | --- | --- |
-| test.yaml | 模型 alias、本机 snapshot 路径、推理配置、Inference/Gateway URL、API Key 环境变量名称、prompt、素材路径、生成上限、warmup/iterations、timeout 及组件测试所需模块/dtype。只放环境变量名称，不放密钥值。 | 配置文件本身不启动服务。 |
+| test.yml | 模型 alias、本机 snapshot 路径、推理配置、Inference/Gateway URL、API Key 环境变量名称、prompt、素材路径、生成上限、warmup/iterations、timeout 及组件测试所需模块/dtype。只放环境变量名称，不放密钥值。 | 配置文件本身不启动服务。 |
 | test_components.py | 显示模型包与 Transformers 原生基线的结构；对有独立计算的关键组件执行小型前向对照并断言数值或 token 一致。应避免载入权重和创建大型 GPU 测试负载。 | 需要配置文件指向本地 snapshot 的结构信息；不加载模型权重。 |
 | test_performance.py | 在相同本机 revision、输入和生成上限下比较已启动的 Inference API 与 Transformers 原生基线；记录样本数、生成 token 数、平均延迟和 token/s。多模态模型使用同一输入素材。 | 本机权重、模型所需环境、可用 GPU 和已启动的 Inference API。 |
 | test_end2end.py | 经 Gateway 使用公开 alias 验证成功回应、返回 alias、SSE 内容和每项已宣告能力的路由。上传/Live 模型要覆盖对应路径；未覆盖的能力不要宣称已端到端验证。 | Gateway、Inference API、环境变量提供的 API Key，以及该模型需要的本机素材或 MediaMTX。 |
 
-测试脚本都从明确传入的 test.yaml 读取路径和参数，不在脚本中推导项目根目录或默认配置。测试脚本将 JSON 摘要输出到标准输出，不会自动写入文件。需要归档时，可由执行者将结果保存到对应 tests/{package_name}/results/，并记录模型 revision、硬件、测试次数和环境；不得将密钥、权重或媒体素材纳入报告。性能样本用于实际对比，不是数据集精度评测，也不自动构成 SLA。
+测试脚本都从明确传入的 test.yml 读取路径和参数，不在脚本中推导项目根目录或默认配置。测试脚本将 JSON 摘要输出到标准输出，不会自动写入文件。需要归档时，可由执行者将结果保存到对应 tests/{package_name}/results/，并记录模型 revision、硬件、测试次数和环境；不得将密钥、权重或媒体素材纳入报告。性能样本用于实际对比，不是数据集精度评测，也不自动构成 SLA。
 
 ## 验证顺序
 

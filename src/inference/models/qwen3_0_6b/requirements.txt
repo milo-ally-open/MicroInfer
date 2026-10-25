@@ -2,3 +2,4 @@
 transformers==5.19.0
 accelerate==1.15.0
 safetensors==0.8.0
+jsonschema==4.26.0

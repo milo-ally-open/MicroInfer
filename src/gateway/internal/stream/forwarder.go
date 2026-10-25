@@ -302,7 +302,8 @@ func hasChatToken(event []byte) bool {
 		var payload struct {
 			Choices []struct {
 				Delta struct {
-					Content any `json:"content"`
+					Content   any               `json:"content"`
+					ToolCalls []json.RawMessage `json:"tool_calls"`
 				} `json:"delta"`
 			} `json:"choices"`
 		}
@@ -311,6 +312,9 @@ func hasChatToken(event []byte) bool {
 		}
 		for _, choice := range payload.Choices {
 			if content, ok := choice.Delta.Content.(string); ok && content != "" {
+				return true
+			}
+			if len(choice.Delta.ToolCalls) > 0 {
 				return true
 			}
 		}

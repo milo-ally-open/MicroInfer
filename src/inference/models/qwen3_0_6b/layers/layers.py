@@ -43,6 +43,8 @@ class Qwen3MLP(nn.Module):
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     from transformers import Qwen3Config
     from transformers.models.qwen3.modeling_qwen3 import (
         Qwen3MLP as TransformersQwen3MLP,
@@ -53,12 +55,12 @@ if __name__ == "__main__":
     config = Qwen3Config(hidden_size=32, intermediate_size=64, num_attention_heads=4)
     baseline_norm = TransformersQwen3RMSNorm(config.hidden_size, config.rms_norm_eps).eval()
     engine_norm = Qwen3RMSNorm(
-        config.hidden_size, config.rms_norm_eps, device=torch.device("cpu"), dtype=torch.float32
+        config.hidden_size, config.rms_norm_eps, device=test_device, dtype=torch.float32
     ).eval()
     engine_norm.load_state_dict(baseline_norm.state_dict(), strict=True)
     baseline_mlp = TransformersQwen3MLP(config).eval()
     engine_mlp = Qwen3MLP(
-        config.hidden_size, config.intermediate_size, device=torch.device("cpu"), dtype=torch.float32
+        config.hidden_size, config.intermediate_size, device=test_device, dtype=torch.float32
     ).eval()
     engine_mlp.load_state_dict(baseline_mlp.state_dict(), strict=True)
     hidden_states = torch.randn(2, 5, config.hidden_size)
@@ -73,4 +75,4 @@ if __name__ == "__main__":
     print(f"MLP={baseline_output[1][0, 0, :4].tolist()}")
     torch.testing.assert_close(engine_output[0], baseline_output[0], atol=1e-6, rtol=1e-6)
     torch.testing.assert_close(engine_output[1], baseline_output[1], atol=1e-6, rtol=1e-6)
-    print("Qwen3 RMSNorm and MLP match the Transformers baseline on CPU.")
+    print(f"Qwen3 RMSNorm and MLP match the Transformers baseline on {test_device}.")

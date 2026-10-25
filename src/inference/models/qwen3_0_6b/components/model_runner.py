@@ -8,8 +8,8 @@ from typing import Any
 import torch
 from transformers import PreTrainedTokenizerBase, Qwen3Config
 
-from engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
-from engine.platform import Platform, create_platform
+from inference.engine.contracts import ExecutionPhase, ScheduledWorkItem, WorkerResult
+from inference.engine.execution.platform import Platform, create_platform
 from ..utils import loader as config
 from ..utils.loader import load_model_config, load_safetensors, load_tokenizer
 from .input_batch import InputBatch
@@ -336,6 +336,8 @@ class Qwen3ModelRunner:
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     from types import SimpleNamespace
 
     from transformers.models.qwen3.modeling_qwen3 import (
@@ -358,7 +360,7 @@ if __name__ == "__main__":
     test_config.rope_parameters = {"rope_type": "default", "rope_theta": 1_000_000.0}
     test_config._attn_implementation = "eager"
     baseline = TransformersQwen3ForCausalLM(test_config).eval()
-    engine_model = Qwen3ForCausalLM(test_config, dtype=torch.float32, device="cpu").eval()
+    engine_model = Qwen3ForCausalLM(test_config, dtype=torch.float32, device=test_device).eval()
     engine_model.load_state_dict(baseline.state_dict(), strict=True)
     runner = Qwen3ModelRunner(platform=SimpleNamespace())
     runner.model = engine_model
@@ -370,7 +372,7 @@ if __name__ == "__main__":
         block_size_tokens=config.KV_CACHE_BLOCK_SIZE_TOKENS,
         num_key_value_heads=test_config.num_key_value_heads,
         head_dim=test_config.head_dim,
-        device=torch.device("cpu"),
+        device=test_device,
         dtype=torch.float32,
     )
     prompt = torch.tensor([[4, 8, 15, 16, 23]])
@@ -418,5 +420,5 @@ if __name__ == "__main__":
         print(f"prefill token={expected_prefill_token}, decode token={expected_decode_token}")
     finally:
         runner.cancel_generation(request_id)
-    print("Qwen3ModelRunner prefill/decode matches the Transformers baseline on CPU.")
+    print(f"Qwen3ModelRunner prefill/decode matches the Transformers baseline on {test_device}.")
 

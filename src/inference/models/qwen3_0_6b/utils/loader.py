@@ -10,7 +10,7 @@ from typing import Any
 import torch
 from transformers import PreTrainedTokenizerBase, Qwen3Config
 
-from engine.model_config import PROJECT_ROOT, selected_config
+from inference.engine.config.model_config import PROJECT_ROOT, selected_config
 
 
 # 模型设定由 Transformers Config 载入；服务参数由 YAML 一次载入。

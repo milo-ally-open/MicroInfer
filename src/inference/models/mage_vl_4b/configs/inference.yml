@@ -6,7 +6,7 @@ model:
   id: microsoft/Mage-VL
   revision: d88b153285f1633a61b2f693c59c8576693af185
   dtype: bfloat16
-  device_map: auto
+  device_map: 0
   # 视觉塔采模型包内明确 eager 注意力；文字骨干采模型包注册的分块 eager 实作。
   attn_implementation: eager
   attention:

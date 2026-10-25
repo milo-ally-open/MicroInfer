@@ -3,7 +3,7 @@
 > 关联提案：[proposal.md](proposal.md)<br>
 > 技术设计：[design.md](design.md)<br>
 > 实施追踪：[tasks.md](tasks.md)<br>
-> 状态：Go Gateway v1 基本路由已实作；本次以 REQ-13 补充双模型能力路由与 Gateway／Inference 设定一致性，验收证据见 tasks.md。
+> 状态：Go Gateway v1 已实作；REQ-13 记录双模型能力路由，REQ-14 将 Qwen tool capability 纳入既有 Chat Completions route，REQ-15 约束 Gateway module path 与代码仓库无关；验收状态见 tasks.md。
 > 来源：使用者确认的 Go 闸道目标、根目录 AGENTS.md、README.md、src/gateway/README.md 与 src/inference/README.md。
 
 ## 范围和术语
@@ -177,6 +177,32 @@
 - **AC-13.5** Given Gateway 配置多个不同推论 URL，When 客户端呼叫 `/readyz`，Then 每个不同上游都回报 ready 才返回成功。
 - **AC-13.6** Given Gateway 与 Inference 各自保存模型路由，When 执行各模型 `test_end2end.py`，Then 验证已设定 alias 可由 Gateway 路由并回传预期公开模型名；Gateway 连线位址由测试 YAML 指定。
 
+### REQ-14：在既有 Chat Completions route 转送标准 tool calls
+
+**需求**：Gateway依每模型已登记的 `tool_calling` capability 拒绝或转送标准工具调用请求；回应由既有 Chat Completions route 回传。Gateway负责外部认证／tenant／限流，不解析模型 tool marker、不执行工具，也不新增专用 Agent endpoint。
+
+**验收条件**
+
+- **AC-14.1** Given `POST /v1/chat/completions` 携带标准 `tools` 与 `tool_choice`，When model route `tool_calling=true`，Then 转送指定 Inference URL及上游模型 ID，并将公开请求 model 改为 Inference model ID。
+- **AC-14.2** Given Inference 回传非串流 tool call 或 SSE tool-call deltas，When Gateway 转送回应，Then 保留 `assistant.tool_calls`、`delta.tool_calls`、`finish_reason=tool_calls` 及 arguments，并将 response model 改回公开 alias。
+- **AC-14.3** Given model route `tool_calling=false` 且请求包含 tools，When Gateway 处理请求，Then 不转送并返回明确 capability error。
+- **AC-14.4** Given请求设定 `parallel_tool_calls=true`，When Gateway 处理请求，Then 于转送前明确拒绝；一般工具调用继续使用既有 Chat body limit、timeout、认证及租户政策。
+- **AC-14.5** Given客户端收到完整有效的 `tool_calls`，When客户端执行工具并回传 `role=tool` 历史消息，Then 继续呼叫同一个 `/v1/chat/completions` route，不依赖额外 Agent endpoint。
+- **AC-14.6** Given `/readyz` 与多模型配置，When Gateway执行 readiness，Then 只检查所有唯一 Inference URL；Gateway YAML 逐模型明确宣告 `tool_calling`，Mage false、Qwen true。
+
+**验证方式**：Go config validation、既有 Chat route 的 mock／SSE alias 检查及 Qwen 经 Gateway 的 JSON／SSE tool-call 端到端请求；不另设 Agent route。
+
+### REQ-15：Gateway 模组路径与代码仓库无关
+
+**需求**：Gateway 的 Go module 和内部 import 不得包含代码托管平台、账号或具体仓库路径；仓库迁移不应改变公开 API、模型 alias 或部署端点。
+
+**验收条件**
+
+- **AC-15.1** Given Gateway 从当前仓库目录构建，When 检查 `go.mod` 与 Gateway Go source imports，Then module path 使用稳定的中性命名空间，且不含代码托管平台、账号或仓库 URL。
+- **AC-15.2** Given Gateway 仓库迁移到不同 Git remote，When 按既有命令构建 Gateway，Then 不需要修改 module/import 路径；公开 HTTP API、模型 alias 和运行设定保持不变。
+
+**验证方式**：搜索 Gateway 源码与 module metadata 中的旧仓库地址，并执行 `go build ./...` 检查内部 package imports。
+
 **验证方式**：逐模型端到端脚本覆盖可执行的文字／图片 SSE 与影片上传流程；Live capability、授权拒绝矩阵及静态双设定档一致性不属于目前三项模型测试入口的实机覆盖范围。
 
 ## 不变项与相容要求
@@ -200,6 +226,7 @@
 - 不把 SGLang、vLLM、第二个模型、多实例共享状态或 Redis 列为首版已完成能力。
 - 不经 Gateway 转送 RTSP／RTMP 媒体封包。
 - 不在 Gateway 实作模型推论、权重下载、GPU 资源排程或 MediaMTX 管理。
+- 不在 Gateway 或 Inference Model Worker 执行 function tools；调用端在校验工具名称、参数及权限后负责执行。
 
 ## 需求追踪
 
@@ -218,6 +245,8 @@
 | YAML 设定及安全密钥注入 | REQ-11 | internal/config/、internal/auth/ | T-01、T-02 | AC-11.1、AC-11.2、AC-11.3、AC-11.4 | 已实作；checked-in YAML 与 mock 密钥测试 |
 | 元件边界、测试分层、性能基线与回复 | REQ-12 | Gateway 套件、tests/ | T-11、T-12 | AC-12.1、AC-12.2、AC-12.3、AC-12.4 | 套件责任与测试分层已检视；实际性能与回复演练未执行 |
 | 模型能力政策、双模型路由与设定一致性 | REQ-13 | internal/config/、gateway.go、模型目录端到端测试 | T-13 | AC-13.1、AC-13.2、AC-13.3、AC-13.4、AC-13.5、AC-13.6 | 历史 Gateway mock／跨设定测试已移出目前精简测试入口；真实 Gateway smoke 报告按模型保留，路由负向矩阵待另行安排 |
+| Qwen tool capability 与 Chat route 转送边界 | REQ-14 | internal/config/、internal/route/、internal/upstream/、gateway.go、gateway.yml | T-15 | AC-14.1–AC-14.6 | 标准工具请求走既有 route；端到端证据记录于 tasks.md |
+| Go module 与仓库迁移独立性 | REQ-15 | go.mod、Gateway Go imports | T-16 | AC-15.1、AC-15.2 | 中性 module path；源码旧仓库地址搜索及 Go build 状态见 tasks.md |
 
 ## 假设与未决问题
 
@@ -230,4 +259,5 @@
 | 日期 | 变更 |
 |---|---|
 | 2026-10-20 | 建立可追踪的 Gateway 行为规格与验收条件 |
+| 2026-10-25 | 新增 Gateway Go module 与代码仓库无关的 REQ-15 |
 

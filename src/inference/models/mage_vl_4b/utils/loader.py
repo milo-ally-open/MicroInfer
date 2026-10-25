@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 from typing import Any
 
-from engine.model_config import PROJECT_ROOT, selected_config
+from inference.engine.config.model_config import PROJECT_ROOT, selected_config
 
-from media.live_sessions import LiveVideoSettings
+from inference.media.live_sessions import LiveVideoSettings
 
 
+logger = logging.getLogger(__name__)
 CONFIG = selected_config("INFERENCE_CONFIG")  # 模型与推论参数。
 NETWORK_CONFIG = selected_config("INFERENCE_NETWORK_CONFIG")  # API 与媒体网路参数。
 
@@ -174,10 +176,11 @@ def _build_model_kwargs(torch: Any, kernel_config_type: Any, bits_and_bytes_conf
         resolved_offload_folder = PROJECT_ROOT / resolved_offload_folder
     if resolved_offload_folder is not None:
         resolved_offload_folder.mkdir(parents=True, exist_ok=True)
+    cuda_available = torch.cuda.is_available()
     return {
         key: value
         for key, value in {
-            "device_map": MODEL_CONFIG["device_map"],
+            "device_map": MODEL_CONFIG["device_map"] if cuda_available else "cpu",
             "revision": MODEL_REVISION,
             "dtype": getattr(torch, MODEL_CONFIG["dtype"]),
             "local_files_only": LOCAL_FILES_ONLY,
@@ -190,8 +193,8 @@ def _build_model_kwargs(torch: Any, kernel_config_type: Any, bits_and_bytes_conf
             "disable_mmap": MODEL_CONFIG["disable_mmap"],
             "kernel_config": kernel_config_type(**kernel_config) if kernel_config else None,
             "offload_folder": str(resolved_offload_folder) if resolved_offload_folder else None,
-            "quantization_config": _build_quantization_config(torch, bits_and_bytes_config),
-            "max_memory": max_memory or None,
+            "quantization_config": _build_quantization_config(torch, bits_and_bytes_config) if cuda_available else None,
+            "max_memory": (max_memory or None) if cuda_available else None,
         }.items()
         if value is not None
     }
@@ -211,16 +214,16 @@ def load_mage_vl() -> tuple[str, Any, Any]:
             "The local Mage-VL model implementation is pinned to revision "
             f"{MAGE_VL_SOURCE_REVISION}, but inference.yml selects {MODEL_REVISION}."
         )
-    torch.backends.cuda.matmul.allow_tf32 = bool(OPTIMIZATION_CONFIG["allow_tf32"])
-    torch.backends.cudnn.allow_tf32 = bool(OPTIMIZATION_CONFIG["cudnn_allow_tf32"])
-    torch.backends.cudnn.benchmark = bool(OPTIMIZATION_CONFIG["cudnn_benchmark"])
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = bool(OPTIMIZATION_CONFIG["allow_tf32"])
+        torch.backends.cudnn.allow_tf32 = bool(OPTIMIZATION_CONFIG["cudnn_allow_tf32"])
+        torch.backends.cudnn.benchmark = bool(OPTIMIZATION_CONFIG["cudnn_benchmark"])
+    else:
+        logger.warning("CUDA is unavailable; Mage-VL will load on CPU without GPU quantization.")
     matmul_precision = OPTIMIZATION_CONFIG["float32_matmul_precision"]
     if matmul_precision not in {"highest", "high", "medium"}:
         raise RuntimeError("optimization.pytorch.float32_matmul_precision must be highest, high, or medium.")
     torch.set_float32_matmul_precision(matmul_precision)
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is unavailable; this API is configured for NVIDIA GPU serving.")
-
     model_path = resolve_model_load_path()
     model_kwargs = _build_model_kwargs(torch, KernelConfig, BitsAndBytesConfig)
 

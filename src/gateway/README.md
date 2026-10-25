@@ -5,10 +5,11 @@ Go Gateway v1 已实作，负责外部客户端 API Key、租户限流、模型�
 ## 目前能力
 
 - Gateway 目前登录 `mage-vl-4b`（上游 `microsoft/Mage-VL`）及 `qwen3-0.6b`（上游 `qwen3-0.6b`），分别连接各自的推论服务。
-- 能力依模型路由设定：Mage-VL 接受图片聊天、文字 SSE、影片上传和 Live；Qwen3-0.6B 接受纯文字聊天与文字 SSE。Gateway 会在上游转送前拒绝不支援的输入／路由。
-- `GET /healthz` 仅检查 Gateway 存活；`GET /readyz` 另检查推论服务 `GET /health` 的 `status=ok`。
+- 能力依模型路由设定：Mage-VL 接受图片聊天、文字 SSE、影片上传和 Live；Qwen3-0.6B 接受纯文字聊天、文字 SSE 和标准 function tool calling。Gateway 会在上游转送前拒绝不支援的输入／路由。
+- `GET /healthz` 仅检查 Gateway 存活；`GET /readyz` 检查每个已配置 Inference 服务 `GET /health` 的 `status=ok`。
 - 需要 Bearer API Key 的客户端 API：`GET /v1/models`、`POST /v1/chat/completions`、`POST /v1/videos/understand`、`POST /v1/live/sessions`、live events SSE 与 `DELETE` 停止路由。
 - 聊天 SSE 逐事件转送，并将分块中的上游 model 栏位改写为专案别名。视讯 multipart 本文以有界串流送往推论服务，不整段载入 Gateway 记忆体。
+- `/v1/chat/completions` 将 Qwen3 `tools` 请求转送给 Inference，回传标准 `tool_calls`／`delta.tool_calls`，但不执行工具。客户端／Agent 应用负责校验并执行获准工具，再把 `role: "tool"` 结果送回同一个接口。
 - 聊天 JSON 的 `model` 使用公开别名；影片上传可用 `?model=<alias>` 选择已登记模型，预设由 `defaults.video_model` 指定。Live 建立本文可带 `model`，预设使用 `defaults.live_model`；签名 session handle 绑定建立时的模型路由。
 - Live 工作阶段控制 ID 是绑定租户、建立时模型别名、上游 session ID 和有效期的 HMAC 句柄。`publish.rtsp`／`publish.rtmp` 维持直连 MediaMTX；Gateway 不代理媒体封包。
 - OpenAI 风格错误、每租户程序内 token bucket、JSON 结构化日志，以及不含 API Key／租户标签的 Prometheus 格式 `/metrics`。
@@ -31,7 +32,7 @@ src/gateway/
     └── videoproxy/                # multipart 请求长度检查及串流代理
 ```
 
-`gateway.go` 建立并组合以上元件；路由表、上游 transport、SSE 转送及影片 multipart 代理分别由对应套件负责。API Key／租户政策、live 句柄签章与业务流程仍由 Gateway 应用层负责。
+`gateway.go` 建立并组合以上元件；路由表、上游 transport、SSE 转送及影片 multipart 代理分别由对应套件负责。Gateway 不解析模型 tool marker 或执行工具，只负责外部 API Key／租户政策、能力校验、转送及 live 句柄签章。
 
 ## 设定与密钥
 
@@ -49,7 +50,7 @@ API Key 以 JSON array 放在 Git 工作树以外的受保护档案，透过 `GA
 
 ## 启动
 
-先依 [`src/inference/README.md`](../inference/README.md) 启动推论 API。Gateway 可以在推论服务尚未就绪时启动，但 `/readyz` 会回 `503`。
+按顺序启动 Qwen3 Inference，再启动 Gateway。Gateway 可以在 Inference 尚未就绪时启动，但 `/readyz` 会回 `503`。
 
 PowerShell 范例：
 
@@ -60,6 +61,8 @@ Set-Location src/gateway
 go run ./cmd/gateway --config configs/gateway.yml
 ```
 
+Qwen3 工具调用经现有 `/v1/chat/completions` 转送至 `http://127.0.0.1:8011`；不需要额外 Agent endpoint 或内部共享 token。客户端工具循环示例见 [`tests/client.py`](../../tests/client.py)。
+
 从专案根目录呼叫：
 
 ```powershell
@@ -67,13 +70,13 @@ curl.exe http://127.0.0.1:8000/healthz
 curl.exe http://127.0.0.1:8000/readyz
 ```
 
-`/readyz` 会检查每个不同的已配置推论上游；只有全部回报 ready 才回成功。`/metrics` 预设启用，提供请求量、错误类别、延迟 histogram、SSE 首文字 token／串流时间及视讯本文读取完成时间。Prometheus 可用 histogram buckets 计算 p50、p95、p99；metrics 不使用原始 API Key 或租户 ID 作为标签。限流状态保存在单一程序记忆体，重启后重设；首版不支援多实例共享限流。
+`/readyz` 会检查每个不同的已配置 Inference 上游；只有全部回报 ready 才回成功。`/metrics` 预设启用，提供请求量、错误类别、延迟 histogram、SSE 首文字或工具调用增量／串流时间及视讯本文读取完成时间。Prometheus 可用 histogram buckets 计算 p50、p95、p99；metrics 不使用原始 API Key 或租户 ID 作为标签。限流状态保存在单一程序记忆体，重启后重设；首版不支援多实例共享限流。
 
 ## 测试与端到端验收
 
-Gateway 和推论服务启动方式维持独立。逐模型的三项测试入口、依赖条件与命令见 [`tests/README.md`](../../tests/README.md)；每个测试都必须用 `--config` 指向模型专属 `test.yaml`。Gateway 端到端测试位于 `tests/qwen3_0_6b/test_end2end.py` 和 `tests/mage_vl_4b/test_end2end.py`，前者验证文字 SSE，后者验证图片 SSE 和影片上传。
+Gateway 和推论服务启动方式维持独立。逐模型的三项测试入口、依赖条件与命令见 [`tests/README.md`](../../tests/README.md)；每个测试都必须用 `--config` 指向模型专属 `test.yml`。Gateway 端到端测试位于 `tests/qwen3_0_6b/test_end2end.py` 和 `tests/mage_vl_4b/test_end2end.py`，前者验证文字 SSE，后者验证图片 SSE 和影片上传。
 
-2026-10-22 已以低显存设定连接 Qwen3-0.6B 执行文字 JSON／SSE、双请求并发与客户端断流回收 smoke；同日也透过真实 Mage-VL 完成图片聊天 JSON／SSE、视讯上传与 Live／MediaMTX 合成 RTSP smoke。当前逐模型测试脚本将 JSON 摘要输出到标准输出，不会自动创建结果文件；需要归档时由执行者保存到对应模型目录的 results/。既有验收记录见 [`checkpoints/val.md`](../../checkpoints/val.md) 与 [`checkpoints/val.xlsx`](../../checkpoints/val.xlsx)。Live 仅有单次功能验证；正式容量、高并发和媒体授权边界仍未测。
+2026-10-22 已以低显存设定连接 Qwen3-0.6B 执行文字 JSON／SSE、双请求并发与客户端断流回收 smoke；同日也透过真实 Mage-VL 完成图片聊天 JSON／SSE、视讯上传与 Live／MediaMTX 合成 RTSP smoke。当前逐模型测试脚本将 JSON 摘要输出到标准输出，不会自动创建结果文件；需要归档时由执行者保存到对应模型目录的 results/。Mage-VL Gateway 验收记录见 [`analysis/mage_vl_4b/analysis.md`](../../analysis/mage_vl_4b/analysis.md)。Live 仅有单次功能验证；正式容量、高并发和媒体授权边界仍未测。
 
 目前仓库不再包含根目录的 example.py 或 test.jpg 范例。客户端可直接使用 OpenAI 兼容的聊天 API；API Key 由 VIDEO_API_KEY 环境变量提供。三项逐模型验收脚本及其设定方式见 [Tests README](../../tests/README.md)。
 

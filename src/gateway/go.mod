@@ -1,4 +1,4 @@
-module gitee.com/milo-ally-intern/LYGCloudModelAPI/src/gateway
+module example.com/videostreamapi/gateway
 
 go 1.23.0
 

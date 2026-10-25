@@ -6,22 +6,25 @@ __pycache__/
 
 # 本机模型权重与 Hugging Face 快取
 /checkpoints/**
-!/checkpoints/val.md
-!/checkpoints/val.xlsx
 *.safetensors
 *.bin
 *.pt
 *.pth
 
 # 本机执行输出
+/artifacts/
 /logs/
 /results/
 *.log
 *.pid
+/build/
+/src/inference/build/
+/src/inference/*.egg-info/
 
-# 本机密钥与 IDE 设定
+# 本地密钥、私人 Codex 配置与 IDE 目录
 .env
 .env.*
 !.env.example
 .vscode/
+.codex/
 /repos/

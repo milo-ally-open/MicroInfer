@@ -78,6 +78,7 @@ type ModelCapabilities struct {
 	TextChat    bool `yaml:"text_chat"`
 	ImageChat   bool `yaml:"image_chat"`
 	Streaming   bool `yaml:"streaming"`
+	ToolCalling bool `yaml:"tool_calling"`
 	VideoUpload bool `yaml:"video_upload"`
 	LiveVideo   bool `yaml:"live_video"`
 }
@@ -88,7 +89,8 @@ func (capabilities *ModelCapabilities) UnmarshalYAML(node *yaml.Node) error {
 		return fmt.Errorf("model capabilities must be a mapping")
 	}
 	known := map[string]struct{}{
-		"text_chat": {}, "image_chat": {}, "streaming": {}, "video_upload": {}, "live_video": {},
+		"text_chat": {}, "image_chat": {}, "streaming": {}, "tool_calling": {},
+		"video_upload": {}, "live_video": {},
 	}
 	seen := make(map[string]struct{}, len(known))
 	for index := 0; index < len(node.Content); index += 2 {
@@ -187,6 +189,9 @@ func (cfg Config) Validate() error {
 		}
 		if capabilities.Streaming && !capabilities.TextChat && !capabilities.ImageChat {
 			return fmt.Errorf("models.%s.streaming requires text_chat or image_chat", alias)
+		}
+		if capabilities.ToolCalling && !capabilities.TextChat {
+			return fmt.Errorf("models.%s.tool_calling requires text_chat", alias)
 		}
 	}
 	if cfg.Defaults.VideoModel == "" || !cfg.Models[cfg.Defaults.VideoModel].Capabilities.VideoUpload {

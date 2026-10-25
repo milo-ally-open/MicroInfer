@@ -38,6 +38,8 @@ def apply_rotary(
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     from transformers import Qwen3Config
     from transformers.models.qwen3.modeling_qwen3 import (
         Qwen3RotaryEmbedding,
@@ -64,4 +66,4 @@ if __name__ == "__main__":
     print(f"key={baseline_output[1][0, 0, 0, :4].tolist()}")
     torch.testing.assert_close(engine_output[0], baseline_output[0], atol=1e-6, rtol=1e-6)
     torch.testing.assert_close(engine_output[1], baseline_output[1], atol=1e-6, rtol=1e-6)
-    print("Qwen3 RoPE matches the Transformers baseline on CPU.")
+    print(f"Qwen3 RoPE matches the Transformers baseline on {test_device}.")

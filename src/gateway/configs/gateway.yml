@@ -26,6 +26,7 @@ models:
       text_chat: false
       image_chat: true
       streaming: true
+      tool_calling: false
       video_upload: true
       live_video: true
   qwen3-0.6b:
@@ -35,6 +36,7 @@ models:
       text_chat: true
       image_chat: false
       streaming: true
+      tool_calling: true
       video_upload: false
       live_video: false
 

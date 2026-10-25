@@ -18,14 +18,14 @@ import (
 	"strings"
 	"time"
 
-	"gitee.com/milo-ally-intern/LYGCloudModelAPI/src/gateway/internal/auth"
-	"gitee.com/milo-ally-intern/LYGCloudModelAPI/src/gateway/internal/config"
-	"gitee.com/milo-ally-intern/LYGCloudModelAPI/src/gateway/internal/middleware"
-	"gitee.com/milo-ally-intern/LYGCloudModelAPI/src/gateway/internal/observability"
-	"gitee.com/milo-ally-intern/LYGCloudModelAPI/src/gateway/internal/route"
-	streaming "gitee.com/milo-ally-intern/LYGCloudModelAPI/src/gateway/internal/stream"
-	"gitee.com/milo-ally-intern/LYGCloudModelAPI/src/gateway/internal/upstream"
-	"gitee.com/milo-ally-intern/LYGCloudModelAPI/src/gateway/internal/videoproxy"
+	"example.com/videostreamapi/gateway/internal/auth"
+	"example.com/videostreamapi/gateway/internal/config"
+	"example.com/videostreamapi/gateway/internal/middleware"
+	"example.com/videostreamapi/gateway/internal/observability"
+	"example.com/videostreamapi/gateway/internal/route"
+	streaming "example.com/videostreamapi/gateway/internal/stream"
+	"example.com/videostreamapi/gateway/internal/upstream"
+	"example.com/videostreamapi/gateway/internal/videoproxy"
 )
 
 type Config = config.Config
@@ -298,6 +298,14 @@ func (app *Application) chat(w http.ResponseWriter, r *http.Request) {
 	streamingResponse, _ := payload["stream"].(bool)
 	if streamingResponse && !modelRoute.Capabilities.Streaming {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_model_capability", "The selected model does not support streaming output.")
+		return
+	}
+	if hasTools, _ := payload["tools"].([]any); len(hasTools) > 0 && !modelRoute.Capabilities.ToolCalling {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_model_capability", "The selected model does not support tool calling.")
+		return
+	}
+	if parallel, _ := payload["parallel_tool_calls"].(bool); parallel {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "parallel_tool_calls_unsupported", "Parallel tool calls are not supported.")
 		return
 	}
 	payload["model"] = modelRoute.UpstreamModel

@@ -70,6 +70,8 @@ class Qwen3Sampler:
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     logits = torch.tensor([-2.0, 0.2, 0.1, 3.0, 2.5, 0.0])
     prompt_tokens = [3, 1, 3]
     options = {"temperature": 0.0, "repetition_penalty": 1.5, "no_repeat_ngram_size": 2}
@@ -90,5 +92,5 @@ if __name__ == "__main__":
     print("==========baseline==========")
     print(f"adjusted-logit argmax={baseline_token}")
     assert engine_token == baseline_token
-    print("Qwen3 greedy sampler matches the explicit PyTorch baseline on CPU.")
+    print(f"Qwen3 greedy sampler matches the explicit PyTorch baseline on {test_device}.")
 

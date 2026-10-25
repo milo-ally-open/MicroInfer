@@ -1,0 +1,158 @@
+hardware:
+  expected_gpu: NVIDIA GeForce RTX 4060 Laptop GPU
+
+model:
+  # id 是 Hugging Face 上游模型识别码，与本专案的 mage-vl-4b 别名不同，请勿改写。
+  id: microsoft/Mage-VL
+  revision: d88b153285f1633a61b2f693c59c8576693af185
+  dtype: bfloat16
+  device_map: 0
+  # 视觉塔采模型包内明确 eager 注意力；文字骨干采模型包注册的分块 eager 实作。
+  attn_implementation: eager
+  attention:
+    # 分块文字 Query 限制长影片输入的注意力暂存显存。
+    query_chunk_size: 128
+  experts_implementation: null
+  # Hugging Face 核心映射为选用功能；启用前请固定并检视远端核心来源。
+  use_kernels: false
+  kernel_config: null
+  use_safetensors: true
+  weights_only: true
+  offload_buffers: false
+  disable_mmap: null
+  components:
+    # 仅可选用 Mage-VL 模型包内已登记的模组替换；空对应表保留上游 Transformers 架构。
+    replacements: {}
+  # Accelerate 选用卸载目录；若模型完全常驻 GPU，请维持 null。
+  offload_folder: null
+  quantization:
+    # 可选 none、nf4、int8 或 prequantized；后者使用模型权重内附的量化中继资料。
+    method: nf4
+    quant_type: nf4
+    double_quant: true
+    compute_dtype: bfloat16
+    quant_storage: null
+    llm_int8_enable_fp32_cpu_offload: false
+    llm_int8_threshold: 6.0
+    llm_int8_has_fp16_weight: false
+    llm_int8_skip_modules: null
+    gpu_max_memory: 6GiB
+    cpu_max_memory: 4GiB
+
+processor:
+  # 除非已确认快速处理器可用，否则交由 Transformers 选择处理器实作。
+  use_fast: null
+
+backend:
+  name: transformers
+
+runtime:
+  hf_home: checkpoints
+  # 使用已下载的固定 revision 快照，避免启动时查询 Hub 或重新下载权重。
+  local_model_path: checkpoints/microsoft-Mage-VL-d88b153
+  hf_endpoint: https://huggingface.co
+  local_files_only: true
+  hf_hub_disable_xet: true
+  hf_hub_download_timeout_seconds: 120
+  environment: {}
+  conda_env: magevl-transformers
+  python_venv: .venv/magevl-transformers
+  cuda_visible_devices: null
+  uvicorn_workers: 1
+  uvicorn_log_level: info
+  uvicorn_access_log: true
+  uvicorn_timeout_keep_alive_seconds: 5
+  startup_timeout_seconds: 2400
+  startup_poll_interval_seconds: 2
+  startup_log_file: logs/transformers-startup.log
+  startup_result_file: logs/transformers-startup.json
+  worker_startup_timeout_seconds: 2400
+  worker_request_timeout_seconds: 1800
+  engine_core_startup_timeout_seconds: 2430
+  engine_core_request_timeout_seconds: 1830
+
+api:
+  image_resampling: lanczos
+  max_image_side: 896
+  max_images_per_request: 1
+  max_image_bytes: 10485760
+  max_image_pixels: 16777216
+  max_chat_request_bytes: 15728640
+  max_live_request_bytes: 65536
+  max_video_bytes: 209715200
+  max_video_request_bytes: 210763776
+  max_video_duration_seconds: 120
+  video_max_frames: 16
+  video_max_frame_side: 896
+  video_backend: frames
+  codec:
+    engine: hevc
+    target_canvas: 32
+    max_pixels: 150000
+    timeout_seconds: 900
+    ffmpeg_bin: ffmpeg
+    ffprobe_bin: ffprobe
+  live_stream:
+    video_backend: frames
+    sample_interval_seconds: 2
+    window_seconds: 8
+    max_duration_seconds: 3600
+    max_sessions: 1
+    open_timeout_seconds: 10
+    read_timeout_seconds: 5
+    reconnect_interval_seconds: 2
+    codec_target_canvas: 16
+    codec_max_pending_segments: 2
+
+  max_context_tokens: 8192
+  max_new_tokens: 512
+  image_url_timeout_seconds: 10
+  stream_timeout_seconds: 300
+
+engine:
+  # 单一 Model Worker 上的轮转序列数与等待伫列上限。
+  max_num_seqs: 4
+  max_waiting_requests: 16
+  # 短暂合并可同时执行的工作；此等待时间会增加少量首 token latency。
+  batch_wait_seconds: 0.01
+  # 每轮实际执行 token 上限。首个 chunk 会包含全部视觉 token，必要时可大于 chunk size。
+  max_num_scheduled_tokens: 8192
+  # 其余 prompt token 分轮追加至同一请求的 Transformers Cache。
+  prefill_chunk_size_tokens: 2048
+  kv_cache:
+    block_size_tokens: 16
+    capacity_tokens: 32768
+
+generation:
+  max_tokens_default: 128
+  temperature: 0.0
+  top_p: 1.0
+  top_k: 50
+  min_p: null
+  repetition_penalty: 1.0
+  no_repeat_ngram_size: 0
+  # Token Scheduler 的逐步生成目前要求单 beam。
+  num_beams: 1
+  use_cache: true
+  # 逐步生成使用模型预设 DynamicCache；独立 KV block 管理器先负责容量预留与释放。
+  cache_implementation: null
+  cache_config: null
+  # 逐步 Runner 尚未支援自订 GenerationMixin 参数，维持空对应表。
+  advanced_kwargs: {}
+
+optimization:
+  pytorch:
+    allow_tf32: true
+    cudnn_allow_tf32: true
+    cudnn_benchmark: false
+    float32_matmul_precision: high
+  torch_compile:
+    # 此功能仍属实验性；编译可能增加启动时间与记忆体用量，模型远端程式码也可能造成计算图中断。
+    enabled: false
+    backend: inductor
+    mode: default
+    fullgraph: false
+    dynamic: true
+
+
+

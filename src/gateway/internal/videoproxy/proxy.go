@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"gitee.com/milo-ally-intern/LYGCloudModelAPI/src/gateway/internal/upstream"
+	"example.com/videostreamapi/gateway/internal/upstream"
 )
 
 type Metrics interface {

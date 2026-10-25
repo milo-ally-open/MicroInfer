@@ -9,7 +9,7 @@
 
 改造前，Qwen3 Worker 会在生成步骤将 token ID 解码成文字；Worker 程序管理和 Engine Core RPC 集中在 `engine/worker.py`；Qwen Runner 在 forward 前组装批次张量。这使 API 输入处理、Engine 输出转换、执行器、硬体平台和 Runner 批次组装的责任边界仍不够清晰。
 
-既有 RTX 4060 验收及性能记录保存在 `checkpoints/val.md`、`checkpoints/val.xlsx`。这些是先前版本的基线证据；本次结构改造后的 SSE、Executor 与 InputBatch 行为仍需按 `tasks.md` 重新验收。
+既有 RTX 4060 验收及性能记录曾保存在 `checkpoints/val.md`、`checkpoints/val.xlsx`，现已按模型迁入根目录 `analysis/<model_alias>/`。这些是先前版本的基线证据；本次结构改造后的 SSE、Executor 与 InputBatch 行为仍需按 `tasks.md` 重新验收。
 
 ## 目标与决策
 
@@ -34,7 +34,7 @@
 - L5 Qwen3 自有 PyTorch 模型计算图；Transformers 仅提供 config／tokenizer 等生态相容能力，Safetensors loader 负责权重映射。
 - 新模型只需实作模型 Runner／Adapter 并登记工厂；API app、Engine Core、Executor 和 Worker 建立流程由共用入口负责，不再要求每个模型复制 `app.py`／`engine_core.py`。
 - 模型对外 ID、输入处理器和选用的影片／Live 入口由 Registry 登记；上游 repo ID 保持在模型 YAML，两者分开维护。
-- 每个模型目录透过 `configs/model.yaml` 自我登记 alias、Runtime 工厂、API 能力与相对设定路径；Launcher 自动发现模型 manifest，启动时必须明确选择模型，不设全域预设模型档。
+- 每个模型目录透过 `configs/model.yml` 自我登记 alias、Runtime 工厂、API 能力与相对设定路径；Launcher 自动发现模型 manifest，启动时必须明确选择模型，不设全域预设模型档。
 - 每个模型提供 `runtime.py:create_runtime()`，由共用 Worker 取得统一 Runtime facade；Runner／Adapter 等模型元件由该工厂在 Worker 子程序内组装。
 - 模型目录采按需分层：`model/` 放拓扑，`layers/` 放模型层，`components/` 放 Runner／Adapter／批次与 Cache 元件，`utils/loader.py` 集中设定、Transformers 资产及权重载入。简单模型不需建立不使用的目录。
 
@@ -63,7 +63,7 @@
 
 KV block 所有权仍分成 Engine 的逻辑 reservation 和 Qwen Worker 的 GPU 实体 page；本次不把这种映射描述成 Attention kernel 的分页直接读取。Executor 启动失败、逾时或正常关闭须维持 Worker 收尾行为。
 
-改造前的工作树已建立本地回复提交 `0cb3c56`（`feat: add native Qwen3-0.6B inference engine`）。它只在本地 Git 历史中，没有推送。此次五层改造也只保存在本地 Git 历史，不推送远端；保留 `checkpoints/val.md`、`checkpoints/val.xlsx` 原内容。
+改造前的工作树已建立本地回复提交 `0cb3c56`（`feat: add native Qwen3-0.6B inference engine`）。它只在本地 Git 历史中，没有推送。此次五层改造也只保存在本地 Git 历史，不推送远端；既有验收数据现由 `analysis/<model_alias>/analysis.md`、`analysis.xlsx` 接续维护。
 
 ## 完成条件
 
@@ -88,3 +88,17 @@ KV block 所有权仍分成 Engine 的逻辑 reservation 和 Qwen Worker 的 GPU
 ## 新模型接入文档澄清
 
 本次只细化模型接入说明，不改变模型实现、API 契约、运行配置或启动方式。接入指南逐项描述需要新增或修改的文件及其内容，并说明 profile、Gateway、MediaMTX 和三项测试的使用条件；不附模型实现代码示例。验收以文件清单完整、内容职责与当前代码一致、README 链接有效及 Inference Spec validator 通过为准。
+
+## Qwen 标准工具调用补强
+
+按新增 REQ-14，共用 Chat schema／消息历史／JSON Schema 校验提供跨模型协议，Qwen3 adapter 解析原生工具调用标记，输出标准 JSON/SSE；Inference 只解析模型意图，不执行工具。工具由 OpenAI 兼容客户端或上层 Agent 应用执行，再用标准 tool message 回传至同一 Chat Completions endpoint；不增加专用 Agent endpoint。其他模型只需登记自有 adapter 和能力，不需改变共用 Engine。
+
+本次代码完成后仍需执行静态验证、Qwen API JSON/SSE 与安全边界验收；8 个合成样本评估工具选择与参数准确率，但在实际报告写出前不记录分数，也不把准确率当工具授权证明。
+
+## 共用 Inference 模块目录标准化
+
+本次依据 REQ-15 将 API 与 Engine 的共用程式从平铺文件改为职责 package：API 分为应用装配、协议契约、处理器与路由；Engine 分为核心编排、共享契约、调度、Cache、执行、传输、配置与启动组合。Engine Core 依赖独立 Executor Protocol，进程执行细节留在 execution package。模型目录、HTTP endpoint、运行配置及模型行为维持原样；Launcher、模型工厂路径、Python imports 与当前架构文档同步迁移。目的在于让同一职责的模块可以作为 package 单独理解、测试和搬移，同时避免模型包依赖 API route 或 Engine 组合入口。
+
+## Qwen3 算子分析与优化工作流
+
+本次依据使用者要求，把 Qwen3 各自带有 `__main__` 的计算模块串成可复跑的组件集成检查；逐模型三项测试改为从顶部执行的单一脚本，不使用自定义测试 helper。新增可选 Attention profile 模式，使用本机固定 snapshot 的第 0 层真实 Attention 权重、Qwen3 配置及 KV page 大小，量测 CUDA prefill/decode 并输出 PyTorch Profiler 明细。该模式只测单层算子，activation 为合成输入；不得把它描述成完整模型性能验收。Qwen3 算子的实测、分析、优化方向和验收状态记录在 `analysis/qwen3_0_6b/`；Mage-VL Gateway 历史验收事实放在 `analysis/mage_vl_4b/`。旧 `val.*` 文件名由各模型目录中的报告取代，并保留样本数与限制。

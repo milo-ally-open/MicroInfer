@@ -23,15 +23,12 @@ from transformers.utils import (
 )
 
 from .configuration_mage_vl import MageVLConfig, MageVLVisionConfig
-from ..layers.vision_encoder import (
-    MageVLVisionEmbeddings,
-    MageVLVisionEncoder,
-    MageVLVisionPatchMerger,
-    VisionRotaryEmbedding,
-    get_norm_layer,
-)
 from ..layers.multi_head_attention import MultiHeadAttention
 from ..layers.siglip_mlp import SiglipMLP
+from ..layers.vision_attention import get_norm_layer
+from ..layers.vision_embeddings import MageVLVisionEmbeddings, MageVLVisionPatchMerger
+from ..layers.vision_rope import VisionRotaryEmbedding
+from ..layers.vision_stack import MageVLVisionEncoder
 
 
 class MageVLPreTrainedModel(PreTrainedModel):
@@ -376,6 +373,8 @@ class MageVLVisionPretrainedModel(MageVLPreTrainedModel):
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     from transformers.models.siglip2.configuration_siglip2 import Siglip2VisionConfig
     from transformers.models.siglip2.modeling_siglip2 import (
         Siglip2MultiheadAttentionPoolingHead as TransformersPoolingHead,
@@ -413,7 +412,7 @@ if __name__ == "__main__":
     print("==========baseline==========")
     print(f"shape={tuple(baseline_output.shape)}, sample={baseline_output[0, :4].tolist()}")
     torch.testing.assert_close(engine_output, baseline_output, atol=1e-5, rtol=1e-5)
-    print("Mage-VL vision pooling head matches the Transformers SigLIP2 baseline on CPU.")
+    print(f"Mage-VL vision pooling head matches the Transformers SigLIP2 baseline on {test_device}.")
 
     full_vision_config = MageVLVisionConfig(
         hidden_size=64,
@@ -425,6 +424,7 @@ if __name__ == "__main__":
         out_hidden_size=32,
         spatial_merge_size=2,
     )
+    full_vision_config._attn_implementation = "eager"
     vision_model = MageVLVisionPretrainedModel(full_vision_config).eval()
     pixel_patches = torch.randn(
         4,
@@ -464,3 +464,51 @@ if __name__ == "__main__":
     print("==========baseline==========")
     print(f"component-composed vision reference={baseline_vision[0, :4].tolist()}")
     torch.testing.assert_close(engine_vision, baseline_vision, atol=1e-5, rtol=1e-5)
+
+    import importlib.util
+    import sys
+    import types
+    from pathlib import Path
+
+    official_snapshot = Path(__file__).resolve().parents[5] / "checkpoints" / "microsoft-Mage-VL-d88b153"
+    official_package_name = "_mage_vl_official_d88b153"
+    official_package = types.ModuleType(official_package_name)
+    official_package.__path__ = [str(official_snapshot)]
+    sys.modules[official_package_name] = official_package
+    official_name = f"{official_package_name}.modeling_mage_vl"
+    official_spec = importlib.util.spec_from_file_location(official_name, official_snapshot / "modeling_mage_vl.py")
+    if official_spec is None or official_spec.loader is None:
+        raise RuntimeError(f"Unable to load the official Mage-VL source at {official_snapshot}.")
+    official = importlib.util.module_from_spec(official_spec)
+    sys.modules[official_name] = official
+    official_spec.loader.exec_module(official)
+    reference_config = official.MageVLVisionConfig(
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_channels=3,
+        image_size=full_vision_config.image_size,
+        patch_size=2,
+        out_hidden_size=32,
+        spatial_merge_size=2,
+        rope_theta=full_vision_config.rope_theta,
+        layer_norm_eps=full_vision_config.layer_norm_eps,
+        layer_norm_type=full_vision_config.layer_norm_type,
+        frame_windows_size=full_vision_config.frame_windows_size,
+    )
+    reference_config._attn_implementation = "eager"
+    official_visual = official.MageVLVisionPretrainedModel(reference_config).eval()
+    official_visual.load_state_dict(vision_model.state_dict(), strict=True)
+    with torch.inference_mode():
+        official_vision = official_visual(
+            pixel_patches,
+            grid_thw=grid_thw,
+            patch_positions=patch_positions,
+        ).last_hidden_state
+    print("==========engine===========")
+    print(f"Mage-VL vision tower={engine_vision[0, :4].tolist()}")
+    print("==========baseline==========")
+    print(f"official Mage-VL vision tower={official_vision[0, :4].tolist()}")
+    torch.testing.assert_close(engine_vision, official_vision, atol=1e-5, rtol=1e-5)
+    print(f"Mage-VL vision tower matches the official fixed-revision source on {test_device}.")

@@ -12,7 +12,7 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
 
 from .model_outputs import MageVLCausalLMOutputWithPast
-from .multimodal_model import MageVLModel
+from .mage_vl import MageVLModel
 from .vision_tower import MageVLPreTrainedModel
 
 @auto_docstring
@@ -136,8 +136,8 @@ class MageVLForConditionalGeneration(MageVLPreTrainedModel, GenerationMixin):
         >>> from PIL import Image
         >>> import requests
         >>> from transformers import AutoProcessor
-        >>> from models.mage_vl_4b.model.configuration_mage_vl import MageVLConfig
-        >>> from models.mage_vl_4b.model.conditional_generation import MageVLForConditionalGeneration
+        >>> from inference.models.mage_vl_4b.model.configuration_mage_vl import MageVLConfig
+        >>> from inference.models.mage_vl_4b.model.conditional_generation import MageVLForConditionalGeneration
 
         >>> model_path = "/path/to/local/mage-vl-snapshot"
         >>> model_config = MageVLConfig.from_pretrained(model_path, local_files_only=True)
@@ -429,6 +429,8 @@ __all__ = [
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     from transformers import Qwen3Config
     from transformers.models.qwen3.modeling_qwen3 import (
         Qwen3ForCausalLM as TransformersQwen3ForCausalLM,
@@ -473,4 +475,4 @@ if __name__ == "__main__":
     print("==========baseline==========")
     print(f"shape={tuple(baseline_output.logits.shape)}, sample={baseline_output.logits[0, -1, :4].tolist()}")
     torch.testing.assert_close(engine_output.logits, baseline_output.logits, atol=1e-5, rtol=1e-5)
-    print("Mage-VL conditional generation text path matches the Transformers Qwen3 baseline on CPU.")
+    print(f"Mage-VL conditional generation text path matches the Transformers Qwen3 baseline on {test_device}.")

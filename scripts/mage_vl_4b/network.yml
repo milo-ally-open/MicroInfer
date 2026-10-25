@@ -1,0 +1,11 @@
+# API 监听与即时串流端点设定；模型推论参数请放在 inference.yml。
+api:
+  host: 127.0.0.1
+  port: 8001
+
+live_stream:
+  # MediaMTX 供服务端读取串流的内部位址，以及回传给推流客户端的公开主机名称。
+  mediamtx_rtsp_host: 127.0.0.1
+  mediamtx_rtsp_port: 8554
+  mediamtx_rtmp_port: 1935
+  public_host: ""

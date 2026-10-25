@@ -107,6 +107,8 @@ class Qwen3Model(nn.Module):
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     from transformers import Qwen3Config
     from transformers.models.qwen3.modeling_qwen3 import Qwen3Model as TransformersQwen3Model
 
@@ -167,4 +169,4 @@ if __name__ == "__main__":
     print("==========baseline==========")
     print(f"prefill={expected_prefill.last_hidden_state[0, -1, :4].tolist()}")
     print(f"decode={expected_decode.last_hidden_state[0, -1, :4].tolist()}")
-    print("Mage-VL Qwen3 text backbone matches Transformers eager Prefill and Cache Decode on CPU.")
+    print(f"Mage-VL Qwen3 text backbone matches Transformers eager Prefill and Cache Decode on {test_device}.")

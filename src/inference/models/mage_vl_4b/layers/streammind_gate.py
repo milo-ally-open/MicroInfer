@@ -137,6 +137,8 @@ class StreamMindGate(nn.Module):
 
 
 if __name__ == "__main__":
+    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(test_device)
     from transformers import Qwen3Config
     from transformers.models.qwen3 import Qwen3ForCausalLM
 
@@ -158,7 +160,7 @@ if __name__ == "__main__":
     print(f"PostNet LeakyReLU + linear={baseline_post[0, 0, :4].tolist()}")
     torch.testing.assert_close(engine_pre, baseline_pre, atol=1e-6, rtol=1e-6)
     torch.testing.assert_close(engine_post, baseline_post, atol=1e-6, rtol=1e-6)
-    print("StreamMind projection layers match their PyTorch baselines on CPU.")
+    print(f"StreamMind projection layers match their PyTorch baselines on {test_device}.")
 
     classifier_config = Qwen3Config(
         vocab_size=2,

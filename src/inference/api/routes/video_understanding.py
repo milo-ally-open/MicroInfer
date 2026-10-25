@@ -6,8 +6,8 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
-from api.schemas import VideoUnderstandingResponse
-from api.serializers import chat_completion
+from inference.api.contracts.schemas import VideoUnderstandingResponse
+from inference.api.contracts.serializers import chat_completion
 
 
 router = APIRouter()
