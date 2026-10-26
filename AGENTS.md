@@ -1,4 +1,4 @@
-# VideoStreamAPI 专案协作规范
+# MicroInfer 专案协作规范
 
 ## 专案目标
 

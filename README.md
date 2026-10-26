@@ -1,6 +1,6 @@
-# VideoStreamAPI
+# MicroInfer
 
-VideoStreamAPI 提供视频理解推理服务和独立的 Go API Gateway。Inference 负责模型加载、输入处理与生成；Gateway 负责客户端接入、认证、限流、模型路由和请求转发。两者分别配置、启动和验收。
+MicroInfer 提供视频理解推理服务和独立的 Go API Gateway。Inference 负责模型加载、输入处理与生成；Gateway 负责客户端接入、认证、限流、模型路由和请求转发。两者分别配置、启动和验收。
 
 ## 功能概览
 
