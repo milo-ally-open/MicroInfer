@@ -15,15 +15,31 @@ API Server、Engine Core 和 Model Worker 是独立进程。API Server 通过 `n
 
 模型专属 tokenizer、chat template、输入格式和视觉预处理继续放在模型包中。`processors/` 用于新增跨模型可复用的处理能力。
 
+### 模型请求编解码链
+
+| 阶段 | Qwen3 | Mage-VL |
+| --- | --- | --- |
+| Encoder | `models/qwen3_0_6b/components/encoder.py`：规范消息、工具策略和生成参数，产出编码计划 | `models/mage_vl_4b/components/encoder.py`：只负责组合与分发；`image_encoder.py` 解析文字／图片，`video_encoder.py` 处理帧／Codec 输入 |
+| Tokenizer | `models/qwen3_0_6b/components/tokenizer.py`：套用 Qwen3 chat template 并生成 prompt token IDs | `models/mage_vl_4b/components/tokenizer.py`：封装上游文字词表；Mage-VL `AutoProcessor` 继续联合完成文字 tokenize 与视觉张量处理 |
+| Decoder | `models/<model>/components/decoder.py`：将完整生成 token IDs 转成最终文字 | 同左；由 Model Runner 调用 |
+| Detokenizer | `models/<model>/components/detokenizer.py`：逐 token 产出稳定的 SSE 文本片段 | 同左；由逐步生成器在每个 request 内维护 |
+
+Qwen3 的 API `processor.py` 是兼容门面，会组合上述组件。Mage-VL 的 `processor.py` 保留旧辅助函数入口，实际输入编码位于 `components/encoder.py`。分层只拆开项目负责的工作；Mage-VL 仍使用上游 `AutoProcessor` 处理文字与视觉输入，避免复制或改变模型自带的多模态预处理。
+
 ## 环境与安装
 
-需要 Python 3.10 或更新版本，以及与目标设备匹配的 PyTorch/CUDA。PyTorch wheel 应先按机器环境安装。然后在所选模型环境中，从仓库根目录安装对应依赖：
+需要 Python 3.10 或更新版本，以及与目标设备匹配的 PyTorch/CUDA。PyTorch wheel 应先按机器环境安装。当前本机统一使用 Conda `inference` 环境；同一环境要运行 Mage-VL 与 Qwen3 时，从仓库根目录安装两个模型 extra：
 
 ```bash
-# Mage-VL
-python -m pip install -e "src/inference[mage-vl]"
+conda activate inference
+python -m pip install -e "src/inference[mage-vl,qwen3]"
+```
 
-# 或 Qwen3
+若环境只部署单一模型，可只安装它对应的 extra：
+
+```bash
+python -m pip install -e "src/inference[mage-vl]"
+# 或
 python -m pip install -e "src/inference[qwen3]"
 ```
 
@@ -79,7 +95,14 @@ if __name__ == "__main__":
     main()
 ```
 
-`generate_chat()` 返回 `InferenceResult`，文本位于 `result.content`。长驻服务应在启动和关闭钩子中分别调用 `engine.start()` 与 `engine.close()`，不要为每个请求创建 Engine。部署 wheel 时，可通过 `INFERENCE_PROJECT_ROOT` 指定 checkpoint 和运行配置所在目录。
+`generate_chat()` 返回 `InferenceResult`，文本位于 `result.content`。每个模型的独立示例统一放在 `models/<model_name>/example.py`：Qwen3 示例展示 Encoder、Tokenizer、Decoder、Detokenizer 与 token 流；Mage-VL 示例用仓库根目录的 `test.jpg` 演示图片输入和文字流。可从仓库根目录运行：
+
+```bash
+python src/inference/models/qwen3_0_6b/example.py
+python src/inference/models/mage_vl_4b/example.py
+```
+
+长驻服务应在启动和关闭钩子中分别调用 `engine.start()` 与 `engine.close()`，不要为每个请求创建 Engine。部署 wheel 时，可通过 `INFERENCE_PROJECT_ROOT` 指定 checkpoint 和运行配置所在目录。
 
 `inference_config_path` 和 `network_config_path` 可接收字符串或 `Path`；显式传入的相对路径以当前工作目录为基准。省略某个参数时，该文件路径从模型 `model.yml` 的对应字段读取。YAML 顶层必须是 mapping；配置中的相对 checkpoint 路径仍以 `INFERENCE_PROJECT_ROOT` 为基准。长驻服务可以把环境专用配置放在部署目录，并将两个文件路径传给插件工厂。
 
@@ -113,4 +136,4 @@ API Key 和其他密钥不写入模型 YAML；Gateway 认证配置见 [Gateway R
 
 每个模型维护 `test_components.py`、`test_performance.py`、`test_end2end.py` 和明确传入的 `test.yml`，位于 `tests/<model_alias>/`。组件测试不加载完整 checkpoint；性能测试需要模型权重、GPU 与 Inference API；端到端测试需要 Gateway、Inference、API Key 和适用素材。命令与结果限制见 [Tests README](../../tests/README.md)。
 
-Qwen3 另有模型包内 CUDA decode attention prototype。它只用于单 token decode，当前测量慢于 PyTorch reference，默认仍关闭；构建要求和限制见 [CUDA kernel README](models/qwen3_0_6b/kernels/cuda/README.md)。项目不宣称 vLLM 兼容性，也没有 Prefix Caching。
+项目参考 vLLM/nano-vLLM 的组件职责，不宣称 vLLM 兼容性，也没有 Prefix Caching。Qwen3 使用 PyTorch Attention；其实体 KV pages 在 Attention 计算前 gather 为连续张量。

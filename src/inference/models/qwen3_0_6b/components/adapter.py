@@ -14,7 +14,7 @@ from inference.engine.sequence import (
 )
 from inference.engine.sequence import InferenceError
 from ..utils import loader as config
-from ..processor import build_sampling_params, prepare_chat_input
+from .encoder import Qwen3Encoder, build_sampling_params
 
 
 class Qwen3ModelAdapter:
@@ -27,7 +27,6 @@ class Qwen3ModelAdapter:
     def health_info(self) -> dict[str, Any]:
         return {
             "backend": "qwen3_native_torch",
-            "attention_backend": self.model_runner.attention_backend,
             "model": config.MODEL_ALIAS,
             "revision": config.MODEL_REVISION,
             "platform": self.model_runner.platform.name,
@@ -54,7 +53,7 @@ class Qwen3ModelAdapter:
             if self.model_runner.tokenizer is None:
                 raise RuntimeError("Qwen3 tokenizer is not loaded in the Model Worker.")
             try:
-                prepared_input = prepare_chat_input(self.model_runner.tokenizer, request_body)
+                prepared_input = Qwen3Encoder().encode(request_body, self.model_runner.tokenizer)
             except ValueError as exc:
                 raise InferenceError(400, str(exc)) from exc
         if prepared_input.model_alias != config.MODEL_ALIAS:

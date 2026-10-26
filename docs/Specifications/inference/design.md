@@ -8,7 +8,7 @@ vLLM V1 官方架构将 API Server、Engine Core 和 GPU Worker 分成不同程�
 
 [nano-vLLM README](https://github.com/GeeeekExplorer/nano-vllm) 将自身描述为精简、可读的 vLLM 实作，展示其以较小程式结构承载 Engine、批次和最佳化概念。本专案参考其「用可读的核心流程学习／组织 Engine」方向；不把 README 中宣称的功能或 benchmark 当成本专案能力，也不将 nano-vLLM 加入执行依赖。
 
-本地现况包含固定 revision 的 Qwen3 config／tokenizer／Safetensors 载入、自有 PyTorch 模型、批次 prefill/decode、Worker 实体 KV pool 和文字 SSE。Qwen3 模型包内另有选用式 native CUDA decode Attention；2026-10-25 已在本机 RTX 4060 Laptop 完成扩展构建、float16/bfloat16 多序列数值对照、固定 checkpoint 单层 profile、CUDA backend API 性能与 Gateway SSE 验收。该 prototype 当前慢于 PyTorch gather 路径，模型默认仍保持 PyTorch，不能据此宣称性能提升或生产环境普遍适用。测量记录保存在 `analysis/qwen3_0_6b/` 与 `tests/qwen3_0_6b/results/`。Mage-VL 仍使用 Transformers 模型路径；项目没有 SGLang/vLLM backend、Ray 或第二个原生模型。
+本地现况包含固定 revision 的 Qwen3 config／tokenizer／Safetensors 载入、自有 PyTorch 模型、批次 prefill/decode、Worker 实体 KV pool 和文字 SSE。Qwen3 当前使用 PyTorch Attention，并在 Attention 计算前将历史 KV pages gather 为连续张量。2026-10-25 曾完成单模型 CUDA prototype 的数值、profile、API 与 Gateway SSE 验收；后续依使用者决定已撤除其源码、构建脚本和运行时接口，历史测量保存在 `analysis/qwen3_0_6b/` 与 `tests/qwen3_0_6b/results/`。当前工作树中已不存在原 kernel 目录或编译产物。Mage-VL 仍使用 Transformers 模型路径；项目没有 SGLang/vLLM backend、Ray 或第二个原生模型。
 
 ## 五层责任与相依
 
@@ -210,18 +210,15 @@ Qwen `configs/inference.yml` 保存 model repo／revision、dtype/device、`runt
 
 每个模型在 `analysis/{model_alias}/` 维护一份 `analysis.md` 与一份 `analysis.xlsx`。Markdown 单表严格按“问题、解决方案、效果”组织，每行引用 Excel 中的证据 ID；Excel 保留该行的测量数据和验收状态。算子实现变更后在对应模型表中保留前后测量和验收结果。旧 `val.md/xlsx` 的记录已按模型 alias 迁入对应目录。
 
-## Qwen3 Engine 组件与原生 CUDA 后端（REQ-17）
+## Qwen3 Engine 组件、KV 管理与 Attention 路径（REQ-17、REQ-22）
 
 本次以现有 Engine contracts 与三程序拓扑为边界，采用 nano-vLLM 的职责概念，不复制其单体 Engine 结构：
 
 - `engine/sequence.py` 定义 Engine 可序列化的请求进度状态；Scheduler 不再维护另一份互不一致的 prompt/output/block 进度。它不承载 Worker Cache、GPU tensor、媒体内容或 API stream queue。
-- `engine/block_manager.py` 管理 Engine 侧空闲物理 block、request block table、准入时的原子容量保留和幂等释放。实际 KV tensor 由 Qwen Worker 的 `PagedKVCache` 持有。每个 `ScheduledWorkItem` 将带本轮一致的 block table；首轮保留完整最大序列容量，CUDA kernel 不分配 block。
+- `engine/block_manager.py` 管理 Engine 侧空闲物理 block、request block table、准入时的原子容量保留和幂等释放。实际 KV tensor 由 Qwen Worker 的 `PagedKVCache` 持有。每个 `ScheduledWorkItem` 将带本轮一致的 block table；首轮保留完整最大序列容量。
 - 唯一 Scheduler 仍在 `engine/scheduler.py`，唯一请求编排器仍在 `engine/inference_engine.py`。后者等价承担模型服务的 Engine 编排职责，不另建会重复的 `model_engine.py`。模型专属 Runner 仍由 Qwen 模型包提供，Worker process/IPC 仍由 `engine/worker.py` 管理。
-- `models/qwen3_0_6b/kernels/cuda/` 在 Qwen3 模型包内提供 PyTorch C++/CUDA custom op 和 Python backend adapter。先实现单 token decode attention：用 block table 直接寻址实体 KV page，并以在线 softmax 处理完整上下文；禁止在 CUDA 路径先调用 `read_batch()` gather 成 dense K/V。prefill 初期继续走 PyTorch reference；其他模型的算子和构建入口由各自模型包拥有。
-- `attention_backend: pytorch|cuda` 由模型 YAML 控制。`pytorch` 是可在 CPU/CUDA 执行的 reference/fallback；显式选 `cuda` 时扩展不可载入或能力不符就启动失败，避免健康状态误报。Runner health 应返回实际 backend 名称。
-
-物理 KV page 的布局需让同一个 KV head 的 context 读取与 head-dimension 向量访问合并；实际维度次序以目标 GPU profile 为准，不在规格中预设最优。CUDA 入口应使用当前 PyTorch stream，不做每层 host/device 同步；block table、长度、偏移和 tensor shape/dtype/device 在 host launcher 验证，避免 kernel 越界。
+- Qwen3 当前只使用 PyTorch Attention 路径。Worker 的实体 KV pages 由 `PagedKVCache` 管理，Attention 读取历史上下文时通过 `read_batch()` gather 为连续 K/V 张量；不提供单模型专用手写 CUDA kernel、extension 构建入口或 backend selector。
 
 请求进度和 block 所有权按如下生命周期流转：prepare 后建立 Sequence；BlockManager 为最大序列长度原子分配 pages 并登记 lease；Scheduler 输出 work items 与 block table；Qwen Runner 接收 token/position/block table 并执行；finish/cancel/error 清除 Sequence 和 Engine blocks，并由 Worker 收尾对应 request page state。跨 Engine/Worker IPC 只传 ID、长度和小型 metadata，不传 GPU tensor。
 
-首轮不做 Prefix Cache、按需扩容、抢占、KV offload、CUDA Graph、Tensor Parallel 或 prefill CUDA kernel。最大序列预留维持当前容量准入保证；未来按需扩容必须连同资源不足时的抢占、终止或可证明安全的等待策略设计，避免多个请求持有部分 KV 后互相等待。PyTorch fallback 与现有数值参考保留。当前 CUDA kernel 已通过目标本机的多序列、异构 context 长度、物理页重排、block 边界与 checkpoint profile；但 decode profile 和 API 性能测量慢于 PyTorch 路径，因此仍不启用为默认后端。默认切换需有覆盖目标部署硬件与真实 workload 的性能优势证据。
+当前不做 Prefix Cache、按需扩容、抢占、KV offload、CUDA Graph、Tensor Parallel 或单模型专用 CUDA kernel。最大序列预留维持当前容量准入保证；未来若需按需扩容，须连同资源不足时的抢占、终止或可证明安全的等待策略设计，避免多个请求持有部分 KV 后互相等待。既有 CUDA prototype 的数值与性能测量作为历史记录保留，不代表当前运行时仍提供该实现。

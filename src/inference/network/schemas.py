@@ -145,7 +145,6 @@ class VideoUnderstandingResponse(ChatCompletionResponse):
 class HealthResponse(APIModel):
     status: Literal["ok", "starting"]
     backend: str = "transformers"
-    attention_backend: str | None = None
     model: str
     revision: str
     quantization: str = "none"

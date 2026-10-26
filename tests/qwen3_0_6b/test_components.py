@@ -30,16 +30,9 @@ parser.add_argument(
     type=Path,
     help="将算子测量值写入机器可读 JSON；须同时指定 --profile-attention。",
 )
-parser.add_argument(
-    "--attention-backend",
-    choices=("pytorch", "cuda"),
-    help="指定 Attention profile 后端；CUDA 会在真实 checkpoint Attention decode 中调用 native op。",
-)
 args = parser.parse_args()
 if args.operator_report and not args.profile_attention:
     parser.error("--operator-report 必须与 --profile-attention 一起使用。")
-if args.attention_backend and not args.profile_attention:
-    parser.error("--attention-backend 必须与 --profile-attention 一起使用。")
 
 config_path = args.config.resolve()
 settings = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -151,7 +144,6 @@ module_entrypoints = [
     ("inference.models.qwen3_0_6b.components.paged_kv_cache", inference_root / "models/qwen3_0_6b/components/paged_kv_cache.py"),
     ("inference.models.qwen3_0_6b.components.sampler", inference_root / "models/qwen3_0_6b/components/sampler.py"),
     ("inference.models.qwen3_0_6b.components.input_batch", inference_root / "models/qwen3_0_6b/components/input_batch.py"),
-    ("inference.models.qwen3_0_6b.kernels.cuda", inference_root / "models/qwen3_0_6b/kernels/cuda/__main__.py"),
 ]
 module_environment = os.environ.copy()
 for module_name, entrypoint in module_entrypoints:
@@ -184,9 +176,6 @@ if args.profile_attention:
     warmup_iterations = int(operator_settings.get("warmup_iterations", 2))
     iterations = int(operator_settings.get("iterations", 5))
     top_operators = int(operator_settings.get("top_operators", 20))
-    attention_backend = args.attention_backend or str(
-        inference_settings["engine"].get("attention_backend", "pytorch")
-    )
     if min(batch_size, prompt_tokens, iterations, top_operators) < 1 or warmup_iterations < 0:
         raise ValueError("operator_analysis 的 batch、token、iteration 与 operator 数必须有效。")
 
@@ -240,7 +229,6 @@ if args.profile_attention:
         head_dim=config.head_dim,
         device=device,
         dtype=dtype,
-        attention_backend=attention_backend,
     )
     prefill_hidden_states = torch.randn(
         batch_size, prompt_tokens, config.hidden_size, device=device, dtype=dtype
@@ -385,7 +373,6 @@ if args.profile_attention:
         "warmup_iterations": warmup_iterations,
         "measured_iterations": iterations,
         "layer_index": 0,
-        "attention_backend": attention_backend,
         "prefill_cuda_event_ms": {
             "samples": prefill_samples_ms,
             "median": statistics.median(prefill_samples_ms),

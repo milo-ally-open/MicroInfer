@@ -18,14 +18,12 @@ PyTorch/CUDA wheel 需按目标设备单独安装。各模型的 `test.yml` 应�
 
 ### 组件检查
 
-该脚本不载入完整模型权重或启动 Inference 服务。它在 meta device 对照模型结构，并运行 Qwen3 模块的数值入口，包括模型、Attention、RMSNorm/MLP、RoPE、Runner、Paged KV Cache、Sampler、InputBatch 和 CUDA paged decode。
+该脚本不载入完整模型权重或启动 Inference 服务。它在 meta device 对照模型结构，并运行 Qwen3 的 8 个模块数值入口，包括模型、Attention、RMSNorm/MLP、RoPE、Runner、Paged KV Cache、Sampler 和 InputBatch。
 
 ```bash
 python tests/qwen3_0_6b/test_components.py \
   --config tests/qwen3_0_6b/test.yml
 ```
-
-CUDA paged decode 检查要求已构建本地扩展并可用的 CUDA 装置。它覆盖多序列、不同上下文长度、非连续物理页、block 边界和非法元数据；其他模块优先使用 CUDA，CUDA 不可用时回退 CPU。
 
 ### Attention 算子分析
 

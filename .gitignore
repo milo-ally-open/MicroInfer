@@ -20,9 +20,7 @@ __pycache__/
 /build/
 /src/build/
 /src/inference/build/
-/src/inference/*.egg-info/
-src/inference/models/qwen3_0_6b/kernels/cuda/_C*.so
-src/inference/models/qwen3_0_6b/kernels/cuda/_C*.pyd
+**/*.egg-info/
 
 # 本地密钥、私人 Codex 配置与 IDE 目录
 .env

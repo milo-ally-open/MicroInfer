@@ -44,7 +44,6 @@ KV_CACHE_CONFIG = ENGINE_CONFIG["kv_cache"]  # 实体 KV page pool 容量设定�
 KV_CACHE_BLOCK_SIZE_TOKENS = int(KV_CACHE_CONFIG["block_size_tokens"])  # 每个 KV page 的 Token 数。
 KV_CACHE_NUM_BLOCKS = int(KV_CACHE_CONFIG["num_blocks"])  # 实体 KV page 数量。
 KV_CACHE_CAPACITY_TOKENS = KV_CACHE_NUM_BLOCKS * KV_CACHE_BLOCK_SIZE_TOKENS  # KV page pool 可容纳的 Token 数。
-ATTENTION_BACKEND = str(ENGINE_CONFIG.get("attention_backend", "pytorch")).lower()  # Qwen KV Attention 后端。
 WORKER_STARTUP_TIMEOUT = float(RUNTIME_CONFIG["worker_startup_timeout_seconds"])  # Worker 启动逾时。
 WORKER_REQUEST_TIMEOUT = float(RUNTIME_CONFIG["worker_request_timeout_seconds"])  # Worker 请求逾时。
 ENGINE_CORE_STARTUP_TIMEOUT = float(RUNTIME_CONFIG["engine_core_startup_timeout_seconds"])  # Engine Core 启动逾时。

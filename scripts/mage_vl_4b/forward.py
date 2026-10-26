@@ -6,9 +6,10 @@ from __future__ import annotations
 import json
 import os
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 # 一、固定路径：模型专属配置副本与权重都相对于仓库根目录解析。
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,7 +37,11 @@ from inference.models.mage_vl_4b.runtime import create_runtime
 
 
 CUDA_AVAILABLE = torch.cuda.is_available()
-PROFILER_ACTIVITIES = [torch.profiler.ProfilerActivity.CPU] + ([torch.profiler.ProfilerActivity.CUDA] if CUDA_AVAILABLE else [])
+PROFILE_MODE = os.environ.get("INFERENCE_PROFILE_MODE", "torch").strip().lower()
+if PROFILE_MODE not in {"torch", "external"}:
+    raise ValueError("INFERENCE_PROFILE_MODE 只支持 torch 或 external。")
+PROFILER_ACTIVITIES = [torch.profiler.ProfilerActivity.CPU] + ([torch.profiler.ProfilerActivity.CUDA] if CUDA_AVAILABLE and PROFILE_MODE == "torch" else [])
+TRACE_SUFFIX = "-external" if PROFILE_MODE == "external" else ""
 
 # 三、读取模型副本中的权重路径和 revision；实验输入与输出参数各占一行。
 CONFIG = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -48,7 +53,8 @@ INPUT_IMAGE_PATH = ROOT / "test.jpg"
 QUESTION = "请简要描述图片中的主要内容。"
 MAX_NEW_TOKENS = 2  # Prefill 生成首 token，再执行一次 decode。
 MAX_OPERATORS = 20  # 终端表格显示前 20 项；JSON 保存全部算子。
-OUTPUT_PATH = ROOT / "artifacts/mage-vl-image-forward.json"
+OUTPUT_PATH = ROOT / ("artifacts/mage-vl-image-forward-external.json" if PROFILE_MODE == "external" else "artifacts/mage-vl-image-forward.json")
+TRACE_DIR = ROOT / "artifacts/mage_vl_4b/traces"
 
 # 四、两条路径共用同一份图片与编码结果；状态只在本脚本主流程与两个前向函数间传递。
 IMAGE: Image.Image | None = None
@@ -58,6 +64,18 @@ BASELINE_GENERATED_IDS: torch.Tensor | None = None
 INFERENCE_GENERATED_IDS: torch.Tensor | None = None
 BASELINE_TEXT = ""
 INFERENCE_TEXT = ""
+
+
+@contextmanager
+def nvtx_range(name: str) -> Iterator[None]:
+    """给 Nsight 标出阶段；CPU fallback 时保持同样的代码路径。"""
+    if CUDA_AVAILABLE:
+        torch.cuda.nvtx.range_push(name)
+    try:
+        yield
+    finally:
+        if CUDA_AVAILABLE:
+            torch.cuda.nvtx.range_pop()
 
 
 def forward_transformer():
@@ -124,13 +142,15 @@ def forward_transformer():
     processor_kwargs = {"trust_remote_code": True, "revision": REVISION, "local_files_only": True}
     if CONFIG.get("processor", {}).get("use_fast") is not None:
         processor_kwargs["use_fast"] = bool(CONFIG["processor"]["use_fast"])
-    processor = AutoProcessor.from_pretrained(MODEL_PATH, **processor_kwargs)
-    model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, **model_kwargs).eval()
-    messages = [{"role": "user", "content": [
-        {"type": "text", "text": QUESTION}, {"type": "image"},
-    ]}]
-    prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    encoded = processor(text=[prompt], images=[IMAGE], return_tensors="pt")
+    with nvtx_range("transformers.model_load"):
+        processor = AutoProcessor.from_pretrained(MODEL_PATH, **processor_kwargs)
+        model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, **model_kwargs).eval()
+    with nvtx_range("transformers.input_prepare"):
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": QUESTION}, {"type": "image"},
+        ]}]
+        prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        encoded = processor(text=[prompt], images=[IMAGE], return_tensors="pt")
     ENCODED_INPUTS_CPU = {
         key: value.detach().cpu() if isinstance(value, torch.Tensor) else value
         for key, value in encoded.items()
@@ -154,10 +174,11 @@ def forward_transformer():
     prefill_start = torch.cuda.Event(enable_timing=True) if CUDA_AVAILABLE else None
     prefill_end = torch.cuda.Event(enable_timing=True) if CUDA_AVAILABLE else None
     prefill_cpu_start = time.perf_counter()
-    with torch.profiler.profile(
+    with nvtx_range("transformers.prefill"), torch.profiler.profile(
         activities=PROFILER_ACTIVITIES,
         record_shapes=True,
         profile_memory=True,
+        with_stack=True,
     ) as prefill_profile:
         if prefill_start is not None:
             prefill_start.record()
@@ -166,6 +187,7 @@ def forward_transformer():
         if prefill_end is not None:
             prefill_end.record()
             prefill_end.synchronize()
+    prefill_profile.export_chrome_trace(str(TRACE_DIR / f"transformers-prefill{TRACE_SUFFIX}.json"))
     if prefill_output.past_key_values is None:
         raise RuntimeError("Transformers forward 没有返回 past_key_values，无法执行 decode。")
     first_token = prefill_output.logits[:, -1, :].argmax(dim=-1, keepdim=True)
@@ -198,10 +220,11 @@ def forward_transformer():
     decode_start = torch.cuda.Event(enable_timing=True) if CUDA_AVAILABLE else None
     decode_end = torch.cuda.Event(enable_timing=True) if CUDA_AVAILABLE else None
     decode_cpu_start = time.perf_counter()
-    with torch.profiler.profile(
+    with nvtx_range("transformers.decode"), torch.profiler.profile(
         activities=PROFILER_ACTIVITIES,
         record_shapes=True,
         profile_memory=True,
+        with_stack=True,
     ) as decode_profile:
         if decode_start is not None:
             decode_start.record()
@@ -210,6 +233,7 @@ def forward_transformer():
         if decode_end is not None:
             decode_end.record()
             decode_end.synchronize()
+    decode_profile.export_chrome_trace(str(TRACE_DIR / f"transformers-decode{TRACE_SUFFIX}.json"))
     second_token = decode_output.logits[:, -1, :].argmax(dim=-1, keepdim=True)
     decode_logits = decode_output.logits[:, -1, :].detach().float().cpu()
     BASELINE_GENERATED_IDS = torch.cat((first_token, second_token), dim=-1).detach().cpu()
@@ -264,7 +288,8 @@ def forward_inference():
     print("package:", inference.__file__)
     runtime = create_runtime()
     try:
-        runtime.load()
+        with nvtx_range("inference.model_load"):
+            runtime.load()
         runner = runtime.model_runner
         if runner.model is None or runner.processor is None:
             raise RuntimeError("Inference Runtime 没有建立 Mage-VL 模型或 Processor。")
@@ -298,10 +323,11 @@ def forward_inference():
         prefill_start = torch.cuda.Event(enable_timing=True) if CUDA_AVAILABLE else None
         prefill_end = torch.cuda.Event(enable_timing=True) if CUDA_AVAILABLE else None
         prefill_cpu_start = time.perf_counter()
-        with torch.profiler.profile(
+        with nvtx_range("inference.prefill"), torch.profiler.profile(
             activities=PROFILER_ACTIVITIES,
             record_shapes=True,
             profile_memory=True,
+            with_stack=True,
         ) as prefill_profile:
             if prefill_start is not None:
                 prefill_start.record()
@@ -312,6 +338,7 @@ def forward_inference():
             if prefill_end is not None:
                 prefill_end.record()
                 prefill_end.synchronize()
+        prefill_profile.export_chrome_trace(str(TRACE_DIR / f"inference-prefill{TRACE_SUFFIX}.json"))
         prefill_ms = float(prefill_start.elapsed_time(prefill_end)) if CUDA_AVAILABLE else (time.perf_counter() - prefill_cpu_start) * 1000
         prefill_averages = prefill_profile.key_averages(group_by_input_shape=True)
         prefill_records = []
@@ -333,10 +360,11 @@ def forward_inference():
         decode_start = torch.cuda.Event(enable_timing=True) if CUDA_AVAILABLE else None
         decode_end = torch.cuda.Event(enable_timing=True) if CUDA_AVAILABLE else None
         decode_cpu_start = time.perf_counter()
-        with torch.profiler.profile(
+        with nvtx_range("inference.decode"), torch.profiler.profile(
             activities=PROFILER_ACTIVITIES,
             record_shapes=True,
             profile_memory=True,
+            with_stack=True,
         ) as decode_profile:
             if decode_start is not None:
                 decode_start.record()
@@ -347,6 +375,7 @@ def forward_inference():
             if decode_end is not None:
                 decode_end.record()
                 decode_end.synchronize()
+        decode_profile.export_chrome_trace(str(TRACE_DIR / f"inference-decode{TRACE_SUFFIX}.json"))
         decode_ms = float(decode_start.elapsed_time(decode_end)) if CUDA_AVAILABLE else (time.perf_counter() - decode_cpu_start) * 1000
         decode_averages = decode_profile.key_averages(group_by_input_shape=True)
         decode_records = []
@@ -396,13 +425,15 @@ if __name__ == "__main__":
     if not INPUT_IMAGE_PATH.is_file():
         raise FileNotFoundError(f"测试图片不存在：{INPUT_IMAGE_PATH}；请修改文件顶部的 INPUT_IMAGE_PATH。")
     print("运行设备:", "cuda" if CUDA_AVAILABLE else "cpu（CUDA 不可用，已回退）")
+    TRACE_DIR.mkdir(parents=True, exist_ok=True)
     if INPUT_IMAGE_PATH.stat().st_size > int(CONFIG["api"]["max_image_bytes"]):
         raise ValueError("测试图片超过 inference.yml 的 api.max_image_bytes 限制。")
-    with Image.open(INPUT_IMAGE_PATH) as opened:
-        if opened.width * opened.height > int(CONFIG["api"]["max_image_pixels"]):
-            raise ValueError("测试图片超过 inference.yml 的 api.max_image_pixels 限制。")
-        IMAGE = opened.convert("RGB")
-    IMAGE = inference_processor._resize_image(IMAGE, int(CONFIG["api"]["max_image_side"]))
+    with nvtx_range("input.image_prepare"):
+        with Image.open(INPUT_IMAGE_PATH) as opened:
+            if opened.width * opened.height > int(CONFIG["api"]["max_image_pixels"]):
+                raise ValueError("测试图片超过 inference.yml 的 api.max_image_pixels 限制。")
+            IMAGE = opened.convert("RGB")
+        IMAGE = inference_processor._resize_image(IMAGE, int(CONFIG["api"]["max_image_side"]))
 
     # 六、依次运行两条路径、比较输出，并保存供 analysis.py 生成 XLSX 的原始数据。
     transformers_result = forward_transformer()
@@ -440,6 +471,7 @@ if __name__ == "__main__":
             "torch_version": torch.__version__,
             "cuda_version": torch.version.cuda,
             "dtype": str(DTYPE),
+            "profile_mode": PROFILE_MODE,
             "batch_size": 1,
             "query_tokens": int(INPUT_IDS_CPU.shape[-1]),
             "kv_tokens": int(INPUT_IDS_CPU.shape[-1]) + 1,
@@ -450,6 +482,12 @@ if __name__ == "__main__":
         },
         "implementations": {"transformers": transformers_result, "inference": inference_result},
         "comparison": comparison,
+        "profile_traces": {
+            "transformers.prefill": str(TRACE_DIR / f"transformers-prefill{TRACE_SUFFIX}.json"),
+            "transformers.decode": str(TRACE_DIR / f"transformers-decode{TRACE_SUFFIX}.json"),
+            "inference.prefill": str(TRACE_DIR / f"inference-prefill{TRACE_SUFFIX}.json"),
+            "inference.decode": str(TRACE_DIR / f"inference-decode{TRACE_SUFFIX}.json"),
+        },
         "operator_records": operator_records,
     }
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)

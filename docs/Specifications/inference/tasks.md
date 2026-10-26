@@ -1,7 +1,7 @@
 # 实施与验收任务：Inference Engine 五层架构
 
 > 提案：[proposal.md](proposal.md)｜规格：[spec.md](spec.md)｜设计：[design.md](design.md)
-> 任务状态涵盖五层引擎、模型接入、REQ-14 标准工具调用、REQ-16 算子分析及 REQ-17 Qwen3 Engine 组件重构；模型分析、优化和验收记录按 alias 分别维护在根目录 `analysis/{model_alias}/`。
+> 任务状态涵盖五层引擎、模型接入、REQ-14 标准工具调用、REQ-16 算子分析、REQ-17 Qwen3 Engine 组件重构和 REQ-22 撤除单模型手写 CUDA 接入；模型分析、优化和验收记录按 alias 分别维护在根目录 `analysis/{model_alias}/`。T-32 与 CUDA 性能数据是历史记录，不代表当前实现。
 
 ## 任务清单
 
@@ -51,6 +51,8 @@
 
 - [x] **T-36 支持服务端 Engine client 显式指定 YAML** — 范围：Qwen3 插件工厂、共用 Engine client 配置解析、Inference README、Inference proposal/spec/design；交付：`create_engine_client()` 支持显式传入 inference/network YAML 路径，验证文件并加载配置，未传入时兼容 manifest 默认值；服务端代码示例展示完整调用；不启动 Engine 或加载权重；覆盖：REQ-21 / AC-21.1、AC-21.2、AC-21.3、AC-21.4；依赖：T-35；状态：完成。`magevl-transformers` 配置加载 smoke 验证 manifest 默认路径、显式临时 YAML 的 timeout 参数覆盖、环境路径传递、缺失／非法 YAML 拒绝，并确认 Engine 子进程未启动；Python 编译、双模型 Launcher validate、Spec validator（21 REQ／105 AC／36 T）及 `git diff --check` 通过。未载入 checkpoint 或初始化 GPU。
 
+- [x] **T-37 撤除 Qwen3 单模型手写 CUDA Attention 接入** — 范围：Qwen3 CUDA extension 目录、KV Cache/Attention/Runner 接口、YAML 与 health 字段、组件 profile 入口、Inference/测试文档和规格；交付：移除自定义 CUDA 源码与构建脚本及 `attention_backend` 选择/回报接口，Qwen3 保留 PyTorch Attention 与实体 KV page pool，历史测量继续留档；覆盖：REQ-22 / AC-22.1、AC-22.2、AC-22.3；依赖：T-32；状态：静态检查确认源码、配置、运行时接口、打包清单和文档已更新，原 kernel 目录及编译产物不存在；未运行模型/GPU功能测试。
+
 ## 本次验收纪录
 
 | 检查 | 状态 | 证据／限制 |
@@ -59,6 +61,7 @@
 | 五层程式改造 | 契约与标准 Runner snapshot smoke 通过 | L1 Tokenize／Detokenize、L2 Engine output/event、L3 Executor／Platform 与 L4 InputBatch、Qwen 合成 Runner 有 CPU 测试；标准预设 Runner 已按 T-14 通过本机 Qwen snapshot CUDA smoke。原生 Qwen profile 的 API／SSE／并发／性能验收仍待 T-08。 |
 | REQ-17 Engine 生命周期 | 通过 | `tests/qwen3_0_6b/results/test_components.log`：SequenceState、BlockManager 原子容量失败/追加、幂等释放、Scheduler prefill→decode 与 block table 一致性；完整 Qwen3 9 个模块入口通过。 |
 | REQ-21 Engine client 显式 YAML 配置 | 通过 | Qwen3 插件工厂默认 manifest 配置、显式 inference/network YAML、实际 timeout 覆盖、环境路径传递、缺失文件与非法 YAML 边界均通过；未启动 Engine 或加载权重。Python 编译、双模型 Launcher validate、Spec validator（21 REQ、105 AC、36 T）和 `git diff --check` 通过。 |
+| REQ-22 撤除 Qwen3 单模型 CUDA 接入 | 静态检查通过；未运行模型测试 | 当前 Qwen3 包无 `kernels/` 目录或 `.so/.pyd`；源码、配置、health schema 与 profile 入口未发现 `attention_backend`、`kernels/cuda` 或 `paged_decode`；打包清单已清除旧路径，历史测量仍保留。 |
 | REQ-20 Processors 跨模型元件 | 通过 | `src/inference/media/` 已移除，源码、Network、Engine 与 Mage-VL 的共用处理器 imports 均使用 `inference.processors`；`compileall`、双模型 Launcher 预检、Processor/Network 导入 smoke、Spec validator（20 REQ、101 AC、35 T）及 `git diff --check` 通过。未启动服务或载入 checkpoint。 |
 | REQ-19 Network 平面模块 | 通过 | `compileall`、两个模型 Launcher `list/validate`、Launcher `_load_service_app()` 实际导入 `inference.network.service`（未启动 Engine）、Network OpenAPI path/schema smoke、双模型组件入口、Spec validator（19 REQ、97 AC、34 T）及 `git diff --check` 通过；没有载入模型权重或启动 API/Gateway 服务。 |
 | REQ-18 Engine 根目录模块 | 通过 | `compileall` 与 AST 解析、双模型 `inference launcher list/validate`、扁平 Engine／Qwen 插件 factory imports 和无权重 Sequence/BlockManager/Scheduler smoke 通过；Qwen3 9 个组件入口、Mage-VL 组件回归通过。执行时约 3.3–3.5 GiB RAM 可用；未并行运行或启动服务。 |

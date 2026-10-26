@@ -9,6 +9,8 @@ from typing import Any
 import torch
 
 from .cache_manager import RequestCacheManager
+from .detokenizer import MageVLDetokenizer
+from .tokenizer import MageVLTokenizer
 
 
 class MageVLStepwiseGeneration:
@@ -17,15 +19,17 @@ class MageVLStepwiseGeneration:
     def __init__(self) -> None:
         self.model: Any = None
         self.processor: Any = None
+        self.tokenizer: Any = None
         self._states: dict[str, dict[str, Any]] = {}
         self.cache_manager = RequestCacheManager()
 
-    def bind(self, model: Any, processor: Any) -> None:
+    def bind(self, model: Any, processor: Any, tokenizer: MageVLTokenizer | None = None) -> None:
         self.model = model
         self.processor = processor
+        self.tokenizer = tokenizer or MageVLTokenizer(processor.tokenizer)
 
     def begin(self, request_id: str, inputs: dict[str, Any], options: dict[str, Any]) -> None:
-        if self.model is None or self.processor is None:
+        if self.model is None or self.processor is None or self.tokenizer is None:
             raise RuntimeError("Mage-VL model is not loaded.")
         unsupported = set(options) - {
             "max_new_tokens", "do_sample", "temperature", "top_p", "top_k", "min_p",
@@ -50,7 +54,7 @@ class MageVLStepwiseGeneration:
         if eos_token_id is None:
             eos_token_id = getattr(self.model.generation_config, "eos_token_id", None)
         if eos_token_id is None:
-            eos_token_id = getattr(self.processor.tokenizer, "eos_token_id", None)
+            eos_token_id = self.tokenizer.eos_token_id
         self.cache_manager.register(request_id)
         self._states[request_id] = {
             "input_ids": input_ids,
@@ -65,6 +69,7 @@ class MageVLStepwiseGeneration:
             ),
             "finish_reason": "stop",
             "done": False,
+            "detokenizer": MageVLDetokenizer(self.tokenizer),
         }
 
     def bind_cache(self, request_id: str, block_ids: tuple[int, ...]) -> None:
@@ -331,6 +336,9 @@ class MageVLStepwiseGeneration:
     def clear(self) -> None:
         self._states.clear()
         self.cache_manager.clear()
+        self.model = None
+        self.processor = None
+        self.tokenizer = None
 
     def cache_snapshot(self) -> dict[str, int]:
         return self.cache_manager.snapshot()
@@ -408,12 +416,10 @@ class MageVLStepwiseGeneration:
                 "length" if len(state["generated_ids"]) >= max_tokens and token_id not in state["eos_token_ids"]
                 else "stop"
             )
-        try:
-            text = self.processor.tokenizer.decode(
-                [token_id], skip_special_tokens=True, clean_up_tokenization_spaces=False
-            )
-        except TypeError:
-            text = self.processor.tokenizer.decode([token_id], skip_special_tokens=True)
+        detokenizer = state["detokenizer"]
+        text = detokenizer.push(token_id)
+        if done:
+            text += detokenizer.finish()
         return {"text": text, "generated_tokens": 1, "done": done, "finish_reason": state["finish_reason"]}
 
     def _batch_forward(
@@ -671,7 +677,7 @@ if __name__ == "__main__":
     baseline_model.lm_head.load_state_dict(engine_model.lm_head.state_dict(), strict=True)
     tokenizer = SimpleNamespace(
         eos_token_id=None,
-        decode=lambda token_ids, **kwargs: f"token-{token_ids[0]}",
+        decode=lambda token_ids, **kwargs: "".join(f"token-{token_id}" for token_id in token_ids),
     )
     processor = SimpleNamespace(tokenizer=tokenizer)
     engine = MageVLStepwiseGeneration()

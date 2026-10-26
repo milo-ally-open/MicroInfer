@@ -103,7 +103,9 @@ KV block 所有权仍分成 Engine 的逻辑 reservation 和 Qwen Worker 的 GPU
 
 本次依据使用者要求，把 Qwen3 各自带有 `__main__` 的计算模块串成可复跑的组件集成检查；逐模型三项测试改为从顶部执行的单一脚本，不使用自定义测试 helper。新增可选 Attention profile 模式，使用本机固定 snapshot 的第 0 层真实 Attention 权重、Qwen3 配置及 KV page 大小，量测 CUDA prefill/decode 并输出 PyTorch Profiler 明细。该模式只测单层算子，activation 为合成输入；不得把它描述成完整模型性能验收。Qwen3 算子的实测、分析、优化方向和验收状态记录在 `analysis/qwen3_0_6b/`；Mage-VL Gateway 历史验收事实放在 `analysis/mage_vl_4b/`。旧 `val.*` 文件名由各模型目录中的报告取代，并保留样本数与限制。
 
-## Qwen3 Engine 组件重构提案（T-31/T-32）
+## Qwen3 Engine 组件重构提案（T-31/T-32；T-32 后续撤除）
+
+> 状态更新（2026-10-25）：后续使用者决定暂时不需要为单一模型维护手写 CUDA kernel 接入。T-37 已移除 T-32 引入的源码、构建脚本、配置选择项和运行时分支；当前工作树中原 kernel 目录及编译产物均不存在。T-32 的实测数据仍作为历史证据留存。当前 Qwen3 代码仅使用 PyTorch Attention。
 
 使用者要求先将当前工作树提交为基线，再以 Qwen3 系统性重构 Engine 组件，并以原生 CUDA 代码建立真正按 block table 读取 KV 的 Attention 路径。基线提交为 `9258379 chore: checkpoint project changes before Qwen3 refactor`；该提交只在本地，不推送。
 

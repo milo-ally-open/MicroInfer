@@ -240,24 +240,32 @@
 |---|---|---|---|---|---|
 | 使用者要求集成检查 Qwen3 各模块 `__main__`、测试入口改成直接易读脚本、实做算子分析并形成长期工作流 | REQ-16 | `tests/{qwen3_0_6b,mage_vl_4b}/`、Qwen3 `layers/attention.py`、`analysis/qwen3_0_6b/analysis.md`、`analysis.xlsx` | T-30 | AC-16.1–AC-16.4 | 实作完成后以 WSL 本机环境、固定 Qwen snapshot、RTX 4060 和 Artifact Tool 实测；状态以本任务验收纪录为准 |
 
-### REQ-17：Qwen3 Engine 组件明确分工并可替换执行后端
+### REQ-17：Qwen3 Engine 组件明确分工与 KV block 管理
 
-**需求**：以 Qwen3 为首个模型，将请求状态、KV block 分配、逐轮调度、Engine 编排、模型执行与 CUDA Attention 后端整理为具有明确所有权的可用组件；保留现有 API、Worker 子程序边界及 Mage-VL 共用路径。
+**需求**：以 Qwen3 为首个模型，将请求状态、KV block 分配、逐轮调度和 Engine 编排整理为具有明确所有权的组件；保留现有 API、Worker 子程序边界及 Mage-VL 共用路径。
 
 **验收条件**
 
 - **AC-17.1** Engine 侧 `SequenceState` 是 Scheduler 使用的单一请求进度对象，保存 request ID、prefill/decode 进度、输出上限与 block table；完成、取消及失败由 Engine Core 终止请求并移除该状态，不持有 GPU tensor、Transformers Cache、媒体 bytes 或 API response 对象。
 - **AC-17.2** `BlockManager` 拥有 Engine 侧物理 block ID 空闲表、逐请求 block table、准入时的原子容量保留与幂等释放；Qwen Worker 持有对应实体 GPU page。每轮 Worker 工作项携带该轮有效 block table，失败、取消与完成后两侧均可释放，不发生跨请求 page 复用污染。首轮继续预留 prompt 与最大输出所需容量，不采用会造成 KV 等待死锁的按需分配。
 - **AC-17.3** 现有 `TokenScheduler` 仍是唯一逐轮批次调度器；现有 Engine Core 仍是唯一请求编排器。模块命名不得复制第二套 Scheduler／Engine，Qwen Runner 仍由模型包持有，Mage-VL 共用契约和输出路径维持不变。
-- **AC-17.4** Qwen Attention 后端以稳定调用契约接收 Q/K/V、实体 page pool、block tables、各序列长度和位置资料；CUDA 路径直接按 block table 读取 KV 并执行 decode attention，不先 gather 成连续完整 KV 张量。输入边界、dtype、装置及 block table 不合法时明确失败。
-- **AC-17.5** 原生 CUDA op 为选用后端；PyTorch 参考路径保留为 CPU fallback、数值基线和 CUDA 扩展不可用时的明确 fallback。YAML/Runtime 能选择后端并如实回报实际后端，不可把 PyTorch gather 路径标示为 CUDA PagedAttention。
-- **AC-17.6** 自定义算子支持 Qwen 当前部署的 CUDA、float16/bfloat16 数据路径，并覆盖多序列、不同 context length、非连续物理页表、block 边界和空/非法输入；kernel 不依赖模型别名或 HTTP 类型。
-- **AC-17.7** Qwen 组件入口对照 CUDA 输出与 PyTorch 参考输出，固定 snapshot 单层 profile 可分开报告 decode latency 和使用路径；没有真实模型／GPU 验收时不得宣称服务性能提升或生产可用。
 
-**验证方式**：Sequence/BlockManager 合成生命周期与容量边界检查、Scheduler/Engine/Worker 契约检查、Qwen CUDA extension build 与自定义 op contract、同输入 CUDA/PyTorch 数值比较、固定 checkpoint 单层 decode profile 与 CUDA backend 服务／Gateway SSE。当前实际执行结果、设备限制与性能结论见 `tasks.md` 和 `analysis/qwen3_0_6b/`。
+**验证方式**：Sequence/BlockManager 合成生命周期与容量边界检查、Scheduler/Engine/Worker 契约检查。历史 CUDA prototype 验收保存在 `tasks.md` 和 `analysis/qwen3_0_6b/`，不代表当前代码仍包含该实现。
+
+### REQ-22：当前 Qwen3 Runtime 不集成单模型手写 CUDA kernel
+
+**需求**：Qwen3 继续使用现有 PyTorch Attention 路径；当前版本不携带单模型专用的手写 CUDA extension、构建入口或运行时后端选择接口。
+
+**验收条件**
+
+- **AC-22.1** Qwen3 模型包不包含自定义 C++/CUDA kernel 源码、extension 构建脚本或其 Python 加载/分发代码；实体 KV page pool 和 PyTorch Attention 计算保持可用。
+- **AC-22.2** Qwen3 inference YAML、Runner/Cache、health schema 与组件分析入口不再暴露 `attention_backend` 选择或状态字段。
+- **AC-22.3** 既有 CUDA 实验测量仅作为历史记录留存，不作为当前可运行配置或功能声明。
+
+**验证方式**：检查当前源码、配置、组件入口及产品文档中不再存在 Qwen3 手写 CUDA 接入；历史实验数据保留并明确标注为已撤除实现的测量。
 
 ## Qwen3 Engine 组件重构追踪
 
 | 上游条款 | REQ | 模块 | 任务 ID | AC | 验收证据／状态 |
 |---|---|---|---|---|---|
-| 使用者要求先提交工作树，再以 Qwen3 为基线系统重构 nano-vLLM 风格的 Engine 组件，并以原生 CUDA 实作可复用的分页 Attention | REQ-17 | `engine/sequence.py`、`engine/block_manager.py`、`engine/scheduler.py`、`engine/inference_engine.py`、Qwen `components/model_runner.py`、`models/qwen3_0_6b/kernels/cuda/` | T-31、T-32 | AC-17.1–AC-17.7 | T-31/T-32 实施及实际验收状态见 `tasks.md`；模型与 GPU 性能声明仅依据固定环境的实测 |
+| 使用者要求先提交工作树，再以 Qwen3 为基线系统重构 nano-vLLM 风格的 Engine 组件；后续决定暂不保留单模型手写 CUDA 接入 | REQ-17、REQ-22 | `engine/sequence.py`、`engine/block_manager.py`、`engine/scheduler.py`、`engine/inference_engine.py`、Qwen Runner/Cache/Attention 与配置 | T-31、T-32、T-37 | AC-17.1–AC-17.3、AC-22.1–AC-22.3 | T-31/T-32 的历史验收及 T-37 撤除状态见 `tasks.md`；模型与 GPU 性能结论仅代表历史固定环境实测 |

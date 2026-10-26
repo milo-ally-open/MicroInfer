@@ -13,6 +13,8 @@ from ..utils import loader as config
 from .component_registry import MAGE_VL_COMPONENT_REGISTRY
 from ..utils.loader import load_mage_vl
 from .stepwise_generation import MageVLStepwiseGeneration
+from .decoder import MageVLDecoder
+from .tokenizer import MageVLTokenizer
 
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,8 @@ class MageVLModelRunner:
     def __init__(self) -> None:
         self.model: Any = None
         self.processor: Any = None
+        self.tokenizer: MageVLTokenizer | None = None
+        self.decoder: MageVLDecoder | None = None
         self.model_path: str | None = None
         self.component_inventory: dict[str, tuple[Any, ...]] = {}
         self._stepwise = MageVLStepwiseGeneration()
@@ -35,10 +39,12 @@ class MageVLModelRunner:
             # 设定错误或未登记的实作必须在下载／载入大型权重前拒绝。
             MAGE_VL_COMPONENT_REGISTRY.validate_configuration(config.COMPONENT_REPLACEMENTS)
             self.model_path, self.model, self.processor = load_mage_vl()
+            self.tokenizer = MageVLTokenizer(self.processor.tokenizer)
+            self.decoder = MageVLDecoder(self.tokenizer)
             self.component_inventory = MAGE_VL_COMPONENT_REGISTRY.inventory(self.model)
             components = config.COMPONENT_REPLACEMENTS
             self.model, _ = MAGE_VL_COMPONENT_REGISTRY.apply(self.model, components)
-            self._stepwise.bind(self.model, self.processor)
+            self._stepwise.bind(self.model, self.processor, self.tokenizer)
             compile_settings = optimization.get("torch_compile", {})
             if compile_settings.get("enabled", False):
                 self.model = torch.compile(
@@ -48,7 +54,7 @@ class MageVLModelRunner:
                     fullgraph=bool(compile_settings.get("fullgraph", False)),
                     dynamic=bool(compile_settings.get("dynamic", True)),
                 )
-                self._stepwise.bind(self.model, self.processor)
+                self._stepwise.bind(self.model, self.processor, self.tokenizer)
         except BaseException:
             try:
                 self.close()
@@ -124,9 +130,9 @@ class MageVLModelRunner:
         return self._stepwise.cache_snapshot()
 
     def decode(self, generated_ids: Any) -> str:
-        if self.processor is None:
-            raise RuntimeError("Mage-VL processor is not loaded.")
-        return self.processor.batch_decode(generated_ids.unsqueeze(0), skip_special_tokens=True)[0].strip()
+        if self.decoder is None:
+            raise RuntimeError("Mage-VL Decoder is not loaded.")
+        return self.decoder.decode(generated_ids)
 
     def gpu_status(self) -> dict[str, Any]:
         if self.model is None:
@@ -149,6 +155,8 @@ class MageVLModelRunner:
         self._stepwise.clear()
         self.model = None
         self.processor = None
+        self.tokenizer = None
+        self.decoder = None
         self.component_inventory.clear()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -196,7 +204,7 @@ if __name__ == "__main__":
     baseline_model.lm_head.load_state_dict(engine_model.lm_head.state_dict(), strict=True)
     tokenizer = SimpleNamespace(
         eos_token_id=None,
-        decode=lambda token_ids, **kwargs: f"token-{token_ids[0]}",
+        decode=lambda token_ids, **kwargs: "".join(f"token-{token_id}" for token_id in token_ids),
     )
     processor = SimpleNamespace(tokenizer=tokenizer)
     runner = MageVLModelRunner()

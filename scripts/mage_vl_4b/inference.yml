@@ -55,8 +55,8 @@ runtime:
   hf_hub_disable_xet: true
   hf_hub_download_timeout_seconds: 120
   environment: {}
-  conda_env: magevl-transformers
-  python_venv: .venv/magevl-transformers
+  conda_env: inference
+  python_venv: null
   cuda_visible_devices: null
   uvicorn_workers: 1
   uvicorn_log_level: info

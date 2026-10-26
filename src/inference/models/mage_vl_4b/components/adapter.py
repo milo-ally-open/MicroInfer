@@ -13,7 +13,7 @@ from inference.engine.sequence import InferenceError
 from inference.processors.video import probe_video_metadata, sample_video_frames
 
 from ..utils import loader as config
-from .. import processor
+from .encoder import MageVLEncoder
 from ..utils.loader import (
     CODEC_ENGINE,
     CODEC_MAX_PIXELS,
@@ -32,19 +32,20 @@ class MageVLModelAdapter:
 
     def __init__(self, model_runner: Any) -> None:
         self.model_runner = model_runner
+        self.encoder = MageVLEncoder(model_runner)
         self._tasks: dict[str, dict[str, Any]] = {}
 
     def generation_options(self, request_body: dict[str, Any]) -> dict[str, Any]:
-        return processor._generation_args(request_body)
+        return self.encoder.generation_args(request_body)
 
     def validate_live_video_backend(self, backend: str, codec_engine: str | None) -> None:
         if backend != "codec":
             return
-        processor._require_codec_runtime(codec_engine)
-        processor._require_processor_codec_support(self.model_runner)
+        self.encoder.require_codec_runtime(codec_engine)
+        self.encoder.require_processor_codec_support()
         if codec_engine == "dcvc-rt":
-            processor._codec_processor_config(
-                codec_engine, config.LIVE_SETTINGS.live_codec_target_canvas, None, self.model_runner
+            self.encoder.codec_processor_config(
+                codec_engine, config.LIVE_SETTINGS.live_codec_target_canvas, None
             )
 
     def health_info(self) -> dict[str, Any]:
@@ -59,10 +60,7 @@ class MageVLModelAdapter:
         }
 
     def prepare_chat_generation(self, request_id: str, request_body: dict[str, Any]) -> dict[str, int]:
-        messages, images = processor._normalize_messages(request_body.get("messages"))
-        inputs, prompt_tokens = processor._prepare_inputs(messages, images, self.model_runner)
-        options = processor._generation_args(request_body)
-        processor._check_context(prompt_tokens, options)
+        inputs, prompt_tokens, options = self.encoder.encode_chat(request_body)
         self.model_runner.begin_generation(request_id, inputs, options)
         self._tasks[request_id] = {
             "kind": "chat",
@@ -91,7 +89,7 @@ class MageVLModelAdapter:
             for key, value in request_body.items()
             if key not in {"question", "video_backend", "codec_engine"} and value is not None
         }
-        options = processor._generation_args(generation_body)
+        options = self.encoder.generation_args(generation_body)
         request_started = time.perf_counter()
         self.model_runner.reset_peak_memory()
         destination = Path(video_path)
@@ -103,7 +101,7 @@ class MageVLModelAdapter:
                 max_frame_side=VIDEO_MAX_FRAME_SIDE,
                 max_frame_pixels=config.MAX_IMAGE_PIXELS,
                 max_duration_seconds=MAX_VIDEO_DURATION_SECONDS,
-                resize=processor._resize_image,
+                resize=self.encoder.resize_image,
             )
             video_metadata.update(backend="frames", codec_engine=None)
         elif video_backend == "codec":
@@ -118,7 +116,7 @@ class MageVLModelAdapter:
             raise InferenceError(400, f"Unsupported video_backend: {video_backend}")
         decode_seconds = time.perf_counter() - preprocess_started
         processor_started = time.perf_counter()
-        inputs, prompt_tokens, canvas_count = processor._video_inputs(
+        inputs, prompt_tokens, canvas_count = self.encoder.encode_video(
             question,
             video_input,
             backend=video_backend,
@@ -126,12 +124,11 @@ class MageVLModelAdapter:
             target_canvas=CODEC_TARGET_CANVAS,
             max_pixels=CODEC_MAX_PIXELS,
             codec_cache_root=destination.parent / "codec-cache" if video_backend == "codec" else None,
-            model_runner=self.model_runner,
         )
         processor_seconds = time.perf_counter() - processor_started
         if video_backend == "codec":
             video_metadata["codec_canvas_count"] = canvas_count
-        processor._check_context(prompt_tokens, options)
+        self.encoder.check_context(prompt_tokens, options)
         self.model_runner.begin_generation(request_id, inputs, options)
         self._tasks[request_id] = {
             "kind": "video",
@@ -150,10 +147,10 @@ class MageVLModelAdapter:
         self, request_id: str, question: str, frames: list[Any], generation_options: dict[str, Any]
     ) -> dict[str, int]:
         started = time.perf_counter()
-        inputs, prompt_tokens, _ = processor._video_inputs(
-            question, frames, backend="frames", model_runner=self.model_runner
+        inputs, prompt_tokens, _ = self.encoder.encode_video(
+            question, frames, backend="frames"
         )
-        processor._check_context(prompt_tokens, generation_options)
+        self.encoder.check_context(prompt_tokens, generation_options)
         self.model_runner.begin_generation(request_id, inputs, generation_options)
         self._tasks[request_id] = {
             "kind": "live",
@@ -175,7 +172,7 @@ class MageVLModelAdapter:
         codec_cache_root: Path | None,
     ) -> dict[str, int]:
         started = time.perf_counter()
-        inputs, prompt_tokens, canvas_count = processor._video_inputs(
+        inputs, prompt_tokens, canvas_count = self.encoder.encode_video(
             question,
             video_path,
             backend="codec",
@@ -183,9 +180,8 @@ class MageVLModelAdapter:
             target_canvas=target_canvas,
             max_pixels=max_pixels,
             codec_cache_root=codec_cache_root,
-            model_runner=self.model_runner,
         )
-        processor._check_context(prompt_tokens, generation_options)
+        self.encoder.check_context(prompt_tokens, generation_options)
         self.model_runner.begin_generation(request_id, inputs, generation_options)
         self._tasks[request_id] = {
             "kind": "live",

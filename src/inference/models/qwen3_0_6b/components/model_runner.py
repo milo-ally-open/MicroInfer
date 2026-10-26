@@ -27,7 +27,6 @@ class Qwen3ModelRunner:
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.model_config: Qwen3Config | None = None
         self.cache: PagedKVCache | None = None
-        self.attention_backend = config.ATTENTION_BACKEND
         self._states: dict[str, dict[str, Any]] = {}
         self._sampler = Qwen3Sampler()
 
@@ -42,9 +41,10 @@ class Qwen3ModelRunner:
 
         self.model_config = load_model_config(snapshot, config.MODEL_REVISION)
         self.tokenizer = load_tokenizer(snapshot, config.MODEL_REVISION)
-        model = Qwen3ForCausalLM(self.model_config, dtype=dtype, device="meta").to_empty_cpu()
+        # 直接在目标设备建立空权重，再逐个 Safetensors tensor 载入，避免 CPU 留一整份模型副本。
+        model = Qwen3ForCausalLM(self.model_config, dtype=dtype, device="meta").to_empty(device=device)
         load_safetensors(model, snapshot)
-        self.model = model.to(device=device, dtype=dtype).eval()
+        self.model = model.eval()
 
         head_dim = int(
             getattr(
@@ -61,7 +61,6 @@ class Qwen3ModelRunner:
             head_dim=head_dim,
             device=device,
             dtype=dtype,
-            attention_backend=self.attention_backend,
         )
 
     @property

@@ -24,8 +24,6 @@ engine:
   max_num_scheduled_tokens: 8192
   batch_wait_seconds: 0.01
   prefill_chunk_size_tokens: 2048
-  # 选用 pytorch reference 或已构建的原生 CUDA 单 token decode Attention。
-  attention_backend: pytorch
   kv_cache:
     block_size_tokens: 16
     num_blocks: 1024

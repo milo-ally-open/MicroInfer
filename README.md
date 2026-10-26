@@ -7,7 +7,7 @@ MicroInfer 提供视频理解推理服务和独立的 Go API Gateway。Inference
 - OpenAI 风格聊天 API，支持文本 SSE 输出。
 - Mage-VL-4B 支持图片聊天、视频上传理解和 Live 视频会话。
 - Qwen3-0.6B 支持纯文本聊天和标准 function tool calling 协议。
-- Inference 使用独立 Engine Core 与 Model Worker 进程；Qwen3 支持批次 Runner 和模型包内可选 CUDA decode attention。
+- Inference 使用独立 Engine Core 与 Model Worker 进程；Qwen3 使用模型包内 PyTorch 计算图与批次 Runner。
 - Gateway 提供 API Key 认证、租户限流、能力检查、SSE 转发、健康检查和 Prometheus 格式指标。
 
 ## 模型
@@ -32,7 +32,7 @@ MicroInfer 提供视频理解推理服务和独立的 Go API Gateway。Inference
 
 `src/inference/network/` 提供共用 HTTP 服务和路由；`engine/` 管理请求调度、KV block、Worker 与进程通信；`processors/` 承载跨模型视频和 Live 处理能力；模型专属 Runtime、Processor、Runner、拓扑和算子位于 `models/<model>/`。Gateway 不加载模型，也不转发 RTSP/RTMP 媒体封包。
 
-项目参考 vLLM 和 nano-vLLM 的职责划分，不提供 vLLM backend，也没有 Prefix Caching。Mage-VL 的 Engine KV 是逻辑 reservation。Qwen3 使用实体 KV page pool；PyTorch Attention 仍会 gather KV pages。Qwen3 模型包提供可选 native CUDA 单 token decode attention，但当前测量慢于 PyTorch 路径，默认配置仍使用 PyTorch。
+项目参考 vLLM 和 nano-vLLM 的职责划分，不提供 vLLM backend，也没有 Prefix Caching。Mage-VL 的 Engine KV 是逻辑 reservation。Qwen3 使用实体 KV page pool；PyTorch Attention 会将 KV pages gather 为连续张量。
 
 ## 快速开始
 
@@ -95,7 +95,6 @@ go run ./cmd/gateway --config configs/gateway.yml
 - [模型下载与离线分析工具](scripts/README.md)
 - [MediaMTX 部署](deploy/mediamtx/README.md)
 - [新模型接入指南](docs/Specifications/inference/model-integration.md)
-- [Qwen3 CUDA attention 说明](src/inference/models/qwen3_0_6b/kernels/cuda/README.md)
 
 ## 开发与验证
 

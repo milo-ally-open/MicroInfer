@@ -6,7 +6,7 @@ inference_url: http://127.0.0.1:8001
 gateway_url: http://127.0.0.1:8000
 api_key_env: VIDEO_API_KEY
 prompt: "请简要描述图片中的主要内容。"
-image: ../../magevl-soccer-frame.jpg
+image: ../../test.jpg
 video: ../../test.mp4
 max_new_tokens: 8
 warmup_requests: 1

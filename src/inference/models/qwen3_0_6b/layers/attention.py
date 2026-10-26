@@ -103,24 +103,6 @@ class Qwen3Attention(nn.Module):
                 )
             )
 
-        if (
-            cache.attention_backend == "cuda"
-            and query_width == 1
-            and all(int(length) == 1 for length in token_lengths)
-        ):
-            attended = cache.decode_attention(
-                query[:, :, 0, :],
-                layer_index=layer_index,
-                request_ids=request_ids,
-                block_tables=block_tables,
-                lengths=key_lengths,
-                scale=self.head_dim ** -0.5,
-            )
-            attended = attended.unsqueeze(2).transpose(1, 2).contiguous().view(
-                batch_size, 1, self.num_attention_heads * self.head_dim
-            )
-            return self.o_proj(attended)
-
         key_states, value_states = cache.read_batch(
             layer_index=layer_index,
             request_ids=request_ids,
