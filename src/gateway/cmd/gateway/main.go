@@ -17,23 +17,23 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "src/gateway/configs/gateway.yml", "Gateway YAML 设定路径")
+	configPath := flag.String("config", "src/gateway/configs/gateway.yml", "Gateway YAML 配置路径")
 	flag.Parse()
 	cfg, err := gateway.LoadConfig(*configPath)
 	if err != nil {
-		fatal("载入 Gateway 设定失败", err)
+		fatal("读取 Gateway 配置失败", err)
 	}
 	apiKeyPath := strings.TrimSpace(os.Getenv(cfg.Auth.APIKeysFileEnv))
 	if apiKeyPath == "" {
-		fatal(fmt.Sprintf("环境变数 %s 未设定", cfg.Auth.APIKeysFileEnv), nil)
+		fatal(fmt.Sprintf("环境变量 %s 未设置", cfg.Auth.APIKeysFileEnv), nil)
 	}
 	apiKeys, err := gateway.LoadAPIKeys(apiKeyPath)
 	if err != nil {
-		fatal("载入 API Key 档案失败", err)
+		fatal("读取 API Key 文件失败", err)
 	}
 	hmacKeys, err := gateway.ParseHMACKeys(os.Getenv(cfg.Session.HMACKeysEnv))
 	if err != nil {
-		fatal("载入 session HMAC 金钥失败", err)
+		fatal("加载 session HMAC 密钥失败", err)
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(cfg.Observability.LogLevel)}))
 	handler, err := gateway.NewHandler(cfg, gateway.Options{APIKeys: apiKeys, HMACKeys: hmacKeys, Logger: logger})

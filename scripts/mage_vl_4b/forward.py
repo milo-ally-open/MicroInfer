@@ -79,7 +79,7 @@ def nvtx_range(name: str) -> Iterator[None]:
 
 
 def forward_transformer():
-    """第一段：按正式 YAML 用 Transformers 载入 Mage-VL，执行图片 prefill 和一步 decode。"""
+    """第一段：按正式 YAML 用 Transformers 加载 Mage-VL，执行图片 prefill 和一步 decode。"""
     global ENCODED_INPUTS_CPU, INPUT_IDS_CPU, BASELINE_GENERATED_IDS, BASELINE_TEXT
     if IMAGE is None:
         raise RuntimeError("先在主流程读取测试图片。")
@@ -282,7 +282,7 @@ def forward_inference():
     """第二段：通过项目 Mage-VL ModelRunner 执行 prefill/decode，并记录同样的算子数据。"""
     global INFERENCE_GENERATED_IDS, INFERENCE_TEXT
     if not ENCODED_INPUTS_CPU or INPUT_IDS_CPU is None:
-        raise RuntimeError("先运行 forward_transformer() 生成本机图片输入张量。")
+        raise RuntimeError("先运行 forward_transformer() 生成本地图片输入张量。")
 
     print("==================== inference ====================")
     print("package:", inference.__file__)
@@ -419,9 +419,9 @@ def forward_inference():
 
 
 if __name__ == "__main__":
-    # 五、检查本机权重和固定图片，再将图片处理成两条路径共用的输入。
+    # 五、检查本地权重和固定图片，再将图片处理成两条路径共用的输入。
     if not MODEL_PATH.is_dir() or not (MODEL_PATH / "config.json").is_file():
-        raise FileNotFoundError(f"本机 Mage-VL snapshot 不完整：{MODEL_PATH}")
+        raise FileNotFoundError(f"本地 Mage-VL snapshot 不完整：{MODEL_PATH}")
     if not INPUT_IMAGE_PATH.is_file():
         raise FileNotFoundError(f"测试图片不存在：{INPUT_IMAGE_PATH}；请修改文件顶部的 INPUT_IMAGE_PATH。")
     print("运行设备:", "cuda" if CUDA_AVAILABLE else "cpu（CUDA 不可用，已回退）")

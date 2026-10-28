@@ -42,7 +42,7 @@ class Qwen3Model(nn.Module):
         self.norm = Qwen3RMSNorm(config.hidden_size, config.rms_norm_eps)
 
     def get_input_embeddings(self) -> nn.Embedding:
-        """提供 Transformers 量化器与生成介面所需的输入嵌入存取器。"""
+        """提供 Transformers 量化器与生成接口所需的输入嵌入访问器。"""
         return self.embed_tokens
 
     def set_input_embeddings(self, value: nn.Embedding) -> None:

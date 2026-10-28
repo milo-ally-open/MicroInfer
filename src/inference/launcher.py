@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""推论服务的中央启动器与模型设定选择器。"""
+"""推理服务的中央启动器与模型配置选择器。"""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 
 
 def _discover_models() -> dict[str, dict[str, Any]]:
-    """从各模型目录的 manifest 发现模型，不依赖全域登录档。"""
+    """从各模型目录的 manifest 发现模型，不依赖全局登记文件。"""
     models: dict[str, dict[str, Any]] = {}
     for manifest_path in sorted(MODELS_ROOT.glob("*/configs/model.yml")):
         model = _read_yaml(manifest_path)
@@ -61,7 +61,7 @@ def _discover_models() -> dict[str, dict[str, Any]]:
 
 
 def _validate_model_manifest(alias: str, model: dict[str, Any]) -> dict[str, Any]:
-    """检查模型 manifest 与 API 能力宣告，不载入模型工厂或权重。"""
+    """检查模型 manifest 与 API 能力宣告，不加载模型工厂或权重。"""
     profile = model.get("integration_profile")
     if profile not in {"standard", "custom"}:
         raise ValueError("integration_profile must be standard or custom.")
@@ -117,9 +117,9 @@ def _validate_model_manifest(alias: str, model: dict[str, Any]) -> dict[str, Any
     if output_mode == "token_ids" and not input_processor:
         if profile != "standard":
             raise ValueError("token_ids output requires api.input_processor for detokenization.")
-        if not (INFERENCE_ROOT / "api" / "processors" / "default_chat_processor.py").is_file():
+        if not (INFERENCE_ROOT / "network" / "default_chat_processor.py").is_file():
             raise FileNotFoundError("Default standard chat input processor is missing.")
-        processor_source = INFERENCE_ROOT / "api" / "processors" / "default_chat_processor.py"
+        processor_source = INFERENCE_ROOT / "network" / "default_chat_processor.py"
         processor_class = "DefaultChatInputProcessor"
     elif input_processor:
         processor_source = _resolve_factory_source(str(input_processor), "input_processor")
@@ -215,7 +215,7 @@ def _validate_model_manifest(alias: str, model: dict[str, Any]) -> dict[str, Any
 
 
 def _resolve_path(value: str, description: str, *, base_dir: Path | None = None) -> Path:
-    """将相对路径解析为专案内的绝对路径，并确认档案存在。"""
+    """将相对路径解析为项目内的绝对路径，并确认文件存在。"""
     path = Path(value).expanduser()
     if not path.is_absolute():
         path = (base_dir or PROJECT_ROOT) / path
@@ -226,7 +226,7 @@ def _resolve_path(value: str, description: str, *, base_dir: Path | None = None)
 
 
 def _list_models(models: dict[str, dict[str, Any]]) -> None:
-    """列出自模型 manifest 发现的模型与设定。"""
+    """列出自模型 manifest 发现的模型与配置。"""
     print("MODEL\tPROFILE\tBACKEND\tSTATUS\tINPUTS\tOUTPUT\tTOOLS\tVIDEO\tLIVE\tMANIFEST")
     for alias, model in sorted(models.items()):
         if not isinstance(model, dict):
@@ -252,7 +252,7 @@ def _list_models(models: dict[str, dict[str, Any]]) -> None:
 
 
 def _resolve_factory_source(factory_path: str, name: str) -> Path:
-    """确认登录工厂使用可载入的 Python module:attribute 路径。"""
+    """确认登记工厂使用可加载的 Python module:attribute 路径。"""
     module_name, separator, attribute = factory_path.partition(":")
     if not separator or not module_name or not attribute:
         raise ValueError(f"Model {name} factory must use 'module:attribute' notation.")
@@ -270,7 +270,7 @@ def _resolve_factory_source(factory_path: str, name: str) -> Path:
 
 
 def _factory_class_methods(source: Path, class_name: str) -> set[str]:
-    """以 AST 检查 factory class 方法，不 import 模型程式。"""
+    """以 AST 检查 factory class 方法，不 import 模型代码。"""
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == class_name:
@@ -283,7 +283,7 @@ def _factory_class_methods(source: Path, class_name: str) -> set[str]:
 
 
 def _factory_symbols(source: Path) -> set[str]:
-    """以 AST 取得可由 YAML 指定的顶层工厂函式与类别名称。"""
+    """以 AST 取得可由 YAML 指定的顶层工厂函数与类别名称。"""
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     return {
         node.name for node in tree.body
@@ -294,7 +294,7 @@ def _factory_symbols(source: Path) -> set[str]:
 def _resolve_selection(
     args: argparse.Namespace, models: dict[str, dict[str, Any]]
 ) -> tuple[str, str, Path, Path]:
-    """依命令列与各模型 manifest 选出单一模型及设定档。"""
+    """依命令列与各模型 manifest 选出单一模型及配置文件。"""
     model_alias = args.model
     if not model_alias:
         raise ValueError("Pass --model to select a model manifest.")
@@ -322,7 +322,7 @@ def _resolve_selection(
 def _set_runtime_environment(
     model_alias: str, manifest_path: Path, config_path: Path, network_config_path: Path, config: dict[str, Any]
 ) -> None:
-    """套用模型设定中的环境变数，让服务启动时读取正确执行环境。"""
+    """应用模型配置中的环境变量，让服务启动时读取正确执行环境。"""
     runtime = config.get("runtime", {})
     os.environ["INFERENCE_CONFIG"] = str(config_path)
     os.environ["INFERENCE_NETWORK_CONFIG"] = str(network_config_path)
@@ -366,7 +366,7 @@ def _set_runtime_environment(
 
 
 def _load_service_app() -> Any:
-    """载入唯一的共用 Network app；模型差异由所选 manifest 提供。"""
+    """加载唯一的共用 Network app；模型差异由所选 manifest 提供。"""
     app_module = importlib.import_module("inference.network.service")
     if not hasattr(app_module, "app"):
         raise AttributeError("The shared API service entrypoint does not export 'app'.")
@@ -380,16 +380,16 @@ def _add_runtime_overrides(parser: argparse.ArgumentParser) -> None:
 
 
 def main() -> None:
-    """解析启动参数、载入指定模型设定，并启动常驻 API 服务。"""
+    """解析启动参数、加载指定模型配置，并启动常驻 API 服务。"""
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list", help="列出模型目录中的 manifest 与能力。")
-    validate_parser = commands.add_parser("validate", help="预检模型 manifest、设定和能力；不载入权重或启动 GPU。")
-    validate_parser.add_argument("--model", action="append", help="指定模型别名；可重复。预设检查全部模型。")
-    start_parser = commands.add_parser("start", help="启动指定模型 manifest 的推论 API 服务。")
+    validate_parser = commands.add_parser("validate", help="预检模型 manifest、配置和能力；不加载权重或初始化 GPU。")
+    validate_parser.add_argument("--model", action="append", help="指定模型别名；可重复。默认检查全部模型。")
+    start_parser = commands.add_parser("start", help="启动指定模型 manifest 的推理 API 服务。")
     start_parser.add_argument("--model", required=True, help="要启动的模型 manifest alias。")
-    start_parser.add_argument("--inference-config", type=Path, help="覆写模型 manifest 中的推论设定 YAML。")
-    start_parser.add_argument("--network-config", type=Path, help="覆写模型 manifest 中的网路设定 YAML。")
+    start_parser.add_argument("--inference-config", type=Path, help="覆盖模型 manifest 中的推理配置 YAML。")
+    start_parser.add_argument("--network-config", type=Path, help="覆盖模型 manifest 中的网络配置 YAML。")
     _add_runtime_overrides(start_parser)
     args = parser.parse_args()
 
@@ -426,7 +426,7 @@ def main() -> None:
         api_network["port"] = args.port
     if args.cuda_visible_devices is not None:
         runtime["cuda_visible_devices"] = args.cuda_visible_devices
-    # 必须在载入模型服务前设定环境变数，确保 CUDA 与 HF 快取设定生效。
+    # 必须在加载模型服务前配置环境变量，确保 CUDA 与 HF 缓存配置生效。
     _set_runtime_environment(model_alias, manifest_path, config_path, network_config_path, config)
 
     host = str(api_network.get("host", "127.0.0.1"))
@@ -452,7 +452,7 @@ def main() -> None:
     )
     import uvicorn
 
-    # API Server 单程序常驻；Engine Core 与 GPU Worker 各自管理独立子程序。
+    # API Server 单程序常驻；Engine Core 与 GPU Worker 各自管理独立子进程。
     uvicorn.run(
         _load_service_app(),
         host=host,

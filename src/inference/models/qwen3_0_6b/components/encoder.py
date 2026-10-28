@@ -10,7 +10,7 @@ from inference.network.tool_calling import normalize_chat_messages
 
 
 def _model_settings() -> Any:
-    """仅在编码请求时载入已由 Launcher/EngineClient 选定的模型 YAML。"""
+    """仅在编码请求时加载已由 Launcher/EngineClient 选定的模型 YAML。"""
     from ..utils import loader
 
     return loader

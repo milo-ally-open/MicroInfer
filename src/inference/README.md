@@ -4,7 +4,7 @@ Inference 是独立的 Python 模型服务，提供模型加载、请求预处�
 
 ## 架构
 
-API Server、Engine Core 和 Model Worker 是独立进程。API Server 通过 `network/` 提供 HTTP/SSE；Engine Core 负责请求生命周期、逐轮调度和 KV block reservation；Worker 在自己的进程中载入模型并执行前向计算。模型专属 Runtime、Processor、Runner、拓扑和算子由模型包持有。
+API Server、Engine Core 和 Model Worker 是独立进程。API Server 通过 `network/` 提供 HTTP/SSE；Engine Core 负责请求生命周期、逐轮调度和 KV block reservation；Worker 在自己的进程中加载模型并执行前向计算。模型专属 Runtime、Processor、Runner、拓扑和算子由模型包持有。
 
 | 组件 | 位置 | 主要职责 |
 | --- | --- | --- |
@@ -20,7 +20,7 @@ API Server、Engine Core 和 Model Worker 是独立进程。API Server 通过 `n
 | 阶段 | Qwen3 | Mage-VL |
 | --- | --- | --- |
 | Encoder | `models/qwen3_0_6b/components/encoder.py`：规范消息、工具策略和生成参数，产出编码计划 | `models/mage_vl_4b/components/encoder.py`：只负责组合与分发；`image_encoder.py` 解析文字／图片，`video_encoder.py` 处理帧／Codec 输入 |
-| Tokenizer | `models/qwen3_0_6b/components/tokenizer.py`：套用 Qwen3 chat template 并生成 prompt token IDs | `models/mage_vl_4b/components/tokenizer.py`：封装上游文字词表；Mage-VL `AutoProcessor` 继续联合完成文字 tokenize 与视觉张量处理 |
+| Tokenizer | `models/qwen3_0_6b/components/tokenizer.py`：应用 Qwen3 chat template 并生成 prompt token IDs | `models/mage_vl_4b/components/tokenizer.py`：封装上游文字词表；Mage-VL `AutoProcessor` 继续联合完成文字 tokenize 与视觉张量处理 |
 | Decoder | `models/<model>/components/decoder.py`：将完整生成 token IDs 转成最终文字 | 同左；由 Model Runner 调用 |
 | Detokenizer | `models/<model>/components/detokenizer.py`：逐 token 产出稳定的 SSE 文本片段 | 同左；由逐步生成器在每个 request 内维护 |
 
@@ -28,7 +28,7 @@ Qwen3 的 API `processor.py` 是兼容门面，会组合上述组件。Mage-VL �
 
 ## 环境与安装
 
-需要 Python 3.10 或更新版本，以及与目标设备匹配的 PyTorch/CUDA。PyTorch wheel 应先按机器环境安装。当前本机统一使用 Conda `inference` 环境；同一环境要运行 Mage-VL 与 Qwen3 时，从仓库根目录安装两个模型 extra：
+需要 Python 3.10 或更新版本，以及与目标设备匹配的 PyTorch/CUDA。PyTorch wheel 应先按机器环境安装。当前本地统一使用 Conda `inference` 环境；同一环境要运行 Mage-VL 与 Qwen3 时，从仓库根目录安装两个模型 extra：
 
 ```bash
 conda activate inference
@@ -55,7 +55,7 @@ inference validate --model qwen3-0.6b
 inference start --model qwen3-0.6b
 ```
 
-`list` 显示自动发现的模型 manifest。`validate` 检查 manifest、YAML、Runtime 工厂声明和 API 能力，不导入模型工厂、不载入权重、不下载 snapshot，也不初始化 GPU。`start` 必须指定 `--model`。
+`list` 显示自动发现的模型 manifest。`validate` 检查 manifest、YAML、Runtime 工厂声明和 API 能力，不导入模型工厂、不加载权重、不下载 snapshot，也不初始化 GPU。`start` 必须指定 `--model`。
 
 服务监听地址来自模型的 `configs/network.yml`：Mage-VL 默认 `127.0.0.1:8001`，Qwen3 默认 `127.0.0.1:8011`。推理优先使用 CUDA；仅在 CUDA 不可用时回退到 CPU。
 
@@ -108,7 +108,7 @@ python src/inference/models/mage_vl_4b/example.py
 
 ## API 能力
 
-Inference 提供 `GET /health`、`GET /v1/models` 和 `POST /v1/chat/completions`。模型已启用时，还会注册 `POST /v1/videos/understand` 或 Live session 路由。聊天接口支持 JSON 和文本 SSE；实际输入模态、串流和视频能力由模型 manifest 声明。
+Inference 提供 `GET /health`、`GET /v1/models` 和 `POST /v1/chat/completions`。模型已启用时，还会注册 `POST /v1/videos/understand` 或 Live session 路由。聊天接口支持 JSON 和文本 SSE；实际输入模态、流式和视频能力由模型 manifest 声明。
 
 Qwen3 的聊天接口实现标准 function tool 消息字段，包括 `tools`、`tool_choice: "auto"/"none"`、`assistant.tool_calls`、`role: "tool"` 和 SSE `delta.tool_calls`。首版每轮只支持一个工具调用；不支持并行工具调用、指定函数的 `tool_choice` 对象或 `strict: true`。工具参数按 JSON Schema 验证。
 
@@ -130,7 +130,7 @@ API Key 和其他密钥不写入模型 YAML；Gateway 认证配置见 [Gateway R
 
 新模型应新增 `models/<model>/` 插件包和 `configs/model.yml` manifest。通常由模型包提供 `runtime.py`；按需增加 `processor.py`、`utils/loader.py`、`model/`、`layers/`、`components/` 和 `requirements.txt`。Launcher 会发现模型 manifest，不需要复制 API Server、Engine Core 或 Worker。
 
-完整的文件职责、能力声明、配置格式和验证流程见[新模型接入指南](../../docs/Specifications/inference/model-integration.md)。
+从 Hugging Face 下载并完整实操接入新模型，见仓库根目录的[模型接入实操教程](../../TUTORIAL.md)。通用文件职责、能力声明和 Runtime 契约见[模型接入规范](../../docs/Specifications/inference/model-integration.md)。
 
 ## 测试
 

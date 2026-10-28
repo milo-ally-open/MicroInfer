@@ -1,4 +1,4 @@
-"""Mage-VL 可检视的标准多头注意力投影与矩阵计算。"""
+"""Mage-VL 可查看的标准多头注意力投影与矩阵计算。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from torch.nn import functional as F
 
 
 class MultiHeadAttention(nn.Module):
-    """以 `nn.MultiheadAttention` 相容的权重名称计算多头注意力。"""
+    """以 `nn.MultiheadAttention` 兼容的权重名称计算多头注意力。"""
 
     def __init__(
         self,

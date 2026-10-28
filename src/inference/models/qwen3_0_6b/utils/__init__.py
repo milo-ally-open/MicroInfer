@@ -1,2 +1,2 @@
-"""Hugging Face 设定、Tokenizer 与 checkpoint 格式的相容入口。"""
+"""Hugging Face 配置、Tokenizer 与 checkpoint 格式的兼容入口。"""
 

@@ -1,4 +1,4 @@
-"""Qwen3 decoder layer 所需的正规化与 gated MLP 元件。"""
+"""Qwen3 decoder layer 所需的正规化与 gated MLP 组件。"""
 
 from __future__ import annotations
 

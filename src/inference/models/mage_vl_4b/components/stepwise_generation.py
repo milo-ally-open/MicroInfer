@@ -102,7 +102,7 @@ class MageVLStepwiseGeneration:
         return int(visual_positions[-1, 0].item()) + 1
 
     def execute_work_batch(self, requests: Sequence[Any]) -> tuple[dict[str, Any], ...]:
-        """在一个 Worker 请求中混排 prefill/decode，并按原顺序回传逐请求结果。"""
+        """在一个 Worker 请求中混排 prefill/decode，并按原顺序返回逐请求结果。"""
         if not requests:
             return ()
         ids = [item.request_id for item in requests]
@@ -266,7 +266,7 @@ class MageVLStepwiseGeneration:
         return tuple(results)
 
     def _execute_decode_batch(self, request_ids: Sequence[str]) -> tuple[dict[str, Any], ...]:
-        """批次执行相容的 decode 请求，并维持各请求独立的 cache 与输出。"""
+        """批次执行兼容的 decode 请求，并维持各请求独立的 cache 与输出。"""
         if not request_ids:
             return ()
         if len(request_ids) != len(set(request_ids)):

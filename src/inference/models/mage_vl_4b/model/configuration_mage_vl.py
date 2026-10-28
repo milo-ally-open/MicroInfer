@@ -1,6 +1,6 @@
-"""Mage-VL 固定 revision 的 Transformers 设定类别。"""
+"""Mage-VL 固定 revision 的 Transformers 配置类别。"""
 
-# 本档由固定 revision 的上游实作拆分调整；来源：microsoft/Mage-VL，revision d88b153285f1633a61b2f693c59c8576693af185（Apache-2.0）。
+# 本文件由固定 revision 的上游实现拆分调整；来源：microsoft/Mage-VL，revision d88b153285f1633a61b2f693c59c8576693af185（Apache-2.0）。
 
 from huggingface_hub.dataclasses import strict
 
@@ -86,7 +86,7 @@ class MageVLConfig(PreTrainedConfig):
         elif self.vision_config is None:
             self.vision_config = self.sub_configs["vision_config"]()
 
-        # 依固定模型架构将文字骨干设定解析为 Qwen3Config。
+        # 依固定模型架构将文字骨干配置解析为 Qwen3Config。
         if isinstance(self.text_config, dict):
             text_model_type = self.text_config.get("model_type", "qwen3")
             if text_model_type != "qwen3":

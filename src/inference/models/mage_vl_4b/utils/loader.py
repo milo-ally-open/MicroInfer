@@ -1,4 +1,4 @@
-"""读取 Mage-VL YAML，集中保存模型专属设定。"""
+"""读取 Mage-VL YAML，集中保存模型专属配置。"""
 
 from __future__ import annotations
 
@@ -13,86 +13,86 @@ from inference.processors.live_sessions import LiveVideoSettings
 
 
 logger = logging.getLogger(__name__)
-CONFIG = selected_config("INFERENCE_CONFIG")  # 模型与推论参数。
-NETWORK_CONFIG = selected_config("INFERENCE_NETWORK_CONFIG")  # API 与媒体网路参数。
+CONFIG = selected_config("INFERENCE_CONFIG")  # 模型与推理参数。
+NETWORK_CONFIG = selected_config("INFERENCE_NETWORK_CONFIG")  # API 与媒体网络参数。
 
-MODEL_CONFIG = CONFIG["model"]  # 上游模型识别码及载入选项。
-QUANTIZATION_CONFIG = MODEL_CONFIG["quantization"]  # 权重量化方式与装置记忆体限制。
-COMPONENT_REPLACEMENTS = MODEL_CONFIG["components"]["replacements"]  # 模型元件替换登录。
-RUNTIME_CONFIG = CONFIG["runtime"]  # 权重快照与程序逾时设定。
-LOCAL_FILES_ONLY = RUNTIME_CONFIG["local_files_only"]  # 仅使用本机 Hugging Face 快照。
+MODEL_CONFIG = CONFIG["model"]  # 上游模型 ID及加载选项。
+QUANTIZATION_CONFIG = MODEL_CONFIG["quantization"]  # 权重量化方式与设备内存限制。
+COMPONENT_REPLACEMENTS = MODEL_CONFIG["components"]["replacements"]  # 模型组件替换登记。
+RUNTIME_CONFIG = CONFIG["runtime"]  # 权重快照与程序超时配置。
+LOCAL_FILES_ONLY = RUNTIME_CONFIG["local_files_only"]  # 仅使用本地 Hugging Face 快照。
 API_CONFIG = CONFIG["api"]  # 请求限制与多模态处理参数。
-ENGINE_CONFIG = CONFIG["engine"]  # 排程与 KV 容量参数。
-GENERATION_CONFIG = CONFIG["generation"]  # 文字生成预设值。
+ENGINE_CONFIG = CONFIG["engine"]  # 调度与 KV 容量参数。
+GENERATION_CONFIG = CONFIG["generation"]  # 文字生成默认值。
 MODEL_ID = MODEL_CONFIG["id"]  # Hugging Face repo_id。
 MODEL_REVISION = MODEL_CONFIG["revision"]  # 固定的上游模型 revision。
-OPTIMIZATION_CONFIG = CONFIG["optimization"]["pytorch"]  # PyTorch 执行最佳化参数。
+OPTIMIZATION_CONFIG = CONFIG["optimization"]["pytorch"]  # PyTorch 执行优化参数。
 
 MAX_IMAGE_SIDE = int(API_CONFIG["max_image_side"])  # 输入图片最大边长。
 IMAGE_RESAMPLING = str(API_CONFIG["image_resampling"]).lower()  # 图片缩放滤波器。
 MAX_CONTEXT_TOKENS = int(API_CONFIG["max_context_tokens"])  # 单次请求的上下文上限。
 MAX_NEW_TOKENS = int(API_CONFIG["max_new_tokens"])  # 单次生成长度上限。
 MAX_NUM_SEQS = int(ENGINE_CONFIG["max_num_seqs"])  # 同时执行的序列数上限。
-MAX_WAITING_REQUESTS = int(ENGINE_CONFIG["max_waiting_requests"])  # 等候伫列上限。
-MAX_NUM_SCHEDULED_TOKENS = int(ENGINE_CONFIG["max_num_scheduled_tokens"])  # 单轮排程 Token 预算。
+MAX_WAITING_REQUESTS = int(ENGINE_CONFIG["max_waiting_requests"])  # 等候队列上限。
+MAX_NUM_SCHEDULED_TOKENS = int(ENGINE_CONFIG["max_num_scheduled_tokens"])  # 单轮调度 Token 预算。
 BATCH_WAIT_SECONDS = float(ENGINE_CONFIG["batch_wait_seconds"])  # 合并批次的等待时间。
 PREFILL_CHUNK_SIZE_TOKENS = int(ENGINE_CONFIG["prefill_chunk_size_tokens"])  # 分块 Prefill 大小。
-KV_CACHE_CONFIG = ENGINE_CONFIG["kv_cache"]  # Engine 逻辑 KV 容量设定。
+KV_CACHE_CONFIG = ENGINE_CONFIG["kv_cache"]  # Engine 逻辑 KV 容量配置。
 KV_CACHE_BLOCK_SIZE_TOKENS = int(KV_CACHE_CONFIG["block_size_tokens"])  # 每个逻辑区块的 Token 数。
 KV_CACHE_CAPACITY_TOKENS = int(KV_CACHE_CONFIG["capacity_tokens"])  # KV 逻辑预留总容量。
 MAX_IMAGES_PER_REQUEST = int(API_CONFIG["max_images_per_request"])  # 每个请求可输入的图片数。
 MAX_IMAGE_BYTES = int(API_CONFIG["max_image_bytes"])  # 单张图片大小上限。
 MAX_IMAGE_PIXELS = int(API_CONFIG["max_image_pixels"])  # 单张图片像素上限。
-MAX_CHAT_REQUEST_BYTES = int(API_CONFIG["max_chat_request_bytes"])  # 聊天请求本文大小上限。
-MAX_LIVE_REQUEST_BYTES = int(API_CONFIG["max_live_request_bytes"])  # Live API 请求本文大小上限。
-MAX_VIDEO_BYTES = int(API_CONFIG["max_video_bytes"])  # 上传影片档案大小上限。
-MAX_VIDEO_REQUEST_BYTES = int(API_CONFIG["max_video_request_bytes"])  # 影片理解请求本文大小上限。
-MAX_VIDEO_DURATION_SECONDS = float(API_CONFIG["max_video_duration_seconds"])  # 影片时长上限。
-VIDEO_MAX_FRAMES = int(API_CONFIG["video_max_frames"])  # 单次影片抽取影格上限。
-VIDEO_MAX_FRAME_SIDE = int(API_CONFIG["video_max_frame_side"])  # 影片影格最大边长。
-VIDEO_BACKEND = str(API_CONFIG["video_backend"]).lower()  # 影片输入解码后端。
-CODEC_CONFIG = API_CONFIG["codec"]  # Codec 影片路径参数。
+MAX_CHAT_REQUEST_BYTES = int(API_CONFIG["max_chat_request_bytes"])  # 聊天请求正文大小上限。
+MAX_LIVE_REQUEST_BYTES = int(API_CONFIG["max_live_request_bytes"])  # Live API 请求正文大小上限。
+MAX_VIDEO_BYTES = int(API_CONFIG["max_video_bytes"])  # 上传视频文件大小上限。
+MAX_VIDEO_REQUEST_BYTES = int(API_CONFIG["max_video_request_bytes"])  # 视频理解请求正文大小上限。
+MAX_VIDEO_DURATION_SECONDS = float(API_CONFIG["max_video_duration_seconds"])  # 视频时长上限。
+VIDEO_MAX_FRAMES = int(API_CONFIG["video_max_frames"])  # 单次视频抽取帧上限。
+VIDEO_MAX_FRAME_SIDE = int(API_CONFIG["video_max_frame_side"])  # 视频帧最大边长。
+VIDEO_BACKEND = str(API_CONFIG["video_backend"]).lower()  # 视频输入解码后端。
+CODEC_CONFIG = API_CONFIG["codec"]  # Codec 视频路径参数。
 CODEC_ENGINE = CODEC_CONFIG["engine"]  # Codec 使用的编码器。
-CODEC_TARGET_CANVAS = int(CODEC_CONFIG["target_canvas"])  # Codec 影格目标尺寸倍率。
-CODEC_MAX_PIXELS = int(CODEC_CONFIG["max_pixels"])  # Codec 影格像素上限。
-CODEC_FFMPEG_BIN = str(CODEC_CONFIG["ffmpeg_bin"])  # FFmpeg 执行档路径。
-CODEC_FFPROBE_BIN = str(CODEC_CONFIG["ffprobe_bin"])  # FFprobe 执行档路径。
-CODEC_TIMEOUT_SECONDS = int(CODEC_CONFIG["timeout_seconds"])  # Codec 处理逾时。
-IMAGE_URL_TIMEOUT = float(API_CONFIG["image_url_timeout_seconds"])  # 下载远端图片的逾时。
-STREAM_TIMEOUT = float(API_CONFIG["stream_timeout_seconds"])  # 文字串流逾时。
-WORKER_STARTUP_TIMEOUT = float(RUNTIME_CONFIG["worker_startup_timeout_seconds"])  # Worker 启动逾时。
-WORKER_REQUEST_TIMEOUT = float(RUNTIME_CONFIG["worker_request_timeout_seconds"])  # Worker 请求逾时。
-ENGINE_CORE_STARTUP_TIMEOUT = float(RUNTIME_CONFIG["engine_core_startup_timeout_seconds"])  # Engine Core 启动逾时。
-ENGINE_CORE_REQUEST_TIMEOUT = float(RUNTIME_CONFIG["engine_core_request_timeout_seconds"])  # Engine Core 请求逾时。
-LIVE_CONFIG = API_CONFIG["live_stream"]  # 即时影片取样与工作阶段参数。
+CODEC_TARGET_CANVAS = int(CODEC_CONFIG["target_canvas"])  # Codec 帧目标尺寸倍率。
+CODEC_MAX_PIXELS = int(CODEC_CONFIG["max_pixels"])  # Codec 帧像素上限。
+CODEC_FFMPEG_BIN = str(CODEC_CONFIG["ffmpeg_bin"])  # FFmpeg 执行文件路径。
+CODEC_FFPROBE_BIN = str(CODEC_CONFIG["ffprobe_bin"])  # FFprobe 执行文件路径。
+CODEC_TIMEOUT_SECONDS = int(CODEC_CONFIG["timeout_seconds"])  # Codec 处理超时。
+IMAGE_URL_TIMEOUT = float(API_CONFIG["image_url_timeout_seconds"])  # 下载远端图片的超时。
+STREAM_TIMEOUT = float(API_CONFIG["stream_timeout_seconds"])  # 文本流式超时。
+WORKER_STARTUP_TIMEOUT = float(RUNTIME_CONFIG["worker_startup_timeout_seconds"])  # Worker 启动超时。
+WORKER_REQUEST_TIMEOUT = float(RUNTIME_CONFIG["worker_request_timeout_seconds"])  # Worker 请求超时。
+ENGINE_CORE_STARTUP_TIMEOUT = float(RUNTIME_CONFIG["engine_core_startup_timeout_seconds"])  # Engine Core 启动超时。
+ENGINE_CORE_REQUEST_TIMEOUT = float(RUNTIME_CONFIG["engine_core_request_timeout_seconds"])  # Engine Core 请求超时。
+LIVE_CONFIG = API_CONFIG["live_stream"]  # 实时视频取样与工作会话参数。
 LIVE_NETWORK_CONFIG = NETWORK_CONFIG["live_stream"]  # MediaMTX 及公开媒体端点。
-LIVE_PUBLIC_HOST = str(LIVE_NETWORK_CONFIG["public_host"]).strip()  # 回传给推流用户端的主机名称。
+LIVE_PUBLIC_HOST = str(LIVE_NETWORK_CONFIG["public_host"]).strip()  # 返回给推流用户端的主机名称。
 LIVE_SETTINGS = LiveVideoSettings(
-    rtsp_host=str(LIVE_NETWORK_CONFIG["mediamtx_rtsp_host"]),  # 推论服务连线的 RTSP 主机。
-    rtsp_port=int(LIVE_NETWORK_CONFIG["mediamtx_rtsp_port"]),  # MediaMTX RTSP 连接埠。
-    rtmp_port=int(LIVE_NETWORK_CONFIG["mediamtx_rtmp_port"]),  # MediaMTX RTMP 连接埠。
-    public_host=LIVE_PUBLIC_HOST,  # 回传给外部推流端的公开主机。
-    sample_interval_seconds=float(LIVE_CONFIG["sample_interval_seconds"]),  # Live 影格取样间隔。
+    rtsp_host=str(LIVE_NETWORK_CONFIG["mediamtx_rtsp_host"]),  # 推理服务连接的 RTSP 主机。
+    rtsp_port=int(LIVE_NETWORK_CONFIG["mediamtx_rtsp_port"]),  # MediaMTX RTSP 端口。
+    rtmp_port=int(LIVE_NETWORK_CONFIG["mediamtx_rtmp_port"]),  # MediaMTX RTMP 端口。
+    public_host=LIVE_PUBLIC_HOST,  # 返回给外部推流端的公开主机。
+    sample_interval_seconds=float(LIVE_CONFIG["sample_interval_seconds"]),  # Live 帧取样间隔。
     window_seconds=float(LIVE_CONFIG["window_seconds"]),  # 每次理解的滑动时间窗。
-    max_duration_seconds=float(LIVE_CONFIG["max_duration_seconds"]),  # Live 工作阶段时长上限。
-    max_sessions=int(LIVE_CONFIG["max_sessions"]),  # 同时 Live 工作阶段上限。
-    open_timeout_ms=int(float(LIVE_CONFIG["open_timeout_seconds"]) * 1000),  # 开启串流逾时毫秒数。
-    read_timeout_ms=int(float(LIVE_CONFIG["read_timeout_seconds"]) * 1000),  # 读取影格逾时毫秒数。
+    max_duration_seconds=float(LIVE_CONFIG["max_duration_seconds"]),  # Live 工作会话时长上限。
+    max_sessions=int(LIVE_CONFIG["max_sessions"]),  # 同时 Live 工作会话上限。
+    open_timeout_ms=int(float(LIVE_CONFIG["open_timeout_seconds"]) * 1000),  # 创建流式连接的超时毫秒数。
+    read_timeout_ms=int(float(LIVE_CONFIG["read_timeout_seconds"]) * 1000),  # 读取帧超时毫秒数。
     reconnect_seconds=float(LIVE_CONFIG["reconnect_interval_seconds"]),  # 断线重连间隔。
-    max_frames=VIDEO_MAX_FRAMES,  # Live 单次取样影格上限。
-    max_frame_side=VIDEO_MAX_FRAME_SIDE,  # Live 影格最大边长。
-    video_backend=str(LIVE_CONFIG["video_backend"]).lower(),  # Live 影片解码后端。
+    max_frames=VIDEO_MAX_FRAMES,  # Live 单次取样帧上限。
+    max_frame_side=VIDEO_MAX_FRAME_SIDE,  # Live 帧最大边长。
+    video_backend=str(LIVE_CONFIG["video_backend"]).lower(),  # Live 视频解码后端。
     codec_engine=CODEC_ENGINE,  # Live Codec 编码器。
     codec_target_canvas=CODEC_TARGET_CANVAS,  # Live 共用 Codec 尺寸倍率。
     live_codec_target_canvas=int(LIVE_CONFIG["codec_target_canvas"]),  # Live 专用尺寸倍率。
-    codec_max_pixels=CODEC_MAX_PIXELS,  # Live Codec 影格像素上限。
+    codec_max_pixels=CODEC_MAX_PIXELS,  # Live Codec 帧像素上限。
     codec_max_pending_segments=int(LIVE_CONFIG["codec_max_pending_segments"]),  # 等待处理的片段上限。
-    ffmpeg_bin=CODEC_FFMPEG_BIN,  # Live Codec 使用的 FFmpeg 执行档。
+    ffmpeg_bin=CODEC_FFMPEG_BIN,  # Live Codec 使用的 FFmpeg 执行文件。
 )
 
 
 def resolve_model_load_path() -> str:
-    """准备固定 revision 的模型快照并回传快取路径。"""
+    """准备固定 revision 的模型快照并返回缓存路径。"""
     local_model_path = RUNTIME_CONFIG["local_model_path"]
     if local_model_path:
         path = Path(os.path.expandvars(os.path.expanduser(str(local_model_path))))
@@ -126,7 +126,7 @@ def resolve_model_load_path() -> str:
 
 
 def _build_quantization_config(torch: Any, bits_and_bytes_config: Any) -> Any:
-    """依 YAML 的量化方法建立 Transformers 量化设定。"""
+    """依 YAML 的量化方法创建 Transformers 量化配置。"""
     quantization = QUANTIZATION_CONFIG
     method = quantization["method"]
     quantization_builders = {
@@ -156,7 +156,7 @@ def _build_quantization_config(torch: Any, bits_and_bytes_config: Any) -> Any:
 
 
 def _build_model_kwargs(torch: Any, kernel_config_type: Any, bits_and_bytes_config: Any) -> dict[str, Any]:
-    """将 YAML 模型载入选项转为 Transformers 权重载入参数。"""
+    """将 YAML 模型加载选项转为 Transformers 权重加载参数。"""
     kernel_config = MODEL_CONFIG["kernel_config"]
     offload_folder = MODEL_CONFIG["offload_folder"]
     max_memory = {
@@ -201,7 +201,7 @@ def _build_model_kwargs(torch: Any, kernel_config_type: Any, bits_and_bytes_conf
 
 
 def load_mage_vl() -> tuple[str, Any, Any]:
-    """依模型 YAML 载入模型和 Processor，并回传快照路径。"""
+    """依模型 YAML 加载模型和 Processor，并返回快照路径。"""
     import torch
     from transformers import AutoProcessor, BitsAndBytesConfig, KernelConfig
 

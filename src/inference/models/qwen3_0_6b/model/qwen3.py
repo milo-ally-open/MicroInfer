@@ -29,6 +29,7 @@ class Qwen3DecoderLayer(nn.Module):
             num_attention_heads=int(config.num_attention_heads),
             num_key_value_heads=int(config.num_key_value_heads),
             head_dim=head_dim,
+            max_position_embeddings=int(config.max_position_embeddings),
             rms_norm_eps=float(config.rms_norm_eps),
             rope_theta=float(config.rope_theta),
             device=device,
@@ -151,7 +152,7 @@ class Qwen3ForCausalLM(nn.Module):
         return self.lm_head(last_hidden_states)
 
     def tie_weights(self) -> None:
-        """套用 config 的 tied word embeddings；不接受不一致的重复权重。"""
+        """应用 config 的 tied word embeddings；不接受不一致的重复权重。"""
         if not bool(getattr(self.config, "tie_word_embeddings", False)):
             return
         input_weight = self.model.embed_tokens.weight
@@ -161,7 +162,7 @@ class Qwen3ForCausalLM(nn.Module):
         self.lm_head.weight = input_weight
 
     def to_empty_cpu(self) -> Qwen3ForCausalLM:
-        """为 meta 计算图配置 CPU 权重储存，避免先建立随机 FP32 权重。"""
+        """为 meta 计算图配置 CPU 权重储存，避免先创建随机 FP32 权重。"""
         return self.to_empty(device=torch.device("cpu"))
 
     def get_input_embeddings(self) -> nn.Embedding:
@@ -184,7 +185,7 @@ if __name__ == "__main__":
         head_dim=16,
         max_position_embeddings=128,
     )
-    # 正式 checkpoint 的 RoPE 参数来自模型设定；合成设定需同步清除 Transformers 的旧式缩放预设。
+    # 正式 checkpoint 的 RoPE 参数来自模型配置；合成配置需同步清除 Transformers 的旧式缩放默认。
     config.rope_theta = 1_000_000.0
     config.rope_parameters = {"rope_type": "default", "rope_theta": config.rope_theta}
     config._attn_implementation = "eager"

@@ -1,4 +1,4 @@
-"""以共用 Engine Core 与 Worker 装配登录表中的模型元件。"""
+"""以共用 Engine Core 与 Worker 装配登记表中的模型组件。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from inference.engine.worker import InProcessModelWorker
 
 
 def create_model_worker() -> InProcessModelWorker:
-    """只在 GPU Worker 子程序载入模型目录提供的单一 Runtime。"""
+    """只在 GPU Worker 子进程加载模型目录提供的单一 Runtime。"""
     _, model_spec = selected_model()
     runtime = load_factory(model_runtime_factory(model_spec))()
     validate_runtime_components(model_spec, runtime)
@@ -24,7 +24,7 @@ def create_model_worker() -> InProcessModelWorker:
 
 
 def create_engine_core() -> InferenceEngine:
-    """由 YAML 建立共用 Scheduler、KV 管理器及独立 Model Worker。"""
+    """由 YAML 创建共用 Scheduler、KV 管理器及独立 Model Worker。"""
     model_alias, model_spec = selected_model()
     config = selected_config("INFERENCE_CONFIG")
     runtime = config.get("runtime", {})

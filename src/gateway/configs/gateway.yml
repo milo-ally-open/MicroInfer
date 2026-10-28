@@ -2,7 +2,7 @@ listener:
   host: 127.0.0.1
   port: 8000
 
-# 设定为外部客户端可到达的 Gateway URL；TLS 可由前置 Proxy 终止。
+# 配置为外部客户端可到达的 Gateway URL；TLS 可由前置 Proxy 终止。
 public_base_url: http://127.0.0.1:8000
 
 defaults:
@@ -17,7 +17,7 @@ upstream:
   tcp_keepalive_seconds: 30
   expect_continue_seconds: 1
 
-# 对外别名与推论服务的识别码分开保存。首版只登录已实作的模型。
+# 对外别名与推理服务的模型 ID 分开保存。当前只登记已实现的模型。
 models:
   mage-vl-4b:
     upstream_model: microsoft/Mage-VL
@@ -65,13 +65,13 @@ rate_limit:
   requests_per_second: 5
   burst: 10
 
-# 机密由程序环境指定档案路径或签章金钥，不写入此 YAML。
+# 机密由程序环境指定文件路径或签章密钥，不写入此 YAML。
 auth:
   api_keys_file_env: GATEWAY_API_KEYS_FILE
 
 session:
   hmac_keys_env: GATEWAY_SESSION_HMAC_KEYS
-  # 至少覆盖推论 live 工作阶段最长时间；旧金钥需保留至签发句柄到期。
+  # 至少覆盖推理 live 工作会话最长时间；旧密钥需保留至签发句柄到期。
   handle_ttl_seconds: 3660
 
 observability:

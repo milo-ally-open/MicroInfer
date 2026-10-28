@@ -1,4 +1,4 @@
-"""OpenAI 风格聊天请求及 SSE 回应路由。"""
+"""OpenAI 风格聊天请求及 SSE 响应路由。"""
 
 from __future__ import annotations
 

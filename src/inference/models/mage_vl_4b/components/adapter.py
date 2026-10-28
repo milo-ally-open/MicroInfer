@@ -196,7 +196,7 @@ class MageVLModelAdapter:
         self.model_runner.bind_generation_cache(request_id, block_ids)
 
     def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> tuple[WorkerResult, ...]:
-        """将同轮混合 work items 交给模型 Runner，逐请求回传生成结果。"""
+        """将同轮混合 work items 交给模型 Runner，逐请求返回生成结果。"""
         for request in requests:
             task = self._task(request.request_id)
             if request.phase is ExecutionPhase.PREFILL and (

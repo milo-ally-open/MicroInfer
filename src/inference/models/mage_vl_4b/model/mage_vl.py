@@ -18,7 +18,7 @@ from .text_backbone import Qwen3Model
 
 
 def build_position_ids(inputs_embeds: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
-    """依完整 attention mask 产生位置，并只回传目前 query 对应的位置。"""
+    """依完整 attention mask 产生位置，并只返回目前 query 对应的位置。"""
     batch_size, query_length, _ = inputs_embeds.shape
     if attention_mask is None:
         return torch.arange(query_length, device=inputs_embeds.device).unsqueeze(0).expand(batch_size, -1)

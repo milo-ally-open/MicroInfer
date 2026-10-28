@@ -1,4 +1,4 @@
-"""Mage-VL StreamMind Gate 权重载入与视频片段门控。"""
+"""Mage-VL StreamMind Gate 权重加载与视频片段门控。"""
 
 # 本模块拆分自 microsoft/Mage-VL revision d88b153285f1633a61b2f693c59c8576693af185（Apache-2.0）。
 

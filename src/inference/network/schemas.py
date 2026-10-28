@@ -1,4 +1,4 @@
-"""对外推论 API 的 Pydantic schema。"""
+"""对外推理 API 的 Pydantic schema。"""
 
 from __future__ import annotations
 

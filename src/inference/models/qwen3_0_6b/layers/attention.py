@@ -10,7 +10,7 @@ from torch import nn
 
 from ..components.paged_kv_cache import PagedKVCache
 from .layers import Qwen3RMSNorm
-from .rotary_embedding import apply_rotary, rotary_embeddings
+from .rope import RoPE
 
 
 class Qwen3Attention(nn.Module):
@@ -23,6 +23,7 @@ class Qwen3Attention(nn.Module):
         num_attention_heads: int,
         num_key_value_heads: int,
         head_dim: int,
+        max_position_embeddings: int,
         rms_norm_eps: float,
         rope_theta: float,
         device: torch.device,
@@ -39,6 +40,14 @@ class Qwen3Attention(nn.Module):
         self.num_key_value_heads = num_key_value_heads
         self.head_dim = head_dim
         self.rope_theta = float(rope_theta)
+        self.rope = RoPE(
+            head_size=head_dim,
+            rotary_dim=head_dim,
+            max_pos_emb=max_position_embeddings,
+            base=rope_theta,
+            dtype=dtype,
+            device=device,
+        )
         self.q_proj = nn.Linear(hidden_size, num_attention_heads * head_dim, bias=False, device=device, dtype=dtype)
         self.k_proj = nn.Linear(hidden_size, num_key_value_heads * head_dim, bias=False, device=device, dtype=dtype)
         self.v_proj = nn.Linear(hidden_size, num_key_value_heads * head_dim, bias=False, device=device, dtype=dtype)
@@ -80,13 +89,7 @@ class Qwen3Attention(nn.Module):
             position_ids[index, :length] = torch.arange(
                 offset, offset + length, device=hidden_states.device, dtype=torch.long
             )
-        cosine, sine = rotary_embeddings(
-            position_ids,
-            head_dim=self.head_dim,
-            theta=self.rope_theta,
-            dtype=hidden_states.dtype,
-        )
-        query, key = apply_rotary(query, key, cosine, sine)
+        query, key = self.rope(position_ids, query, key)
 
         key_lengths: list[int] = []
         for index, (request_id, offset, length, block_table) in enumerate(
@@ -170,6 +173,7 @@ if __name__ == "__main__":
         num_attention_heads=config.num_attention_heads,
         num_key_value_heads=config.num_key_value_heads,
         head_dim=config.head_dim,
+        max_position_embeddings=config.max_position_embeddings,
         rms_norm_eps=config.rms_norm_eps,
         rope_theta=config.rope_theta,
         device=test_device,

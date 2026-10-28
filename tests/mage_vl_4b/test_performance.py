@@ -29,7 +29,7 @@ inference_config_path = (config_path.parent / settings["inference_config"]).reso
 inference_settings = yaml.safe_load(inference_config_path.read_text(encoding="utf-8"))
 image_path = (config_path.parent / settings["image"]).resolve()
 if not (snapshot / "config.json").is_file() or not image_path.is_file():
-    raise FileNotFoundError("请确认本机模型快照及 YAML 指定的图片均存在。")
+    raise FileNotFoundError("请确认本地模型快照和 YAML 指定的图片均存在。")
 
 from inference.models.mage_vl_4b.model.configuration_mage_vl import MageVLConfig
 from inference.models.mage_vl_4b.model.conditional_generation import MageVLForConditionalGeneration

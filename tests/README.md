@@ -12,13 +12,13 @@ python -m pip install -e "src/inference[qwen3]"
 python -m pip install -e "src/inference[mage-vl]"
 ```
 
-PyTorch/CUDA wheel 需按目标设备单独安装。各模型的 `test.yml` 应指向固定 revision 的本机 snapshot；测试不会替用户下载大型模型。
+PyTorch/CUDA wheel 需按目标设备单独安装。各模型的 `test.yml` 应指向固定 revision 的本地 snapshot；测试不会替用户下载大型模型。
 
 ## Qwen3-0.6B
 
 ### 组件检查
 
-该脚本不载入完整模型权重或启动 Inference 服务。它在 meta device 对照模型结构，并运行 Qwen3 的 8 个模块数值入口，包括模型、Attention、RMSNorm/MLP、RoPE、Runner、Paged KV Cache、Sampler 和 InputBatch。
+该脚本不加载完整模型权重或启动 Inference 服务。它在 meta device 对照模型结构，并运行 Qwen3 的 8 个模块数值入口，包括模型、Attention、RMSNorm/MLP、RoPE、Runner、Paged KV Cache、Sampler 和 InputBatch。
 
 ```bash
 python tests/qwen3_0_6b/test_components.py \
@@ -27,7 +27,7 @@ python tests/qwen3_0_6b/test_components.py \
 
 ### Attention 算子分析
 
-`--profile-attention` 从本机固定 snapshot 读取第 0 层 Attention 权重，以合成 hidden states 比较 prefill 和单 token decode，并记录 Profiler 可见的算子、shape 和内存信息：
+`--profile-attention` 从本地固定 snapshot 读取第 0 层 Attention 权重，以合成 hidden states 比较 prefill 和单 token decode，并记录 Profiler 可见的算子、shape 和内存信息：
 
 ```bash
 python tests/qwen3_0_6b/test_components.py \
@@ -62,7 +62,7 @@ python tests/qwen3_0_6b/test_end2end.py \
 
 ### 组件检查
 
-在 meta device 对照模型结构和 checkpoint key，并运行 Attention、文本 prefill/decode 数值对照；不载入完整权重：
+在 meta device 对照模型结构和 checkpoint key，并运行 Attention、文本 prefill/decode 数值对照；不加载完整权重：
 
 ```bash
 python tests/mage_vl_4b/test_components.py \
@@ -80,7 +80,7 @@ python tests/mage_vl_4b/test_performance.py \
 
 ### Gateway 端到端
 
-启动 Mage-VL Inference 和 Go Gateway，设置 API Key，并准备 `test.yml` 指定的图片和视频素材：
+启动 Mage-VL Inference 和 Go Gateway，配置 API Key，并准备 `test.yml` 指定的图片和视频素材：
 
 ```bash
 export VIDEO_API_KEY='<Gateway API Key>'
@@ -92,13 +92,13 @@ python tests/mage_vl_4b/test_end2end.py \
 
 ## 结果和限制
 
-测试摘要输出到标准输出，不会自动创建历史结果文件。需要归档时，将结果保存到 `tests/<model_alias>/results/`，并记录模型 revision、GPU、驱动、CUDA、PyTorch、dtype 和配置。
+测试摘要输出到标准输出，不会自动创建历史结果文件。需要归文件时，将结果保存到 `tests/<model_alias>/results/`，并记录模型 revision、GPU、驱动、CUDA、PyTorch、dtype 和配置。
 
 性能测试结果是特定机器和配置下的比较，不构成 SLA。组件检查不评估数据集精度；服务或 Gateway 未实际运行时，不应将静态或组件检查描述为端到端验收。
 
 ## 客户端协议示例
 
-[`client.py`](client.py) 演示 OpenAI SDK 聊天、Qwen3 工具调用循环，以及可选的视频理解请求。运行工具循环前应启动相应服务并设置 API Key：
+[`client.py`](client.py) 演示 OpenAI SDK 聊天、Qwen3 工具调用循环，以及可选的视频理解请求。运行工具循环前应启动相应服务并配置 API Key：
 
 ```bash
 export VIDEO_API_KEY='<Gateway API Key>'

@@ -1,6 +1,6 @@
-"""Mage-VL 条件式文字生成模型与 Transformers 生成介面。"""
+"""Mage-VL 条件式文字生成模型与 Transformers 生成接口。"""
 
-# 本档由固定 revision 的上游实作拆分调整；来源：microsoft/Mage-VL，revision d88b153285f1633a61b2f693c59c8576693af185（Apache-2.0）。
+# 本文件由固定 revision 的上游实现拆分调整；来源：microsoft/Mage-VL，revision d88b153285f1633a61b2f693c59c8576693af185（Apache-2.0）。
 from typing import Any, Optional, Union
 
 import torch

@@ -1,4 +1,4 @@
-"""建立 prefill/decode 批次并管理请求排程状态。"""
+"""创建 prefill/decode 批次并管理请求调度状态。"""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def plan_batch(
 
     每个 request 每轮最多出现一次。Prefill 可切成多轮；Model Runner 必须回报实际处理的
     prompt token 数，Engine 才能更新下一轮进度。`prefill_min_chunk_tokens` 用于要求首段涵盖
-    完整视觉 token 区段，避免将图像／影片标记和视觉特征分开。此纯规划函式不执行模型或管理 KV 张量。
+    完整视觉 token 区段，避免将图像／视频标记和视觉特征分开。此纯规划函数不执行模型或管理 KV 张量。
     """
     if max_num_seqs < 1 or max_num_scheduled_tokens < 1:
         raise ValueError("Batch limits must be positive.")
@@ -146,7 +146,7 @@ def plan_batch(
 
 
 class SchedulerFullError(RuntimeError):
-    """等待伫列及执行序列均已达上限。"""
+    """等待队列及执行序列均已达上限。"""
 
 
 class TokenScheduler:
@@ -224,7 +224,7 @@ class TokenScheduler:
             self._condition.notify_all()
 
     def schedule_batch(self, block_manager: BlockManager | None = None) -> ScheduledBatch | None:
-        """以一轮 token 预算建立可同时包含 prefill 与 decode 的批次。"""
+        """以一轮 token 预算创建可同时包含 prefill 与 decode 的批次。"""
         with self._condition:
             if self._running or not self._ready:
                 return None
@@ -290,7 +290,7 @@ class TokenScheduler:
             return batch
 
     def complete_batch(self, results: tuple[WorkerResult, ...] | list[WorkerResult]) -> None:
-        """套用批次结果，将未完成 request 放回 decode 伫列。"""
+        """应用批次结果，将未完成 request 放回 decode 队列。"""
         result_ids = [result.request_id for result in results]
         with self._condition:
             if not self._running or len(result_ids) != len(set(result_ids)) or set(result_ids) != self._inflight:
@@ -340,7 +340,7 @@ class TokenScheduler:
             self._condition.notify_all()
 
     def abort_batch(self, request_ids: set[str]) -> None:
-        """Worker 批次失败时清除本轮排程状态，等待 Engine 统一释放各请求资源。"""
+        """Worker 批次失败时清除本轮调度状态，等待 Engine 统一释放各请求资源。"""
         with self._condition:
             if not self._running or request_ids != self._inflight:
                 raise RuntimeError("Only the active Worker batch can be aborted.")

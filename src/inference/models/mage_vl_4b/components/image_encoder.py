@@ -146,7 +146,7 @@ def _normalize_messages(raw_messages: Any) -> tuple[list[dict[str, Any]], list[I
 
 
 def _apply_chat_template(model_runner: Any, messages: list[dict[str, Any]]) -> str:
-    """先由文本 Tokenizer 套用模板，再交给多模态 Processor 编码张量。"""
+    """先由文本 Tokenizer 应用模板，再交给多模态 Processor 编码张量。"""
     tokenizer = getattr(model_runner, "tokenizer", None) or model_runner.processor
     return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 

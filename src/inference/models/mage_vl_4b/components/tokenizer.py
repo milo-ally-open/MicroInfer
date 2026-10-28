@@ -6,7 +6,7 @@ from typing import Any
 
 
 class MageVLTokenizer:
-    """只封装词表相关操作；图片与影片预处理仍由模型 Processor 完成。"""
+    """只封装词表相关操作；图片与视频预处理仍由模型 Processor 完成。"""
 
     def __init__(self, backend: Any) -> None:
         self.backend = backend

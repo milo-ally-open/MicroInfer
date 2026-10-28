@@ -1,1 +1,1 @@
-"""Mage-VL Runtime、Worker、Adapter 与生成元件。"""
+"""Mage-VL Runtime、Worker、Adapter 与生成组件。"""

@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class StandardTextModelRunner:
-    """使用上游 Transformers causal LM forward 的单装置逐步 Runner。
+    """使用上游 Transformers causal LM forward 的单设备逐步 Runner。
 
     Runner 每次 Worker batch 依序执行各 work item；Cache 由模型提供并按 request ID
     持有。Engine KV block 在此路径仅代表容量租约，并非实体 paged attention。
@@ -43,7 +43,7 @@ class StandardTextModelRunner:
         self._block_size_tokens = 16
 
     def load(self) -> None:
-        """依模型 YAML 载入单装置 AutoModelForCausalLM 与设定。"""
+        """依模型 YAML 加载单设备 AutoModelForCausalLM 与配置。"""
         config = selected_config("INFERENCE_CONFIG")
         model_settings = config.get("model", {})
         runtime = config.get("runtime", {})

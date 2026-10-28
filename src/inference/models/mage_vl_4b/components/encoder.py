@@ -28,7 +28,7 @@ from .video_encoder import (
 
 
 def _generation_args(request_body: dict[str, Any]) -> dict[str, Any]:
-    """验证请求生成选项，并合并 Mage-VL 模型设定。"""
+    """验证请求生成选项，并合并 Mage-VL 模型配置。"""
     max_tokens = int(
         request_body.get(
             "max_tokens",

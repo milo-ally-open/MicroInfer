@@ -1,4 +1,4 @@
-"""组合 Qwen3 Tokenizer、Encoder、Decoder，维持 API Server 处理器介面。"""
+"""组合 Qwen3 Tokenizer、Encoder、Decoder，维持 API Server 处理器接口。"""
 
 from __future__ import annotations
 

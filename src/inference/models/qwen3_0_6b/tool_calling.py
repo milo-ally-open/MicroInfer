@@ -244,7 +244,7 @@ def _top_level_tool_fields(payload: str) -> tuple[str | None, int | None]:
         try:
             key, key_end = decoder.raw_decode(payload, cursor)
         except json.JSONDecodeError:
-            # 字串可能刚好在 tokenizer chunk 边界被切开，等下一段再解析。
+            # 字符串可能刚好在 tokenizer chunk 边界被切开，等下一段再解析。
             return name, arguments_start
         if not isinstance(key, str) or key not in {"name", "arguments"}:
             raise ValueError("Qwen3 tool call must contain only name and arguments fields.")

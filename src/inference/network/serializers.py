@@ -1,4 +1,4 @@
-"""将共用推论结果序列化为目前相容的 HTTP API 栏位。"""
+"""将共用推理结果序列化为目前兼容的 HTTP API 字段。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def chat_completion(
     tool_calls: list[dict[str, Any]] | None = None,
     content: str | None = None,
 ) -> dict[str, Any]:
-    """建立聊天或视讯理解 endpoint 使用的 JSON response。"""
+    """创建聊天或视频理解 endpoint 使用的 JSON response。"""
     response: dict[str, Any] = {
         "id": f"{'videocmpl' if video else 'chatcmpl'}-{uuid.uuid4().hex}",
         "object": "chat.completion",
@@ -55,7 +55,7 @@ def chat_completion_chunk(
     finish_reason: str | None = None,
     usage: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """建立目前聊天 SSE 使用的 OpenAI 相容 chunk。"""
+    """创建目前聊天 SSE 使用的 OpenAI 兼容 chunk。"""
     chunk: dict[str, Any] = {
         "id": request_id,
         "object": "chat.completion.chunk",

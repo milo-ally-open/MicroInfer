@@ -1,4 +1,4 @@
-# Qwen3-0.6B 测试设定；所有相对路径皆以本档所在目录为基准。
+# Qwen3-0.6B 测试配置；所有相对路径皆以本文件所在目录为基准。
 model_alias: qwen3-0.6b
 snapshot: ../../checkpoints/Qwen3-0.6B-c1899de
 inference_config: ../../src/inference/models/qwen3_0_6b/configs/inference.yml

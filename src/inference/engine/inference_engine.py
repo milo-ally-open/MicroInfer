@@ -49,7 +49,7 @@ class EngineOutputProcessor:
 
 @dataclass
 class _GenerationContext:
-    """由 Engine Core 排程、并将结果送至单一 API stream 的请求状态。"""
+    """由 Engine Core 调度、并将结果送至单一 API stream 的请求状态。"""
 
     request_id: str
     finish_operation: str
@@ -60,7 +60,7 @@ class _GenerationContext:
 
 
 class InferenceEngine:
-    """在 API Server 与模型 Worker 之间执行排程、快取预留及结果协调。"""
+    """在 API Server 与模型 Worker 之间执行调度、缓存预留及结果协调。"""
 
     def __init__(
         self,
@@ -90,7 +90,7 @@ class InferenceEngine:
             block_size_tokens=kv_cache_block_size_tokens,
             capacity_tokens=kv_cache_capacity_tokens,
         )
-        # 保留旧健康资讯/内部呼叫名称；资源所有权由 BlockManager 统一管理。
+        # 保留旧健康信息/内部调用名称；资源所有权由 BlockManager 统一管理。
         self.kv_cache = self.block_manager
         self.max_video_bytes = max_video_bytes
         self._state = "new"
@@ -188,7 +188,7 @@ class InferenceEngine:
         on_admitted: Any = None,
         request_id: str | None = None,
     ) -> Iterator[InferenceStreamEvent]:
-        """准备并登记请求；Engine Core 背景回圈负责排程、执行及逐事件回传。"""
+        """准备并登记请求；Engine Core 背景回圈负责调度、执行及逐事件返回。"""
         self._require_ready()
         request_id = request_id or uuid.uuid4().hex
         prepared = False
@@ -197,7 +197,7 @@ class InferenceEngine:
         try:
             if self._request_was_cancelled(request_id):
                 raise GeneratorExit
-            # prepare 可能在内部建立部分状态后失败；之后一律执行幂等取消清理。
+            # prepare 可能在内部创建部分状态后失败；之后一律执行幂等取消清理。
             prepared = True
             descriptor = self.executor.invoke(prepare_operation, request_id, *prepare_args)
             if self._request_was_cancelled(request_id):
@@ -243,7 +243,7 @@ class InferenceEngine:
                 try:
                     event = context.events.get(timeout=0.5)
                 except queue.Empty:
-                    # 避免 Engine Core 背景执行绪意外退出后，API stream 永久等待。
+                    # 避免 Engine Core 背景线程意外退出后，API stream 永久等待。
                     if self._dispatcher is None or not self._dispatcher.is_alive():
                         raise RuntimeError("Inference Engine dispatcher stopped before completing the request.")
                     continue
@@ -271,7 +271,7 @@ class InferenceEngine:
                 continue
             request_ids = {item.request_id for item in batch.work_items}
             try:
-                # Scheduler 只有在 Worker 回传完整批次后才提交状态更新。
+                # Scheduler 只有在 Worker 返回完整批次后才提交状态更新。
                 results = tuple(self.executor.execute_batch(batch.work_items))
                 self.scheduler.complete_batch(results)
             except Exception as exc:
@@ -433,7 +433,7 @@ class InferenceEngine:
         *,
         request_id: str | None = None,
     ) -> InferenceResult:
-        """执行 API Server 已安全暂存的影片，不把 bytes 跨 Engine IPC 传输。"""
+        """执行 API Server 已安全暂存的视频，不把 bytes 跨 Engine IPC 传输。"""
         return self._collect_result(self._run_generation(
             "prepare_video_generation",
             (video_path, filename, request_body, upload_bytes, staging_seconds),

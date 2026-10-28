@@ -2,18 +2,18 @@ hardware:
   expected_gpu: NVIDIA GeForce RTX 4060 Laptop GPU
 
 model:
-  # id 是 Hugging Face 上游模型识别码，与本专案的 mage-vl-4b 别名不同，请勿改写。
+  # id 是 Hugging Face 上游模型 ID，与本项目的 mage-vl-4b 别名不同，请勿改写。
   id: microsoft/Mage-VL
   revision: d88b153285f1633a61b2f693c59c8576693af185
   dtype: bfloat16
   device_map: 0
-  # 视觉塔采模型包内明确 eager 注意力；文字骨干采模型包注册的分块 eager 实作。
+  # 视觉塔采模型包内明确 eager 注意力；文字骨干采模型包注册的分块 eager 实现。
   attn_implementation: eager
   attention:
-    # 分块文字 Query 限制长影片输入的注意力暂存显存。
+    # 分块文字 Query 限制长视频输入的注意力暂存显存。
     query_chunk_size: 128
   experts_implementation: null
-  # Hugging Face 核心映射为选用功能；启用前请固定并检视远端核心来源。
+  # Hugging Face 核心映射为选用功能；启用前请固定并查看远端核心来源。
   use_kernels: false
   kernel_config: null
   use_safetensors: true
@@ -21,12 +21,12 @@ model:
   offload_buffers: false
   disable_mmap: null
   components:
-    # 仅可选用 Mage-VL 模型包内已登记的模组替换；空对应表保留上游 Transformers 架构。
+    # 仅可选用 Mage-VL 模型包内已登记的模块替换；空对应表保留上游 Transformers 架构。
     replacements: {}
   # Accelerate 选用卸载目录；若模型完全常驻 GPU，请维持 null。
   offload_folder: null
   quantization:
-    # 可选 none、nf4、int8 或 prequantized；后者使用模型权重内附的量化中继资料。
+    # 可选 none、nf4、int8 或 prequantized；后者使用模型权重内附的量化中继数据。
     method: nf4
     quant_type: nf4
     double_quant: true
@@ -40,7 +40,7 @@ model:
     cpu_max_memory: 4GiB
 
 processor:
-  # 除非已确认快速处理器可用，否则交由 Transformers 选择处理器实作。
+  # 除非已确认快速处理器可用，否则交由 Transformers 选择处理器实现。
   use_fast: null
 
 backend:
@@ -110,7 +110,7 @@ api:
   stream_timeout_seconds: 300
 
 engine:
-  # 单一 Model Worker 上的轮转序列数与等待伫列上限。
+  # 单一 Model Worker 上的轮转序列数与等待队列上限。
   max_num_seqs: 4
   max_waiting_requests: 16
   # 短暂合并可同时执行的工作；此等待时间会增加少量首 token latency。
@@ -134,10 +134,10 @@ generation:
   # Token Scheduler 的逐步生成目前要求单 beam。
   num_beams: 1
   use_cache: true
-  # 逐步生成使用模型预设 DynamicCache；独立 KV block 管理器先负责容量预留与释放。
+  # 逐步生成使用模型默认 DynamicCache；独立 KV block 管理器先负责容量预留与释放。
   cache_implementation: null
   cache_config: null
-  # 逐步 Runner 尚未支援自订 GenerationMixin 参数，维持空对应表。
+  # 逐步 Runner 尚未支持自定义 GenerationMixin 参数，维持空对应表。
   advanced_kwargs: {}
 
 optimization:
@@ -147,7 +147,7 @@ optimization:
     cudnn_benchmark: false
     float32_matmul_precision: high
   torch_compile:
-    # 此功能仍属实验性；编译可能增加启动时间与记忆体用量，模型远端程式码也可能造成计算图中断。
+    # 此功能仍属实验性；编译可能增加启动时间与内存用量，模型远端代码也可能造成计算图中断。
     enabled: false
     backend: inductor
     mode: default

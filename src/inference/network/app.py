@@ -14,7 +14,7 @@ from inference.engine.sequence import InferenceError
 
 
 class ContentLengthLimitMiddleware:
-    """以纯 ASGI middleware 验证本文长度，避免包装 SSE response iterator。"""
+    """以纯 ASGI middleware 验证请求正文长度，避免包装 SSE response iterator。"""
 
     def __init__(self, app: Any, *, request_limits: dict[str, tuple[str, int]]) -> None:
         self.app = app
@@ -85,7 +85,7 @@ def create_app(
     enable_video: bool = True,
     enable_live_sessions: bool = True,
 ) -> FastAPI:
-    """建立不依赖特定模型套件的 FastAPI app。"""
+    """创建不依赖特定模型包的 FastAPI app。"""
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):

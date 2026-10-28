@@ -1,4 +1,4 @@
-# Qwen3 API 使用独立连接埠，避免与 Mage-VL API 冲突。
+# Qwen3 API 使用独立端口，避免与 Mage-VL API 冲突。
 api:
   host: 127.0.0.1
   port: 8011

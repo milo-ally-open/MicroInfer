@@ -1,4 +1,4 @@
-"""Mage-VL Model Runner：载入模型、执行生成并解码结果。"""
+"""Mage-VL Model Runner：加载模型、执行生成并解码结果。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class MageVLModelRunner:
-    """封装 Mage-VL 的模型载入与底层生成呼叫。"""
+    """封装 Mage-VL 的模型加载与底层生成调用。"""
 
     def __init__(self) -> None:
         self.model: Any = None
@@ -33,10 +33,10 @@ class MageVLModelRunner:
         self._stepwise = MageVLStepwiseGeneration()
 
     def load(self) -> None:
-        """载入固定 revision，检查模型元件并套用明确登记的本地替换。"""
+        """加载固定 revision，检查模型组件并应用明确登记的本地替换。"""
         optimization = config.CONFIG.get("optimization", {})
         try:
-            # 设定错误或未登记的实作必须在下载／载入大型权重前拒绝。
+            # 配置错误或未登记的实现必须在下载／加载大型权重前拒绝。
             MAGE_VL_COMPONENT_REGISTRY.validate_configuration(config.COMPONENT_REPLACEMENTS)
             self.model_path, self.model, self.processor = load_mage_vl()
             self.tokenizer = MageVLTokenizer(self.processor.tokenizer)
@@ -66,7 +66,7 @@ class MageVLModelRunner:
         self._stepwise.begin(request_id, inputs, generation_options)
 
     def bind_generation_cache(self, request_id: str, block_ids: tuple[int, ...]) -> None:
-        """记录 Engine 分配的逻辑 block 表，供健康资讯与执行追踪使用。"""
+        """记录 Engine 分配的逻辑 block 表，供健康信息与执行追踪使用。"""
         self._stepwise.bind_cache(request_id, block_ids)
 
     def prefill_min_chunk_tokens(self, request_id: str) -> int:

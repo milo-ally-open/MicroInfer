@@ -9,7 +9,7 @@ import torch
 
 
 class Qwen3Sampler:
-    """为各 request 独立套用重复惩罚与取样选项。"""
+    """为各 request 独立应用重复惩罚与取样选项。"""
 
     def sample(
         self,

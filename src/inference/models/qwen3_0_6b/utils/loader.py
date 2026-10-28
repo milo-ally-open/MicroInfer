@@ -13,41 +13,41 @@ from transformers import PreTrainedTokenizerBase, Qwen3Config
 from inference.engine.config import PROJECT_ROOT, selected_config
 
 
-# 模型设定由 Transformers Config 载入；服务参数由 YAML 一次载入。
-CONFIG: dict[str, Any] = selected_config("INFERENCE_CONFIG")  # 模型与推论服务设定。
-NETWORK_CONFIG: dict[str, Any] = selected_config("INFERENCE_NETWORK_CONFIG")  # API 网路设定。
+# 模型配置由 Transformers Config 加载；服务参数由 YAML 一次加载。
+CONFIG: dict[str, Any] = selected_config("INFERENCE_CONFIG")  # 模型与推理服务配置。
+NETWORK_CONFIG: dict[str, Any] = selected_config("INFERENCE_NETWORK_CONFIG")  # API 网络配置。
 MODEL_CONFIG = CONFIG["model"]  # Transformers Qwen3Config 与模型权重参数。
-RUNTIME_CONFIG = CONFIG["runtime"]  # 装置与 Worker 执行环境设定。
-API_CONFIG = CONFIG["api"]  # 请求上下文与本文大小限制。
-ENGINE_CONFIG = CONFIG["engine"]  # Engine 排程与 KV page pool 设定。
-GENERATION_CONFIG = CONFIG["generation"]  # Token 生成预设参数。
+RUNTIME_CONFIG = CONFIG["runtime"]  # 设备与 Worker 执行环境配置。
+API_CONFIG = CONFIG["api"]  # 请求上下文与请求正文大小限制。
+ENGINE_CONFIG = CONFIG["engine"]  # Engine 调度与 KV page pool 配置。
+GENERATION_CONFIG = CONFIG["generation"]  # Token 生成默认参数。
 
-MODEL_ALIAS = "qwen3-0.6b"  # 对外使用的专案模型别名。
+MODEL_ALIAS = "qwen3-0.6b"  # 对外使用的项目模型别名。
 MODEL_ID = str(MODEL_CONFIG["id"])  # Hugging Face repo_id。
 MODEL_REVISION = str(MODEL_CONFIG["revision"])  # 固定的上游模型 revision。
-MODEL_DTYPE = str(MODEL_CONFIG["dtype"])  # 权重与计算资料型别。
-MODEL_DEVICE = str(MODEL_CONFIG["device"])  # 模型 Worker 使用的装置。
+MODEL_DTYPE = str(MODEL_CONFIG["dtype"])  # 权重与计算数据型别。
+MODEL_DEVICE = str(MODEL_CONFIG["device"])  # 模型 Worker 使用的设备。
 PLATFORM_NAME = str(RUNTIME_CONFIG["platform"])  # PyTorch 执行平台识别名称。
 LOCAL_MODEL_PATH = (
     PROJECT_ROOT / os.path.expandvars(os.path.expanduser(RUNTIME_CONFIG["local_model_path"]))
-).resolve()  # 固定 revision 的本机快照目录。
+).resolve()  # 固定 revision 的本地快照目录。
 
 MAX_CONTEXT_TOKENS = int(API_CONFIG["max_context_tokens"])  # 单次请求的上下文上限。
 MAX_NEW_TOKENS = int(GENERATION_CONFIG["max_new_tokens"])  # 单次生成长度上限。
-MAX_CHAT_REQUEST_BYTES = int(API_CONFIG["max_chat_request_bytes"])  # 聊天请求本文大小上限。
+MAX_CHAT_REQUEST_BYTES = int(API_CONFIG["max_chat_request_bytes"])  # 聊天请求正文大小上限。
 MAX_NUM_SEQS = int(ENGINE_CONFIG["max_num_seqs"])  # 同时执行的序列数上限。
-MAX_WAITING_REQUESTS = int(ENGINE_CONFIG["max_waiting_requests"])  # 等候伫列上限。
-MAX_NUM_SCHEDULED_TOKENS = int(ENGINE_CONFIG["max_num_scheduled_tokens"])  # 单轮排程 Token 预算。
+MAX_WAITING_REQUESTS = int(ENGINE_CONFIG["max_waiting_requests"])  # 等候队列上限。
+MAX_NUM_SCHEDULED_TOKENS = int(ENGINE_CONFIG["max_num_scheduled_tokens"])  # 单轮调度 Token 预算。
 BATCH_WAIT_SECONDS = float(ENGINE_CONFIG["batch_wait_seconds"])  # 合并批次的等待时间。
 PREFILL_CHUNK_SIZE_TOKENS = int(ENGINE_CONFIG["prefill_chunk_size_tokens"])  # 分块 Prefill 大小。
-KV_CACHE_CONFIG = ENGINE_CONFIG["kv_cache"]  # 实体 KV page pool 容量设定。
+KV_CACHE_CONFIG = ENGINE_CONFIG["kv_cache"]  # 实体 KV page pool 容量配置。
 KV_CACHE_BLOCK_SIZE_TOKENS = int(KV_CACHE_CONFIG["block_size_tokens"])  # 每个 KV page 的 Token 数。
 KV_CACHE_NUM_BLOCKS = int(KV_CACHE_CONFIG["num_blocks"])  # 实体 KV page 数量。
 KV_CACHE_CAPACITY_TOKENS = KV_CACHE_NUM_BLOCKS * KV_CACHE_BLOCK_SIZE_TOKENS  # KV page pool 可容纳的 Token 数。
-WORKER_STARTUP_TIMEOUT = float(RUNTIME_CONFIG["worker_startup_timeout_seconds"])  # Worker 启动逾时。
-WORKER_REQUEST_TIMEOUT = float(RUNTIME_CONFIG["worker_request_timeout_seconds"])  # Worker 请求逾时。
-ENGINE_CORE_STARTUP_TIMEOUT = float(RUNTIME_CONFIG["engine_core_startup_timeout_seconds"])  # Engine Core 启动逾时。
-ENGINE_CORE_REQUEST_TIMEOUT = float(RUNTIME_CONFIG["engine_core_request_timeout_seconds"])  # Engine Core 请求逾时。
+WORKER_STARTUP_TIMEOUT = float(RUNTIME_CONFIG["worker_startup_timeout_seconds"])  # Worker 启动超时。
+WORKER_REQUEST_TIMEOUT = float(RUNTIME_CONFIG["worker_request_timeout_seconds"])  # Worker 请求超时。
+ENGINE_CORE_STARTUP_TIMEOUT = float(RUNTIME_CONFIG["engine_core_startup_timeout_seconds"])  # Engine Core 启动超时。
+ENGINE_CORE_REQUEST_TIMEOUT = float(RUNTIME_CONFIG["engine_core_request_timeout_seconds"])  # Engine Core 请求超时。
 
 def _weight_files(snapshot: Path) -> tuple[Path, ...]:
     index_path = snapshot / "model.safetensors.index.json"
@@ -68,7 +68,7 @@ def _weight_files(snapshot: Path) -> tuple[Path, ...]:
 
 
 def load_safetensors(model: torch.nn.Module, snapshot: Path) -> int:
-    """先验证权重索引，再逐 tensor 载入，避免在 CPU 保留完整 checkpoint 副本。"""
+    """先验证权重索引，再逐 tensor 加载，避免在 CPU 保留完整 checkpoint 副本。"""
     from safetensors import safe_open
 
     files = _weight_files(snapshot)
@@ -112,7 +112,7 @@ def load_safetensors(model: torch.nn.Module, snapshot: Path) -> int:
 
 
 def load_model_config(snapshot: Path, revision: str) -> Qwen3Config:
-    """使用 Transformers 的 Qwen3Config 载入已固定 revision 的本机设定。"""
+    """使用 Transformers 的 Qwen3Config 加载已固定 revision 的本地配置。"""
     verify_snapshot_revision(snapshot, revision)
     config = Qwen3Config.from_pretrained(snapshot, revision=revision, local_files_only=True)
     required = (
@@ -145,7 +145,7 @@ def load_model_config(snapshot: Path, revision: str) -> Qwen3Config:
 
 
 def verify_snapshot_revision(snapshot: Path, revision: str) -> None:
-    """确认本机 Hugging Face 快照及其档案 metadata 属于固定 commit。"""
+    """确认本地 Hugging Face 快照及其文件 metadata 属于固定 commit。"""
     import re
 
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
@@ -177,7 +177,7 @@ def verify_snapshot_revision(snapshot: Path, revision: str) -> None:
 
 
 def load_tokenizer(snapshot: Path, revision: str) -> PreTrainedTokenizerBase:
-    """依 Hugging Face tokenizer metadata 建立固定 revision 的 Fast Tokenizer。"""
+    """依 Hugging Face tokenizer metadata 创建固定 revision 的 Fast Tokenizer。"""
     from transformers import AutoTokenizer
 
     return AutoTokenizer.from_pretrained(

@@ -1,6 +1,6 @@
-"""Mage-VL 输出资料结构，对齐固定上游 revision。"""
+"""Mage-VL 输出数据结构，对齐固定上游 revision。"""
 
-# 本档由固定 revision 的上游实作拆分调整；来源：microsoft/Mage-VL，revision d88b153285f1633a61b2f693c59c8576693af185（Apache-2.0）。
+# 本文件由固定 revision 的上游实现拆分调整；来源：microsoft/Mage-VL，revision d88b153285f1633a61b2f693c59c8576693af185（Apache-2.0）。
 from dataclasses import dataclass
 from typing import Optional
 

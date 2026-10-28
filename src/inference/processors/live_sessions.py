@@ -1,4 +1,4 @@
-"""管理即时视讯来源、工作阶段事件与背景工作执行绪。"""
+"""管理实时视频来源、工作会话事件与背景工作线程。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from PIL import Image
 
 @dataclass(frozen=True)
 class LiveVideoSettings:
-    """管理即时视讯设定，并在建立背景执行绪前拒绝无效数值。"""
+    """管理实时视频配置，并在创建背景线程前拒绝无效数值。"""
 
     rtsp_host: str = "127.0.0.1"
     rtsp_port: int = 8554
@@ -77,7 +77,7 @@ GenerationOptionsBuilder = Callable[[dict[str, Any]], dict[str, Any]]
 FrameTransformer = Callable[[Image.Image, int], Image.Image]
 
 class LiveVideoSession:
-    """管理串流撷取执行绪与序列化推论执行绪。"""
+    """管理流式撷取线程与序列化推理线程。"""
 
     def __init__(
         self,
@@ -118,7 +118,7 @@ class LiveVideoSession:
         )
 
     def start(self) -> None:
-        """启动串流撷取与推论执行绪。"""
+        """启动流式撷取与推理线程。"""
         self._set_status("waiting_for_stream")
         self.capture_thread.start()
         self.inference_thread.start()
@@ -139,13 +139,13 @@ class LiveVideoSession:
             self._emit("status", {"status": status, **details})
 
     def events_after(self, event_id: int) -> tuple[list[dict[str, Any]], bool]:
-        """回传指定事件识别码之后的新事件及工作阶段结束状态。"""
+        """返回指定事件标识符之后的新事件及工作会话结束状态。"""
         with self.condition:
             available = [event for event in self.events if event["id"] > event_id]
             return available, self.finished_at is not None
 
     def snapshot(self) -> list[tuple[float, Image.Image]]:
-        """取得分析视窗内的影格，并限制回传数量。"""
+        """取得分析窗口内的帧，并限制返回数量。"""
         cutoff = time.monotonic() - self.settings.window_seconds
         with self.condition:
             frames = [item for item in self.frames if item[0] >= cutoff]
@@ -164,8 +164,8 @@ class LiveVideoSession:
         return self.finished_at is None
 
     def _capture_loop(self) -> None:
-        """以 OpenCV 撷取 RTSP 影格，按取样间隔更新即时影格伫列。"""
-        # OpenCV 建立 FFmpeg RTSP 连线时会读取此选项。
+        """以 OpenCV 撷取 RTSP 帧，按取样间隔更新实时帧队列。"""
+        # OpenCV 创建 FFmpeg RTSP 连接时会读取此选项。
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
         try:
             import cv2
@@ -189,7 +189,7 @@ class LiveVideoSession:
                     capture = cv2.VideoCapture(self.rtsp_url, backend, open_options)
                     if not capture.isOpened():
                         self._set_status("waiting_for_stream")
-                        # 推流端尚未连线或连线中断时，以可中止的等待进行重试。
+                        # 推流端尚未连接或连接中断时，以可中止的等待进行重试。
                         self.stop_event.wait(self.settings.reconnect_seconds)
                         continue
 
@@ -231,7 +231,7 @@ class LiveVideoSession:
                 self._cleanup_codec_workdir()
 
     def _queue_completed_segments(self, manifest: Path, workdir: Path, seen: set[Path]) -> bool:
-        """只将 FFmpeg 已完成封装并列出的片段加入伫列。"""
+        """只将 FFmpeg 已完成封装并列出的片段加入队列。"""
         if not manifest.is_file():
             return False
         queued_any = False
@@ -265,7 +265,7 @@ class LiveVideoSession:
         return queued_any
 
     def _codec_capture_loop(self) -> None:
-        """将编码后的 RTSP 串流复制为封装完成且对齐关键影格的片段。"""
+        """将编码后的 RTSP 流式复制为完成封装且对齐关键帧的片段。"""
         if self.codec_workdir is None:
             self._emit("error", {"phase": "capture", "message": "Codec segment directory was not initialized."})
             self.stop_event.set()
@@ -344,7 +344,7 @@ class LiveVideoSession:
                 self._cleanup_codec_workdir()
 
     def _inference_loop(self) -> None:
-        """依分析视窗取出影格或片段，序列化呼叫模型并发布结果事件。"""
+        """依分析窗口取出帧或片段，序列化调用模型并发布结果事件。"""
         last_analyzed_at: float | None = None
         last_busy_event_at = 0.0
         completion_reason = "stopped"
@@ -459,15 +459,15 @@ class LiveVideoSession:
 
 
 class LiveSessionLimitError(RuntimeError):
-    """作用中的即时工作阶段已达设定上限。"""
+    """活动中的实时工作会话已达配置上限。"""
 
 
 class LiveSessionNotFoundError(LookupError):
-    """找不到指定的即时工作阶段。"""
+    """找不到指定的实时工作会话。"""
 
 
 class LiveSessionManager:
-    """保存即时工作阶段并管理其建立、查询与停止。"""
+    """保存实时工作会话并管理其创建、查询与停止。"""
 
     def __init__(self, *, settings: LiveVideoSettings, try_inference: LiveInferenceDispatcher, transform_frame: FrameTransformer) -> None:
         self.settings = settings
@@ -513,7 +513,7 @@ class LiveSessionManager:
         try:
             session.start()
         except BaseException:
-            # 若第二个 thread 启动失败，停止第一个 thread 并移除不可用的工作阶段。
+            # 若第二个 thread 启动失败，停止第一个 thread 并移除不可用的工作会话。
             session._cleanup_workdir_after_capture = True
             session.request_stop()
             for worker in (session.capture_thread, session.inference_thread):

@@ -1,6 +1,6 @@
 # 模型下载与离线分析
 
-`scripts/` 提供通用模型下载器，以及按模型组织的本机前向和算子分析工具。逐模型组件、性能与端到端测试属于 `tests/`，两类脚本分开维护。
+`scripts/` 提供通用模型下载器，以及按模型组织的本地前向和算子分析工具。逐模型组件、性能与端到端测试属于 `tests/`，两类脚本分开维护。
 
 ## 模型下载
 
@@ -35,11 +35,11 @@ scripts/
     └── model.yml / inference.yml / network.yml
 ```
 
-每个模型目录保存一份独立配置副本；模型插件实际配置仍位于 `src/inference/models/<model>/configs/`。修改分析配置时，请确认脚本副本和模型配置意图一致。模型专属脚本只使用本机权重，不从 `src/` 导入脚本模块。
+每个模型目录保存一份独立配置副本；模型插件实际配置仍位于 `src/inference/models/<model>/configs/`。修改分析配置时，请确认脚本副本和模型配置意图一致。模型专属脚本只使用本地权重，不从 `src/` 导入脚本模块。
 
 ## 前向与 Profile
 
-`forward.py` 使用本机权重分别执行 Transformers 和项目 Inference 的 Prefill、单步 Decode。每段都会写 PyTorch Profiler 算子记录，并导出带调用栈的 Chrome Trace；NVTX 范围让 Nsight 可按模型加载、输入准备、Prefill、Decode 定位。脚本不接受命令行参数，配置仍来自该模型目录的 YAML 副本。
+`forward.py` 使用本地权重分别执行 Transformers 和项目 Inference 的 Prefill、单步 Decode。每段都会写 PyTorch Profiler 算子记录，并导出带调用栈的 Chrome Trace；NVTX 范围让 Nsight 可按模型加载、输入准备、Prefill、Decode 定位。脚本不接受命令行参数，配置仍来自该模型目录的 YAML 副本。
 
 | 工具 | 适合回答 | 输出 |
 | --- | --- | --- |
@@ -120,14 +120,14 @@ python scripts/mage_vl_4b/analysis.py \
   --ncu-csv artifacts/mage_vl_4b/ncu-inference-prefill.csv
 ```
 
-PyTorch Trace 可导入 Perfetto 或 Chrome Trace Viewer 检查调用栈、算子和 shape；`analysis.py` 将 PyTorch、Nsys 和 Ncu 的数值记录写进同一个 XLSX 数据表，并保留外部 CSV 原始行。`--nsys-csv` 和 `--ncu-csv` 可重复传入；不传时仍只生成 PyTorch Profiler 行。`--input` 必须指向未设置环境变量时生成的 `forward.py` JSON，`--output` 指向 `analysis/<model_alias>/analysis.xlsx`。
+PyTorch Trace 可导入 Perfetto 或 Chrome Trace Viewer 检查调用栈、算子和 shape；`analysis.py` 将 PyTorch、Nsys 和 Ncu 的数值记录写进同一个 XLSX 数据表，并保留外部 CSV 原始行。`--nsys-csv` 和 `--ncu-csv` 可重复传入；不传时仍只生成 PyTorch Profiler 行。`--input` 必须指向未配置环境变量时生成的 `forward.py` JSON，`--output` 指向 `analysis/<model_alias>/analysis.xlsx`。
 
 `INFERENCE_PROFILE_MODE` 默认是 `torch`，启用 CPU/CUDA PyTorch Profiler；运行 Nsight 时设为 `external`，脚本仅记录 PyTorch CPU 事件并保留 NVTX，不启动 PyTorch CUDA Profiler，避免外部工具和 CUPTI 活动采集相互干扰。外部模式的 JSON 与 Trace 使用 `-external` 后缀，因此不会覆盖 PyTorch 基线报告。
 
-CUDA 可用时工具使用 CUDA；仅在 CUDA 不可用时回退 CPU。Profiler 和 NCU replay 会增加开销：这些数据用于定位算子与 Kernel 热点，不作为延迟基准。前向脚本不包含 HTTP、Gateway 或 Engine Core 排程延迟；性能对比应使用 `tests/<model_alias>/test_performance.py`。
+CUDA 可用时工具使用 CUDA；仅在 CUDA 不可用时回退 CPU。Profiler 和 NCU replay 会增加开销：这些数据用于定位算子与 Kernel 热点，不作为延迟基准。前向脚本不包含 HTTP、Gateway 或 Engine Core 调度延迟；性能对比应使用 `tests/<model_alias>/test_performance.py`。
 
-## 结果归档与测试
+## 结果归文件与测试
 
-可重复的算子优化证据维护在 `analysis/<model_alias>/analysis.md` 和 `analysis.xlsx`。原始 JSON 可以归档至 `artifacts/`，并记录模型 revision、设备、dtype、输入 shape、warmup 和迭代次数。
+可重复的算子优化证据维护在 `analysis/<model_alias>/analysis.md` 和 `analysis.xlsx`。原始 JSON 可以归文件至 `artifacts/`，并记录模型 revision、设备、dtype、输入 shape、warmup 和迭代次数。
 
 组件、服务性能与 Gateway 端到端测试位于 `tests/<model_alias>/`，使用该目录的 `test.yml`。测试命令和运行条件见 [Tests README](../tests/README.md)。

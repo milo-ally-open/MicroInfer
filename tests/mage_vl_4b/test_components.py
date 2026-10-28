@@ -21,7 +21,7 @@ if not isinstance(settings, dict):
     raise ValueError("测试 YAML 最上层必须是 mapping。")
 snapshot = (config_path.parent / settings["snapshot"]).resolve()
 if not (snapshot / "config.json").is_file():
-    raise FileNotFoundError(f"本机模型设定不存在：{snapshot / 'config.json'}")
+    raise FileNotFoundError(f"本地模型配置不存在：{snapshot / 'config.json'}")
 
 from inference.models.mage_vl_4b.model.configuration_mage_vl import MageVLConfig
 from inference.models.mage_vl_4b.model.conditional_generation import MageVLForConditionalGeneration
@@ -43,12 +43,12 @@ if any(isinstance(module, torch.nn.MultiheadAttention) for module in engine_mode
     raise AssertionError("Mage-VL engine must not instantiate torch.nn.MultiheadAttention.")
 
 print("==========engine===========")
-print(f"Mage-VL 本地模型图（meta device，不载入权重）: {type(engine_model).__module__}.{type(engine_model).__name__}")
+print(f"Mage-VL 本地模型图（meta device，不加载权重）: {type(engine_model).__module__}.{type(engine_model).__name__}")
 for name, module in engine_model.named_modules():
     if not name or name.count(".") <= 2:
         print(f"{name or '<root>'}: {type(module).__module__}.{type(module).__name__}")
 print("==========baseline==========")
-print(f"Transformers 原生模型（meta device，不载入权重）: {type(baseline_model).__module__}.{type(baseline_model).__name__}")
+print(f"Transformers 原生模型（meta device，不加载权重）: {type(baseline_model).__module__}.{type(baseline_model).__name__}")
 for name, module in baseline_model.named_modules():
     if not name or name.count(".") <= 2:
         print(f"{name or '<root>'}: {type(module).__module__}.{type(module).__name__}")

@@ -1,4 +1,4 @@
-"""定义 Engine 与模型执行 Worker 之间的呼叫边界。"""
+"""定义 Engine 与模型执行 Worker 之间的调用边界。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class ModelWorker(Protocol):
-    """可由程序内或独立程序中的模型 Worker 实作。"""
+    """可由程序内或独立程序中的模型 Worker 实现。"""
 
     def start(self) -> None: ...
 
@@ -33,7 +33,7 @@ class ModelWorker(Protocol):
 
 
 class ModelRuntime:
-    """以单一模型 Runtime 门面组合模型执行与请求适配元件。"""
+    """以单一模型 Runtime 门面组合模型执行与请求适配组件。"""
 
     def __init__(self, model_runner: Any, model_adapter: Any) -> None:
         self.model_runner = model_runner
@@ -66,7 +66,7 @@ class InProcessModelWorker:
     """以同一个 Runtime 物件执行 Worker RPC。"""
 
     def __init__(self, runtime: Any, model_adapter: Any | None = None) -> None:
-        # 保留测试与旧内部呼叫的二参数形式；正式模型入口只传入 Runtime。
+        # 保留测试与旧内部调用的二参数形式；正式模型入口只传入 Runtime。
         self.runtime = ModelRuntime(runtime, model_adapter) if model_adapter is not None else runtime
 
     def start(self) -> None:
@@ -92,7 +92,7 @@ class InProcessModelWorker:
 
 
 class WorkerProcessError(RuntimeError):
-    """Model Worker 子程序回传的错误。"""
+    """Model Worker 子进程返回的错误。"""
 
 
 def _resolve_factory(path: str) -> Any:
@@ -103,7 +103,7 @@ def _resolve_factory(path: str) -> Any:
 
 
 def _worker_process_main(connection: Any, factory_path: str) -> None:
-    """在独立子程序载入模型，并以 Pipe 执行 Engine RPC。"""
+    """在独立子进程加载模型，并以 Pipe 执行 Engine RPC。"""
     worker: ModelWorker | None = None
     worker_closed = False
     try:
@@ -111,7 +111,7 @@ def _worker_process_main(connection: Any, factory_path: str) -> None:
         worker.start()
         connection.send({"kind": "ready", "health": worker.health_info()})
     except BaseException as exc:
-        # Runtime.load 可能在权重载入途中已配置 GPU／CPU 资源；启动失败也要执行同一个 close。
+        # Runtime.load 可能在权重加载途中已配置 GPU／CPU 资源；启动失败也要执行同一个 close。
         if worker is not None:
             try:
                 worker.close()
@@ -176,7 +176,7 @@ from typing import Any
 
 
 class LocalProcessExecutor:
-    """以本机 spawn 子程序执行一个模型 Worker，并以 Pipe 传递 Engine RPC。"""
+    """以本地 spawn 子进程执行一个模型 Worker，并以 Pipe 传递 Engine RPC。"""
 
     def __init__(
         self,

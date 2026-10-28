@@ -37,7 +37,7 @@ class PagedKVCache:
             device=device,
             dtype=dtype,
         )
-        # 统一 `cuda` 与实际解析后的 `cuda:0`，避免模型与 cache 将同一装置误判为不同。
+        # 统一 `cuda` 与实际解析后的 `cuda:0`，避免模型与 cache 将同一设备误判为不同。
         self.device = self.storage.device
         self._owners: list[str | None] = [None] * num_blocks
         self._request_blocks: dict[str, tuple[int, ...]] = {}

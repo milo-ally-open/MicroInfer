@@ -1,3 +1,4 @@
+// Package gateway 提供 API 网关的公开 HTTP 处理器和配置类型。
 package gateway
 
 import (
@@ -28,25 +29,37 @@ import (
 	"example.com/videostreamapi/gateway/internal/videoproxy"
 )
 
+// Config 描述网关监听、路由、限制、认证和可观测性配置。
 type Config = config.Config
+
+// ModelRoute 将公开模型别名映射到推理上游及其启用的能力。
 type ModelRoute = config.ModelRoute
+
+// ModelCapabilities 声明推理路由支持的请求类型。
 type ModelCapabilities = config.ModelCapabilities
+
+// APIKey 表示一个关联至租户的网关凭据。
 type APIKey = auth.APIKey
 
+// Options 为 NewHandler 提供凭据、会话签名密钥和可选日志记录器。
 type Options struct {
-	APIKeys  []APIKey
-	HMACKeys [][]byte
-	Logger   *slog.Logger
+	APIKeys  []APIKey     // Gateway 客户端凭据及其租户映射。
+	HMACKeys [][]byte     // Live session 句柄签名密钥；每个密钥至少 32 字节。
+	Logger   *slog.Logger // 可选日志记录器；nil 时使用 slog.Default()。
 }
 
+// LoadConfig 读取并验证网关 YAML 配置文件。
 func LoadConfig(path string) (Config, error) { return config.Load(path) }
 
+// LoadAPIKeys 从 JSON 文件读取 API Key 条目。
 func LoadAPIKeys(path string) ([]APIKey, error) {
 	return auth.ReadAPIKeys(path)
 }
 
+// ParseHMACKeys 解码以逗号分隔的 base64url 会话签名密钥列表。
 func ParseHMACKeys(value string) ([][]byte, error) { return auth.ParseHMACKeys(value) }
 
+// Application 实现网关 HTTP 处理器。
 type Application struct {
 	cfg            Config
 	keys           *auth.KeySet
@@ -60,6 +73,8 @@ type Application struct {
 	videoProxy     *videoproxy.Proxy
 }
 
+// NewHandler 验证配置和凭据，然后创建网关 HTTP 处理器。
+// 每个会话 HMAC 密钥解码后必须至少包含 32 字节。
 func NewHandler(cfg Config, options Options) (http.Handler, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -152,6 +167,7 @@ func (writer *statusWriter) Flush() {
 
 func (writer *statusWriter) Unwrap() http.ResponseWriter { return writer.ResponseWriter }
 
+// ServeHTTP 对请求进行认证、路由和记录。
 func (app *Application) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	info := &requestInfo{id: requestID(), started: time.Now()}
 	r = r.WithContext(context.WithValue(r.Context(), infoKey{}, info))

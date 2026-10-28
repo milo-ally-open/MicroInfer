@@ -28,7 +28,7 @@ if not isinstance(settings, dict):
     raise ValueError("测试 YAML 最上层必须是 mapping。")
 api_key = os.environ.get(settings["api_key_env"], "")
 if not api_key:
-    parser.error(f"请设定环境变数 {settings['api_key_env']}。")
+    parser.error(f"请设置环境变量 {settings['api_key_env']}。")
 image = (config_path.parent / settings["image"]).resolve()
 video = (config_path.parent / settings["video"]).resolve()
 if not image.is_file() or not video.is_file():
@@ -65,7 +65,7 @@ image_response_bytes = 0
 with urlopen(request, timeout=float(settings["timeout_seconds"])) as response:
     image_http_status = response.status
     if response.status != 200:
-        raise RuntimeError(f"Gateway 图片聊天回传 HTTP {response.status}。")
+        raise RuntimeError(f"Gateway 图片聊天返回 HTTP {response.status}。")
     for line in response:
         image_response_bytes += len(line)
         if not line.startswith(b"data:"):
@@ -75,7 +75,7 @@ with urlopen(request, timeout=float(settings["timeout_seconds"])) as response:
             break
         event = json.loads(data)
         if event.get("error"):
-            raise RuntimeError("Gateway 图片 SSE 回传错误事件。")
+            raise RuntimeError("Gateway 图片 SSE 返回错误事件。")
         if event.get("model"):
             returned_models.add(event["model"])
         if any(choice.get("delta", {}).get("content") for choice in event.get("choices", [])):
@@ -121,7 +121,7 @@ try:
     video_http_status = response.status
     raw = response.read(10 * 1024 * 1024)
     if not 200 <= response.status < 300:
-        raise RuntimeError(f"Gateway 视频理解回传 HTTP {response.status}。")
+        raise RuntimeError(f"Gateway 视频理解返回 HTTP {response.status}。")
     video_result = json.loads(raw)
 finally:
     connection.close()

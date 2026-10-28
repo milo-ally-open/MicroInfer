@@ -1,4 +1,4 @@
-"""依模型登录表建立共用 API Server。"""
+"""依模型登记表创建共用 API Server。"""
 
 from __future__ import annotations
 

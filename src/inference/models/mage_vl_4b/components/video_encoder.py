@@ -28,7 +28,7 @@ from .image_encoder import _apply_chat_template, _move_inputs_to_model
 
 
 def _require_codec_runtime(engine: str | None) -> None:
-    """选用编码器缺少主机端前处理工具时，提供明确错误讯息。"""
+    """选用编码器缺少主机端前处理工具时，提供明确错误消息。"""
     for name, executable in (("ffmpeg", CODEC_FFMPEG_BIN), ("ffprobe", CODEC_FFPROBE_BIN)):
         if shutil.which(executable) is None and not Path(executable).is_file():
             raise InferenceError(status_code=503, detail=f"Codec video mode requires {name}; executable not found: {executable}")
@@ -100,7 +100,7 @@ def _codec_processor_config(
 
 
 def _require_processor_codec_support(model_runner: Any) -> None:
-    """检查已载入模型的处理器介面，不将程式固定绑定至特定版本。"""
+    """检查已加载模型的处理器接口，不将代码固定绑定至特定版本。"""
     if model_runner.processor is None:
         raise InferenceError(status_code=503, detail="The Mage-VL-4B processor is not ready yet.")
     try:
@@ -168,7 +168,7 @@ def _video_inputs(
 
 
 class MageVLVideoEncoder:
-    """单独负责影片帧或 Codec 输入的格式转换与张量生成。"""
+    """单独负责视频帧或 Codec 输入的格式转换与张量生成。"""
 
     def __init__(self, model_runner: Any) -> None:
         self.model_runner = model_runner

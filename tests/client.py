@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""使用 OpenAI Python SDK 调用本机 Gateway 的最小聊天、工具和视频示例。"""
+"""使用 OpenAI Python SDK 调用本地 Gateway 的最小聊天、工具和视频示例。"""
 
 import json
 import os

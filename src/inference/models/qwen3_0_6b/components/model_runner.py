@@ -1,4 +1,4 @@
-"""协调本地 Qwen3 计算图、批次排程、实体 KV pages 与逐 token 输出。"""
+"""协调本地 Qwen3 计算图、批次调度、实体 KV pages 与逐 token 输出。"""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class Qwen3ModelRunner:
 
         self.model_config = load_model_config(snapshot, config.MODEL_REVISION)
         self.tokenizer = load_tokenizer(snapshot, config.MODEL_REVISION)
-        # 直接在目标设备建立空权重，再逐个 Safetensors tensor 载入，避免 CPU 留一整份模型副本。
+        # 直接在目标设备创建空权重，再逐个 Safetensors tensor 加载，避免 CPU 留一整份模型副本。
         model = Qwen3ForCausalLM(self.model_config, dtype=dtype, device="meta").to_empty(device=device)
         load_safetensors(model, snapshot)
         self.model = model.eval()
@@ -119,7 +119,7 @@ class Qwen3ModelRunner:
         return 1
 
     def execute_batch(self, requests: Sequence[ScheduledWorkItem]) -> tuple[WorkerResult, ...]:
-        """依阶段合并序列 forward，并依原排程顺序回传 request 结果。"""
+        """依阶段合并序列 forward，并依原调度顺序返回 request 结果。"""
         if not requests:
             return ()
         results: dict[str, WorkerResult] = {}

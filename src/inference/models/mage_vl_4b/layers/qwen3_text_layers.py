@@ -23,7 +23,7 @@ class Qwen3RMSNorm(nn.Module):
 
 
 class Qwen3MLP(nn.Module):
-    """以独立投影实作 Qwen3 的 gated MLP。"""
+    """以独立投影实现 Qwen3 的 gated MLP。"""
 
     def __init__(self, config) -> None:
         super().__init__()

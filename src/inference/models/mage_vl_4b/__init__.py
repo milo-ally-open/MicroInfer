@@ -11,7 +11,7 @@ def create_engine_client(
     inference_config_path: str | Path | None = None,
     network_config_path: str | Path | None = None,
 ) -> EngineClient:
-    """建立本模型 Engine client；未传配置路径时使用 model.yml 登记的默认配置。"""
+    """创建本模型 Engine client；未传配置路径时使用 model.yml 登记的默认配置。"""
     return create_engine_client_for_package(
         import_module(__name__),
         inference_config_path=inference_config_path,

@@ -1,4 +1,4 @@
-"""提供 API Server 到独立 Engine Core 的本机 IPC client。"""
+"""提供 API Server 到独立 Engine Core 的本地 IPC client。"""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class EngineClientError(RuntimeError):
 
 
 class EngineClientStream:
-    """可跨执行绪取消的 EngineClient event iterator。"""
+    """可跨线程取消的 EngineClient event iterator。"""
 
     def __init__(
         self,
@@ -116,7 +116,7 @@ class EngineClientStream:
                 return
             self._finished = True
         self._client._unregister(self._request_id)
-        # 唤醒可能仍在 IPC queue 读取中的 __next__ 执行绪。
+        # 唤醒可能仍在 IPC queue 读取中的 __next__ 线程。
         self._pending.put({"kind": "local_stop"})
 
 
@@ -147,7 +147,7 @@ def _send(connection: Any, lock: threading.Lock, message: dict[str, Any]) -> Non
 
 
 def _engine_core_process_main(connection: Any, factory_path: str) -> None:
-    """启动 Engine Core，并以可多工的 request handler 回应 API Server。"""
+    """启动 Engine Core，并以可多工的 request handler 响应 API Server。"""
     send_lock = threading.Lock()
     state_lock = threading.RLock()
     handlers: dict[str, threading.Thread] = {}
@@ -351,13 +351,13 @@ class EngineClient:
         try:
             self._reader.start()
         except BaseException:
-            # IPC reader 若未能启动，Engine Core 已就绪但无法接收回应，必须立即回收。
+            # IPC reader 若未能启动，Engine Core 已就绪但无法接收响应，必须立即回收。
             self._reader = None
             self._stop_process(force=True)
             raise
 
     def close(self) -> None:
-        # 即使 MediaMTX/live cleanup 失败，也要继续关闭 Engine Core 子程序。
+        # 即使 MediaMTX/live cleanup 失败，也要继续关闭 Engine Core 子进程。
         if self._live_sessions is not None:
             try:
                 self._live_sessions.stop_all()
@@ -495,7 +495,7 @@ class EngineClient:
             try:
                 self._send({"kind": "cancel", "request_id": request_id})
             except EngineClientError:
-                # IPC 若同时关闭，仍保留请求逾时作为呼叫端可见的主要错误。
+                # IPC 若同时关闭，仍保留请求超时作为调用端可见的主要错误。
                 logger.debug("Could not cancel timed-out Engine Core request %s", request_id, exc_info=True)
             raise TimeoutError(f"Engine Core request exceeded {self.request_timeout_seconds:g} seconds.") from exc
         finally:
@@ -575,7 +575,7 @@ def create_engine_client_for_package(
     inference_config_path: str | Path | None = None,
     network_config_path: str | Path | None = None,
 ) -> EngineClient:
-    """读取插件 manifest 和指定 YAML，并建立对应模型的 EngineClient。
+    """读取插件 manifest 和指定 YAML，并创建对应模型的 EngineClient。
 
     未指定的 YAML 路径取自模型 manifest。显式提供的相对路径以当前工作目录为基准。
     """
@@ -587,7 +587,7 @@ def create_engine_client_for_package(
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Model plugin manifest not found: {manifest_path}")
 
-    # 在 Launcher 与模型配置模块载入前设定根目录，保留部署端显式提供的路径。
+    # 在 Launcher 与模型配置模块加载前配置根目录，保留部署端显式提供的路径。
     os.environ.setdefault("INFERENCE_PROJECT_ROOT", str(package_dir.parents[3]))
     launcher = importlib.import_module("inference.launcher")
     manifest = launcher._read_yaml(manifest_path)

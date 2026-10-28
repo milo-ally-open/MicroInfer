@@ -1,10 +1,10 @@
-from __future__ import annotations
+"""定义推理引擎使用的请求与批次数据结构。
 
-"""定义推论引擎线上使用的请求与批次资料结构。
-
-Engine 请求可带小型资料或本机媒体参照，不传影片 bytes、GPU tensor 或模型 Cache。
-Worker 批次入口已接入现行路径；Mage-VL Runner 会合并相容输入，不相容时逐请求执行。
+Engine 请求可以携带小型元数据或本地媒体引用，不传递视频字节、GPU 张量或模型 Cache。
+Mage-VL Runner 会合并兼容输入；输入不兼容时按请求逐个执行。
 """
+
+from __future__ import annotations
 
 
 from collections.abc import Mapping
@@ -20,7 +20,7 @@ class ExecutionPhase(str, Enum):
 
 @dataclass(frozen=True)
 class PreparedChatInput:
-    """由 API 输入处理器建立、可安全跨 Engine IPC 传递的模型输入。"""
+    """由 API 输入处理器创建、可安全跨 Engine IPC 传递的模型输入。"""
 
     model_alias: str
     input_ids: tuple[int, ...]
@@ -35,7 +35,7 @@ class PreparedChatInput:
 
 @dataclass(frozen=True)
 class InferenceResult:
-    """跨 API、Engine 与模型 Adapter 传递的单次推论结果。"""
+    """跨 API、Engine 与模型 Adapter 传递的单次推理结果。"""
 
     content: str
     prompt_tokens: int
@@ -143,11 +143,8 @@ class SequenceState:
         return self.phase.startswith("waiting_")
 
 
-"""推论层错误，不依赖 HTTP 框架。"""
-
-
 class InferenceError(Exception):
-    """可映射至 API 错误回应的推论错误。"""
+    """可映射至 API 错误响应的推理错误。"""
 
     def __init__(self, status_code: int, detail: str) -> None:
         super().__init__(detail)

@@ -22,7 +22,7 @@ if not isinstance(settings, dict):
     raise ValueError("测试 YAML 最上层必须是 mapping。")
 api_key = os.environ.get(settings["api_key_env"], "")
 if not api_key:
-    parser.error(f"请设定环境变数 {settings['api_key_env']}。")
+    parser.error(f"请设置环境变量 {settings['api_key_env']}。")
 
 request_body = {
     "model": settings["model_alias"],
@@ -46,7 +46,7 @@ first_token = None
 returned_models = set()
 with urlopen(request, timeout=float(settings["timeout_seconds"])) as response:
     if response.status != 200:
-        raise RuntimeError(f"Gateway 回传 HTTP {response.status}。")
+        raise RuntimeError(f"Gateway 返回 HTTP {response.status}。")
     for line in response:
         if not line.startswith(b"data:"):
             continue
@@ -55,7 +55,7 @@ with urlopen(request, timeout=float(settings["timeout_seconds"])) as response:
             break
         event = json.loads(data)
         if event.get("error"):
-            raise RuntimeError("Gateway SSE 回传错误事件。")
+            raise RuntimeError("Gateway SSE 返回错误事件。")
         if event.get("model"):
             returned_models.add(event["model"])
         for choice in event.get("choices", []):

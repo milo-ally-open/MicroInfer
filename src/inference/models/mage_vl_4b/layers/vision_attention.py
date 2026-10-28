@@ -30,7 +30,7 @@ def eager_attention_forward(
     **kwargs,
 ):
     """Eager attention; query/key/value are expected as ``(B, H, L, D)``."""
-    # 使用明确的 QKᵀ、softmax、权重乘 V 路径，让注意力数值流程可检视与替换。
+    # 使用明确的 QKᵀ、softmax、权重乘 V 路径，让注意力数值流程可查看与替换。
     attn_weights = torch.matmul(query, key.transpose(2, 3)) * scaling
     if attention_mask is not None:
         if attention_mask.dtype == torch.bool:
@@ -96,7 +96,7 @@ class MageVLVisionAttention(nn.Module):
         dropout = 0.0 if not self.training else self.attention_dropout
 
         if cu_seqlens is not None:
-            # 打包影格彼此独立，依累积长度切开后逐段计算，避免跨影格互相注意。
+            # 打包帧彼此独立，依累积长度切开后逐段计算，避免跨帧互相注意。
             lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
             splits = [torch.split(t, lengths, dim=2) for t in (query_states, key_states, value_states)]
             attn_outputs = [

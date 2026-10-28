@@ -27,7 +27,7 @@ snapshot = (config_path.parent / settings["snapshot"]).resolve()
 inference_config_path = (config_path.parent / settings["inference_config"]).resolve()
 inference_settings = yaml.safe_load(inference_config_path.read_text(encoding="utf-8"))
 if not (snapshot / "config.json").is_file():
-    raise FileNotFoundError(f"本机模型快照不存在：{snapshot}")
+    raise FileNotFoundError(f"本地模型快照不存在：{snapshot}")
 os.environ["INFERENCE_CONFIG"] = str(inference_config_path)
 os.environ["INFERENCE_NETWORK_CONFIG"] = str(inference_config_path.with_name("network.yml"))
 

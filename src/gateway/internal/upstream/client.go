@@ -11,7 +11,7 @@ import (
 	"example.com/videostreamapi/gateway/internal/config"
 )
 
-// Client 管理连线推论服务时共用的 HTTP transport。
+// Client 管理连接推理服务时共用的 HTTP transport。
 type Client struct {
 	httpClient *http.Client
 }

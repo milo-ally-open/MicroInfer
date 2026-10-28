@@ -1,6 +1,6 @@
 """Mage-VL 视觉塔与 Transformers 预训练模型基底。"""
 
-# 本档由固定 revision 的上游实作拆分调整；来源：microsoft/Mage-VL，revision d88b153285f1633a61b2f693c59c8576693af185（Apache-2.0）。
+# 本文件由固定 revision 的上游实现拆分调整；来源：microsoft/Mage-VL，revision d88b153285f1633a61b2f693c59c8576693af185（Apache-2.0）。
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Optional, Union

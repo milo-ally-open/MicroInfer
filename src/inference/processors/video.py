@@ -1,4 +1,4 @@
-"""处理上传影片暂存、一般影格读取及容器 metadata。"""
+"""处理上传视频暂存、一般帧读取及容器 metadata。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def uploaded_video_path(filename: str | None, directory: str | Path) -> Path:
 
 
 def save_upload(upload_stream: BinaryIO, destination: Path, max_bytes: int) -> int:
-    """以固定大小区块写入暂存档，避免把整段影片放入记忆体。"""
+    """以固定大小区块写入暂存文件，避免把整段视频放入内存。"""
     size = 0
     with destination.open("wb") as output:
         while chunk := upload_stream.read(1024 * 1024):
@@ -45,7 +45,7 @@ def sample_video_frames(
     max_duration_seconds: float,
     resize: Callable[[Image.Image, int], Image.Image],
 ) -> tuple[list[Image.Image], dict[str, Any]]:
-    """均匀读取影片影格；先依来源像素上限拒绝超大影格，再交由模型设定缩放。"""
+    """均匀读取视频帧；先依来源像素上限拒绝超大帧，再交由模型配置缩放。"""
     try:
         import cv2
     except Exception as exc:
@@ -114,7 +114,7 @@ def sample_video_frames(
 
 
 def probe_video_metadata(video_path: Path, *, ffprobe_bin: str, max_duration_seconds: float) -> dict[str, Any]:
-    """透过 ffprobe 读取容器 metadata，不解码整段影片。"""
+    """透过 ffprobe 读取容器 metadata，不解码整段视频。"""
     ffprobe = shutil.which(ffprobe_bin)
     if ffprobe is None and Path(ffprobe_bin).is_file():
         ffprobe = str(Path(ffprobe_bin).resolve())

@@ -23,7 +23,7 @@ parser.add_argument("--config", type=Path, required=True, help="明确指定测�
 parser.add_argument(
     "--profile-attention",
     action="store_true",
-    help="额外用本机 Qwen3 第 0 层 Attention 权重分析算子；优先 CUDA，无 CUDA 时回退 CPU。",
+    help="使用本地 Qwen3 第 0 层 Attention 权重分析算子；优先 CUDA，仅在 CUDA 不可用时回退 CPU。",
 )
 parser.add_argument(
     "--operator-report",
@@ -40,7 +40,7 @@ if not isinstance(settings, dict):
     raise ValueError("测试 YAML 最上层必须是 mapping。")
 snapshot = (config_path.parent / settings["snapshot"]).resolve()
 if not (snapshot / "config.json").is_file():
-    raise FileNotFoundError(f"本机模型设定不存在：{snapshot / 'config.json'}")
+    raise FileNotFoundError(f"本地模型配置不存在：{snapshot / 'config.json'}")
 inference_config_path = (config_path.parent / settings["inference_config"]).resolve()
 inference_settings = yaml.safe_load(inference_config_path.read_text(encoding="utf-8"))
 inference_root = (config_path.parent / settings["component"]["engine_module"]).resolve()
@@ -125,12 +125,12 @@ with torch.device("meta"):
     baseline_model = AutoModelForCausalLM.from_config(config)
 
 print("==========engine===========")
-print(f"Qwen3 本地 Runner 计算图（meta device，不载入权重）: {type(engine_model).__module__}.{type(engine_model).__name__}")
+print(f"Qwen3 本地 Runner 计算图（meta device，不加载权重）: {type(engine_model).__module__}.{type(engine_model).__name__}")
 for name, module in engine_model.named_modules():
     if not name or name.count(".") <= 2:
         print(f"{name or '<root>'}: {type(module).__module__}.{type(module).__name__}")
 print("==========baseline==========")
-print(f"Transformers 原生模型（meta device，不载入权重）: {type(baseline_model).__module__}.{type(baseline_model).__name__}")
+print(f"Transformers 原生模型（meta device，不加载权重）: {type(baseline_model).__module__}.{type(baseline_model).__name__}")
 for name, module in baseline_model.named_modules():
     if not name or name.count(".") <= 2:
         print(f"{name or '<root>'}: {type(module).__module__}.{type(module).__name__}")
@@ -139,7 +139,7 @@ module_entrypoints = [
     ("inference.models.qwen3_0_6b.model.qwen3", inference_root / "models/qwen3_0_6b/model/qwen3.py"),
     ("inference.models.qwen3_0_6b.layers.attention", inference_root / "models/qwen3_0_6b/layers/attention.py"),
     ("inference.models.qwen3_0_6b.layers.layers", inference_root / "models/qwen3_0_6b/layers/layers.py"),
-    ("inference.models.qwen3_0_6b.layers.rotary_embedding", inference_root / "models/qwen3_0_6b/layers/rotary_embedding.py"),
+    ("inference.models.qwen3_0_6b.layers.rope", inference_root / "models/qwen3_0_6b/layers/rope.py"),
     ("inference.models.qwen3_0_6b.components.model_runner", inference_root / "models/qwen3_0_6b/components/model_runner.py"),
     ("inference.models.qwen3_0_6b.components.paged_kv_cache", inference_root / "models/qwen3_0_6b/components/paged_kv_cache.py"),
     ("inference.models.qwen3_0_6b.components.sampler", inference_root / "models/qwen3_0_6b/components/sampler.py"),
@@ -185,6 +185,7 @@ if args.profile_attention:
         num_attention_heads=config.num_attention_heads,
         num_key_value_heads=config.num_key_value_heads,
         head_dim=config.head_dim,
+        max_position_embeddings=config.max_position_embeddings,
         rms_norm_eps=config.rms_norm_eps,
         rope_theta=float(config.rope_parameters["rope_theta"]),
         device=device,

@@ -80,7 +80,7 @@ def nvtx_range(name: str) -> Iterator[None]:
 
 
 def forward_transformer():
-    """第一段：用 Hugging Face Transformers 对本机 Qwen3 做 prefill 和一步 decode。"""
+    """第一段：用 Hugging Face Transformers 对本地 Qwen3 做 prefill 和一步 decode。"""
     global TRANSFORMERS_NEXT_TOKEN, TRANSFORMERS_PREFILL_LOGITS, TRANSFORMERS_DECODE_LOGITS
     if INPUT_IDS_CPU is None:
         raise RuntimeError("先在主流程准备聊天 token。")
@@ -215,7 +215,7 @@ def forward_transformer():
 
 
 def forward_inference():
-    """第二段：从 inference 包建立 Qwen3 Runtime，用项目模型与 paged KV 做同样的前向。"""
+    """第二段：从 inference 包创建 Qwen3 Runtime，用项目模型与 paged KV 做同样的前向。"""
     global INFERENCE_PREFILL_LOGITS, INFERENCE_DECODE_LOGITS
     if INPUT_IDS_CPU is None or TRANSFORMERS_NEXT_TOKEN is None:
         raise RuntimeError("先运行 forward_transformer() 准备共同输入和 decode token。")
@@ -348,7 +348,7 @@ def forward_inference():
 if __name__ == "__main__":
     # 五、准备一次聊天输入，确保 Transformers 与 Inference 使用完全相同的 token。
     if not MODEL_PATH.is_dir() or not (MODEL_PATH / "config.json").is_file():
-        raise FileNotFoundError(f"本机 Qwen3 snapshot 不完整：{MODEL_PATH}")
+        raise FileNotFoundError(f"本地 Qwen3 snapshot 不完整：{MODEL_PATH}")
     print("运行设备:", "cuda" if CUDA_AVAILABLE else "cpu（CUDA 不可用，已回退）")
     TRACE_DIR.mkdir(parents=True, exist_ok=True)
     with nvtx_range("input.prepare"):
