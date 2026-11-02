@@ -1,8 +1,7 @@
 """由 Norm、GQA Attention 和 SwiGLU MLP 组合成文字 Decoder Layer。"""
 
-import time
-
 import torch
+import torch.utils.benchmark
 from torch import nn
 from transformers.cache_utils import Cache
 from transformers.models.qwen3_vl.modeling_qwen3_vl import (
@@ -12,7 +11,6 @@ from transformers.models.qwen3_vl.modeling_qwen3_vl import (
 from .text_attention import Qwen3VLTextAttention
 from .text_mlp import Qwen3VLTextMLP
 from .text_norm import Qwen3VLTextRMSNorm
-
 
 class Qwen3VLTextDecoderLayer(nn.Module):
     """Pre-Norm Transformer block，子模块名与官方 checkpoint 键保持一致。"""
@@ -57,7 +55,6 @@ class Qwen3VLTextDecoderLayer(nn.Module):
         normalized = self.post_attention_layernorm(hidden_states)
         return residual + self.mlp(normalized)
 
-
 if __name__ == "__main__":
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
 
@@ -91,47 +88,69 @@ if __name__ == "__main__":
     cos = torch.randn(batch_size, sequence_length, config.head_dim, device=device)
     sin = torch.randn_like(cos)
 
-    with torch.inference_mode():
-        expected = reference(hidden_states, (cos, sin))
-        actual = local(hidden_states, (cos, sin))
+    components = [
+        ("text decoder layer", reference, local, (hidden_states, (cos, sin)), (hidden_states, (cos, sin)), {}, {}, 1e-5, 1e-5),
+    ]
 
-    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
-    print(f"Qwen3VLTextDecoderLayer parity passed on {device}.")
-
-    # Bench：测量完整文本 Decoder Layer（Norm、Attention、MLP、残差）的前向延迟。
-    for _ in range(5):
-        local(hidden_states, (cos, sin))
-    if device.type == "cuda":
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-        torch.cuda.synchronize(device)
-        start_event.record()
-        for _ in range(50):
-            local(hidden_states, (cos, sin))
-        end_event.record()
-        end_event.synchronize()
-        elapsed_ms = start_event.elapsed_time(end_event) / 50
-    else:
-        started_at = time.perf_counter()
-        for _ in range(50):
-            local(hidden_states, (cos, sin))
-        elapsed_ms = (time.perf_counter() - started_at) * 1000 / 50
-    print(f"Bench: text decoder layer average={elapsed_ms:.4f} ms/call on {device}.")
-
-    # Profile：分解该层内 Attention、MLP、Norm 等算子的时间和内存。
     profile_activities = [torch.profiler.ProfilerActivity.CPU]
     if device.type == "cuda":
         profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
-    with torch.profiler.profile(
-        activities=profile_activities,
-        record_shapes=True,
-        profile_memory=True,
-    ) as profile:
-        local(hidden_states, (cos, sin))
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
-        profile_sort = "self_cuda_time_total"
-    else:
-        profile_sort = "self_cpu_time_total"
-    print("Profile: text decoder layer operators")
-    print(profile.key_averages().table(sort_by=profile_sort, row_limit=15))
+    profile_sort = "self_cuda_time_total" if device.type == "cuda" else "self_cpu_time_total"
+
+    for component_name, baseline, enhanced, baseline_args, enhanced_args, baseline_kwargs, enhanced_kwargs, atol, rtol in components:
+        baseline_output = None
+        baseline_median = None
+        for stage, module, args, kwargs in (
+            ("baseline", baseline, baseline_args, baseline_kwargs),
+            ("enhanced", enhanced, enhanced_args, enhanced_kwargs),
+        ):
+            print(f"================= {stage} =================")
+            print("   test:")
+            print(f"       component={component_name}")
+            with torch.inference_mode():
+                output = module(*args, **kwargs)
+            if stage == "baseline":
+                torch.testing.assert_close(output, output, atol=atol, rtol=rtol)
+                baseline_output = output
+                output_tensor = output if isinstance(output, torch.Tensor) else output[0]
+                print(f"       PASS, shape={tuple(output_tensor.shape)}, dtype={output_tensor.dtype}, device={output_tensor.device}")
+            else:
+                torch.testing.assert_close(output, baseline_output, atol=atol, rtol=rtol)
+                if isinstance(output, torch.Tensor):
+                    max_abs_error = (output - baseline_output).abs().max().item()
+                    output_tensor = output
+                else:
+                    max_abs_error = max(
+                        (
+                            (actual - expected).abs().max().item()
+                            for actual, expected in zip(output, baseline_output)
+                            if isinstance(actual, torch.Tensor)
+                        ),
+                        default=0.0,
+                    )
+                    output_tensor = output[0]
+                print(f"       parity=PASS, max_abs_error={max_abs_error:.3e}, shape={tuple(output_tensor.shape)}")
+            print("   bench:")
+            with torch.inference_mode():
+                bench = torch.utils.benchmark.Timer(
+                    stmt="module(*args, **kwargs)",
+                    globals={"module": module, "args": args, "kwargs": kwargs},
+                ).blocked_autorange(min_run_time=0.2)
+            if stage == "baseline":
+                baseline_median = bench.median
+                print(f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}")
+            else:
+                print(
+                    f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}, speedup={baseline_median / bench.median:.3f}x"
+                )
+            print("   profile:")
+            with torch.inference_mode():
+                with torch.profiler.profile(
+                    activities=profile_activities,
+                    record_shapes=True,
+                    profile_memory=True,
+                ) as profile:
+                    module(*args, **kwargs)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            print(profile.key_averages().table(sort_by=profile_sort, row_limit=12))

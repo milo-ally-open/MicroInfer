@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import time
-
 import torch
+import torch.utils.benchmark
 from torch import nn
 from transformers.cache_utils import Cache
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
@@ -15,7 +14,6 @@ from transformers.models.qwen3_vl.modeling_qwen3_vl import (
 )
 
 from .text_norm import Qwen3VLTextRMSNorm
-
 
 class Qwen3VLTextAttention(nn.Module):
     """实现官方文字 Attention 的前向计算，并保持其权重布局。"""
@@ -109,7 +107,6 @@ class Qwen3VLTextAttention(nn.Module):
         output = output.reshape(*input_shape, -1).contiguous()
         return self.o_proj(output), weights
 
-
 if __name__ == "__main__":
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
 
@@ -151,47 +148,79 @@ if __name__ == "__main__":
         diagonal=1,
     )
 
-    with torch.inference_mode():
-        expected = reference(hidden_states, (cos, sin), attention_mask)
-        actual = local(hidden_states, (cos, sin), attention_mask)
+    components = [
+        (
+            "text attention",
+            reference,
+            local,
+            (hidden_states, (cos, sin), attention_mask),
+            (hidden_states, (cos, sin), attention_mask),
+            {},
+            {},
+            1e-5,
+            1e-5,
+        ),
+    ]
 
-    torch.testing.assert_close(actual[0], expected[0], atol=1e-5, rtol=1e-5)
-    print(f"Qwen3VLTextAttention parity passed on {device}.")
-
-    # Bench：固定同一组 Q/K/V 投影输入，统计 Attention 前向平均耗时。
-    for _ in range(5):
-        local(hidden_states, (cos, sin), attention_mask)
-    if device.type == "cuda":
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-        torch.cuda.synchronize(device)
-        start_event.record()
-        for _ in range(50):
-            local(hidden_states, (cos, sin), attention_mask)
-        end_event.record()
-        end_event.synchronize()
-        elapsed_ms = start_event.elapsed_time(end_event) / 50
-    else:
-        started_at = time.perf_counter()
-        for _ in range(50):
-            local(hidden_states, (cos, sin), attention_mask)
-        elapsed_ms = (time.perf_counter() - started_at) * 1000 / 50
-    print(f"Bench: text attention average={elapsed_ms:.4f} ms/call on {device}.")
-
-    # Profile：记录单层 Attention 内投影、归一化和 SDPA 的算子耗时与 shape。
     profile_activities = [torch.profiler.ProfilerActivity.CPU]
     if device.type == "cuda":
         profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
-    with torch.profiler.profile(
-        activities=profile_activities,
-        record_shapes=True,
-        profile_memory=True,
-    ) as profile:
-        local(hidden_states, (cos, sin), attention_mask)
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
-        profile_sort = "self_cuda_time_total"
-    else:
-        profile_sort = "self_cpu_time_total"
-    print("Profile: text attention operators")
-    print(profile.key_averages().table(sort_by=profile_sort, row_limit=12))
+    profile_sort = "self_cuda_time_total" if device.type == "cuda" else "self_cpu_time_total"
+
+    for component_name, baseline, enhanced, baseline_args, enhanced_args, baseline_kwargs, enhanced_kwargs, atol, rtol in components:
+        baseline_output = None
+        baseline_median = None
+        for stage, module, args, kwargs in (
+            ("baseline", baseline, baseline_args, baseline_kwargs),
+            ("enhanced", enhanced, enhanced_args, enhanced_kwargs),
+        ):
+            print(f"================= {stage} =================")
+            print("   test:")
+            print(f"       component={component_name}")
+            with torch.inference_mode():
+                output = module(*args, **kwargs)
+            if stage == "baseline":
+                torch.testing.assert_close(output, output, atol=atol, rtol=rtol)
+                baseline_output = output
+                output_tensor = output if isinstance(output, torch.Tensor) else output[0]
+                print(f"       PASS, shape={tuple(output_tensor.shape)}, dtype={output_tensor.dtype}, device={output_tensor.device}")
+            else:
+                torch.testing.assert_close(output, baseline_output, atol=atol, rtol=rtol)
+                if isinstance(output, torch.Tensor):
+                    max_abs_error = (output - baseline_output).abs().max().item()
+                    output_tensor = output
+                else:
+                    max_abs_error = max(
+                        (
+                            (actual - expected).abs().max().item()
+                            for actual, expected in zip(output, baseline_output)
+                            if isinstance(actual, torch.Tensor)
+                        ),
+                        default=0.0,
+                    )
+                    output_tensor = output[0]
+                print(f"       parity=PASS, max_abs_error={max_abs_error:.3e}, shape={tuple(output_tensor.shape)}")
+            print("   bench:")
+            with torch.inference_mode():
+                bench = torch.utils.benchmark.Timer(
+                    stmt="module(*args, **kwargs)",
+                    globals={"module": module, "args": args, "kwargs": kwargs},
+                ).blocked_autorange(min_run_time=0.2)
+            if stage == "baseline":
+                baseline_median = bench.median
+                print(f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}")
+            else:
+                print(
+                    f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}, speedup={baseline_median / bench.median:.3f}x"
+                )
+            print("   profile:")
+            with torch.inference_mode():
+                with torch.profiler.profile(
+                    activities=profile_activities,
+                    record_shapes=True,
+                    profile_memory=True,
+                ) as profile:
+                    module(*args, **kwargs)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            print(profile.key_averages().table(sort_by=profile_sort, row_limit=12))

@@ -10,7 +10,6 @@ import torch.nn as nn
 from torch.nn import LayerNorm
 from ..architecture.configuration_mage_vl import MageVLVisionConfig
 
-
 class MageVLVisionEmbeddings(nn.Module):
     """
     Patch embedding layer that converts pre-processed patches to embeddings.
@@ -44,7 +43,6 @@ class MageVLVisionEmbeddings(nn.Module):
         hidden_states = self.patch_embedding(hidden_states.to(dtype=target_dtype)).view(-1, self.embed_dim)
 
         return hidden_states
-
 
 class MageVLVisionPatchMerger(nn.Module):
     """
@@ -115,7 +113,6 @@ class MageVLVisionPatchMerger(nn.Module):
 
         return x
 
-
 if __name__ == "__main__":
     test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.set_default_device(test_device)
@@ -138,12 +135,8 @@ if __name__ == "__main__":
     official_spec.loader.exec_module(official)
 
     torch.manual_seed(63)
-    config = MageVLVisionConfig(
-        hidden_size=64, intermediate_size=128, num_channels=3, image_size=8, patch_size=2
-    )
-    reference_config = official.MageVLVisionConfig(
-        hidden_size=64, intermediate_size=128, num_channels=3, image_size=8, patch_size=2
-    )
+    config = MageVLVisionConfig(hidden_size=64, intermediate_size=128, num_channels=3, image_size=8, patch_size=2)
+    reference_config = official.MageVLVisionConfig(hidden_size=64, intermediate_size=128, num_channels=3, image_size=8, patch_size=2)
     engine_embeddings = MageVLVisionEmbeddings(config).eval()
     baseline_embeddings = official.MageVLVisionEmbeddings(reference_config).eval()
     engine_embeddings.load_state_dict(baseline_embeddings.state_dict(), strict=True)
@@ -165,53 +158,111 @@ if __name__ == "__main__":
     ).eval()
     engine_merger.load_state_dict(baseline_merger.state_dict(), strict=True)
     patch_positions = torch.tensor([[0, 0, 0], [0, 0, 1], [0, 1, 0], [0, 1, 1]])
+
     with torch.inference_mode():
-        engine_embeds = engine_embeddings(patches)
         baseline_embeds = baseline_embeddings(patches)
-        engine_merged = engine_merger(engine_embeds, patch_positions=patch_positions)
-        baseline_merged = baseline_merger(baseline_embeds, patch_positions=patch_positions)
-    torch.testing.assert_close(engine_embeds, baseline_embeds, atol=0, rtol=0)
-    torch.testing.assert_close(engine_merged, baseline_merged, atol=0, rtol=0)
-    print("==========engine===========")
-    print(f"patches={tuple(engine_embeds.shape)}, merged={tuple(engine_merged.shape)}")
-    print("==========baseline==========")
-    print(f"official patches={tuple(baseline_embeds.shape)}, merged={tuple(baseline_merged.shape)}")
-    print(f"Mage-VL patch embedding and merger match the official source on {test_device}.")
+        engine_embeds = engine_embeddings(patches)
 
-    # Bench：分别测量 Patch Embedding 与 Patch Merger，保留各自的输入 shape。
-    with torch.inference_mode():
-        embedding_bench = torch.utils.benchmark.Timer(
-            stmt="engine_embeddings(patches)", globals=locals()
-        ).blocked_autorange(min_run_time=0.3)
-        merger_bench = torch.utils.benchmark.Timer(
-            stmt="engine_merger(engine_embeds, patch_positions=patch_positions)", globals=locals()
-        ).blocked_autorange(min_run_time=0.3)
-    print(f"Bench: Mage-VL patch embedding {embedding_bench}")
-    print(f"Bench: Mage-VL patch merger {merger_bench}")
-
-    # Profile：Embedding 和 Merger 分开采样，避免看不出各自成本。
+    components = [
+        ("Mage-VL patch embedding", baseline_embeddings, engine_embeddings, (patches,), (patches,), {}, {}, None, None, 0, 0, False),
+        (
+            "Mage-VL patch merger",
+            baseline_merger,
+            engine_merger,
+            (baseline_embeds,),
+            (engine_embeds,),
+            {"patch_positions": patch_positions},
+            {"patch_positions": patch_positions},
+            None,
+            None,
+            0,
+            0,
+            False,
+        ),
+    ]
     profile_activities = [torch.profiler.ProfilerActivity.CPU]
     if test_device.type == "cuda":
         profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
-    with torch.inference_mode():
-        with torch.profiler.profile(
-            activities=profile_activities,
-            record_shapes=True,
-            profile_memory=True,
-        ) as embedding_profile:
-            engine_embeddings(patches)
-        with torch.profiler.profile(
-            activities=profile_activities,
-            record_shapes=True,
-            profile_memory=True,
-        ) as merger_profile:
-            engine_merger(engine_embeds, patch_positions=patch_positions)
-    if test_device.type == "cuda":
-        torch.cuda.synchronize(test_device)
-        profile_sort = "self_cuda_time_total"
-    else:
-        profile_sort = "self_cpu_time_total"
-    print("Profile: Mage-VL patch embedding operators")
-    print(embedding_profile.key_averages().table(sort_by=profile_sort, row_limit=12))
-    print("Profile: Mage-VL patch merger operators")
-    print(merger_profile.key_averages().table(sort_by=profile_sort, row_limit=12))
+    profile_sort = "self_cuda_time_total" if test_device.type == "cuda" else "self_cpu_time_total"
+
+    for (
+        component_name,
+        baseline,
+        enhanced,
+        baseline_args,
+        enhanced_args,
+        baseline_kwargs,
+        enhanced_kwargs,
+        baseline_selector,
+        enhanced_selector,
+        atol,
+        rtol,
+        compare_hidden_states,
+    ) in components:
+        baseline_output = None
+        baseline_raw_output = None
+        baseline_median = None
+        for stage, module, args, kwargs, selector in (
+            ("baseline", baseline, baseline_args, baseline_kwargs, baseline_selector),
+            ("enhanced", enhanced, enhanced_args, enhanced_kwargs, enhanced_selector),
+        ):
+            print(f"================= {stage} =================")
+            print("   test:")
+            print(f"       component={component_name}")
+            with torch.inference_mode():
+                raw_output = module(*args, **kwargs)
+            if isinstance(selector, str):
+                output = raw_output[selector] if isinstance(raw_output, dict) else getattr(raw_output, selector)
+            elif selector is not None:
+                output = raw_output[selector]
+            else:
+                output = raw_output
+            if stage == "baseline":
+                torch.testing.assert_close(output, output, atol=atol, rtol=rtol)
+                baseline_output, baseline_raw_output = output, raw_output
+                output_tensor = output if isinstance(output, torch.Tensor) else output[0]
+                print(f"       PASS, shape={tuple(output_tensor.shape)}, dtype={output_tensor.dtype}, device={output_tensor.device}")
+            else:
+                torch.testing.assert_close(output, baseline_output, atol=atol, rtol=rtol)
+                if compare_hidden_states:
+                    torch.testing.assert_close(
+                        tuple(raw_output.hidden_states), tuple(baseline_raw_output.hidden_states), atol=atol, rtol=rtol
+                    )
+                if isinstance(output, torch.Tensor):
+                    max_abs_error = (output - baseline_output).abs().max().item()
+                    output_tensor = output
+                else:
+                    max_abs_error = max(
+                        (
+                            (actual - expected).abs().max().item()
+                            for actual, expected in zip(output, baseline_output)
+                            if isinstance(actual, torch.Tensor)
+                        ),
+                        default=0.0,
+                    )
+                    output_tensor = output[0]
+                print(f"       parity=PASS, max_abs_error={max_abs_error:.3e}, shape={tuple(output_tensor.shape)}")
+            print("   bench:")
+            with torch.inference_mode():
+                bench = torch.utils.benchmark.Timer(
+                    stmt="module(*args, **kwargs)",
+                    globals={"module": module, "args": args, "kwargs": kwargs},
+                ).blocked_autorange(min_run_time=0.2)
+            if stage == "baseline":
+                baseline_median = bench.median
+                print(f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}")
+            else:
+                print(
+                    f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}, speedup={baseline_median / bench.median:.3f}x"
+                )
+            print("   profile:")
+            with torch.inference_mode():
+                with torch.profiler.profile(
+                    activities=profile_activities,
+                    record_shapes=True,
+                    profile_memory=True,
+                ) as profile:
+                    module(*args, **kwargs)
+            if test_device.type == "cuda":
+                torch.cuda.synchronize(test_device)
+            print(profile.key_averages().table(sort_by=profile_sort, row_limit=12))

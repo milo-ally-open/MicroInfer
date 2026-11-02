@@ -13,7 +13,6 @@ from transformers.cache_utils import Cache
 
 from .qwen3_text_layers import Qwen3RMSNorm
 
-
 class Qwen3Attention(nn.Module):
     """明确执行 Q/K/V、RoPE、GQA、因果遮罩与 Cache 读写。"""
 
@@ -147,7 +146,6 @@ class Qwen3Attention(nn.Module):
         first, second = values.chunk(2, dim=-1)
         return torch.cat((-second, first), dim=-1)
 
-
 if __name__ == "__main__":
     test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.set_default_device(test_device)
@@ -176,64 +174,120 @@ if __name__ == "__main__":
     hidden_states = torch.randn(2, 5, config.hidden_size)
     position_ids = torch.arange(hidden_states.shape[1]).expand(hidden_states.shape[0], -1)
     cache_position = torch.arange(hidden_states.shape[1])
-    causal_mask = torch.zeros(1, 1, 5, 5).masked_fill(
-        torch.triu(torch.ones(5, 5, dtype=torch.bool), diagonal=1), -torch.inf
-    )
+    causal_mask = torch.zeros(1, 1, 5, 5).masked_fill(torch.triu(torch.ones(5, 5, dtype=torch.bool), diagonal=1), -torch.inf)
     baseline_rotary = Qwen3RotaryEmbedding(config)
     position_embeddings = baseline_rotary(hidden_states, position_ids)
-    with torch.inference_mode():
-        engine_output, _ = engine(
-            hidden_states,
-            position_ids=position_ids,
-            attention_mask=causal_mask,
-            past_key_values=None,
-            cache_position=cache_position,
-            use_cache=False,
-        )
-        baseline_output, _ = baseline(
-            hidden_states,
-            position_embeddings=position_embeddings,
-            attention_mask=causal_mask,
-            past_key_values=None,
-            cache_position=cache_position,
-        )
-    print("==========engine===========")
-    print(f"shape={tuple(engine_output.shape)}, sample={engine_output[0, 0, :4].tolist()}")
-    print("==========baseline==========")
-    print(f"shape={tuple(baseline_output.shape)}, sample={baseline_output[0, 0, :4].tolist()}")
-    torch.testing.assert_close(engine_output, baseline_output, atol=1e-5, rtol=1e-5)
-    print(f"Qwen3 attention matches the Transformers eager baseline on {test_device}.")
 
-    # Bench：保持 Prefill 长度、attention mask 和 RoPE 输入一致。
-    with torch.inference_mode():
-        attention_bench = torch.utils.benchmark.Timer(
-            stmt="engine(hidden_states, position_ids=position_ids, attention_mask=causal_mask, past_key_values=None, cache_position=cache_position, use_cache=False)",
-            globals=locals(),
-        ).blocked_autorange(min_run_time=0.3)
-    print(f"Bench: Qwen3 text attention {attention_bench}")
-
-    # Profile：采集 QKV、QK-Norm、RoPE、分块 Attention 和输出投影。
+    components = [
+        (
+            "Qwen3 text attention",
+            baseline,
+            engine,
+            (hidden_states,),
+            (hidden_states,),
+            {
+                "position_embeddings": position_embeddings,
+                "attention_mask": causal_mask,
+                "past_key_values": None,
+                "cache_position": cache_position,
+            },
+            {
+                "position_ids": position_ids,
+                "attention_mask": causal_mask,
+                "past_key_values": None,
+                "cache_position": cache_position,
+                "use_cache": False,
+            },
+            0,
+            0,
+            1e-5,
+            1e-5,
+            False,
+        ),
+    ]
     profile_activities = [torch.profiler.ProfilerActivity.CPU]
     if test_device.type == "cuda":
         profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
-    with torch.inference_mode():
-        with torch.profiler.profile(
-            activities=profile_activities,
-            record_shapes=True,
-            profile_memory=True,
-        ) as attention_profile:
-            engine(
-                hidden_states,
-                position_ids=position_ids,
-                attention_mask=causal_mask,
-                past_key_values=None,
-                cache_position=cache_position,
-                use_cache=False,
-            )
-    if test_device.type == "cuda":
-        torch.cuda.synchronize(test_device)
-        profile_sort = "self_cuda_time_total"
-    else:
-        profile_sort = "self_cpu_time_total"
-    print("Profile: Qwen3 text attention operators")
-    print(attention_profile.key_averages().table(sort_by=profile_sort, row_limit=15))
+    profile_sort = "self_cuda_time_total" if test_device.type == "cuda" else "self_cpu_time_total"
+
+    for (
+        component_name,
+        baseline,
+        enhanced,
+        baseline_args,
+        enhanced_args,
+        baseline_kwargs,
+        enhanced_kwargs,
+        baseline_selector,
+        enhanced_selector,
+        atol,
+        rtol,
+        compare_hidden_states,
+    ) in components:
+        baseline_output = None
+        baseline_raw_output = None
+        baseline_median = None
+        for stage, module, args, kwargs, selector in (
+            ("baseline", baseline, baseline_args, baseline_kwargs, baseline_selector),
+            ("enhanced", enhanced, enhanced_args, enhanced_kwargs, enhanced_selector),
+        ):
+            print(f"================= {stage} =================")
+            print("   test:")
+            print(f"       component={component_name}")
+            with torch.inference_mode():
+                raw_output = module(*args, **kwargs)
+            if isinstance(selector, str):
+                output = raw_output[selector] if isinstance(raw_output, dict) else getattr(raw_output, selector)
+            elif selector is not None:
+                output = raw_output[selector]
+            else:
+                output = raw_output
+            if stage == "baseline":
+                torch.testing.assert_close(output, output, atol=atol, rtol=rtol)
+                baseline_output, baseline_raw_output = output, raw_output
+                output_tensor = output if isinstance(output, torch.Tensor) else output[0]
+                print(f"       PASS, shape={tuple(output_tensor.shape)}, dtype={output_tensor.dtype}, device={output_tensor.device}")
+            else:
+                torch.testing.assert_close(output, baseline_output, atol=atol, rtol=rtol)
+                if compare_hidden_states:
+                    torch.testing.assert_close(
+                        tuple(raw_output.hidden_states), tuple(baseline_raw_output.hidden_states), atol=atol, rtol=rtol
+                    )
+                if isinstance(output, torch.Tensor):
+                    max_abs_error = (output - baseline_output).abs().max().item()
+                    output_tensor = output
+                else:
+                    max_abs_error = max(
+                        (
+                            (actual - expected).abs().max().item()
+                            for actual, expected in zip(output, baseline_output)
+                            if isinstance(actual, torch.Tensor)
+                        ),
+                        default=0.0,
+                    )
+                    output_tensor = output[0]
+                print(f"       parity=PASS, max_abs_error={max_abs_error:.3e}, shape={tuple(output_tensor.shape)}")
+            print("   bench:")
+            with torch.inference_mode():
+                bench = torch.utils.benchmark.Timer(
+                    stmt="module(*args, **kwargs)",
+                    globals={"module": module, "args": args, "kwargs": kwargs},
+                ).blocked_autorange(min_run_time=0.2)
+            if stage == "baseline":
+                baseline_median = bench.median
+                print(f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}")
+            else:
+                print(
+                    f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}, speedup={baseline_median / bench.median:.3f}x"
+                )
+            print("   profile:")
+            with torch.inference_mode():
+                with torch.profiler.profile(
+                    activities=profile_activities,
+                    record_shapes=True,
+                    profile_memory=True,
+                ) as profile:
+                    module(*args, **kwargs)
+            if test_device.type == "cuda":
+                torch.cuda.synchronize(test_device)
+            print(profile.key_averages().table(sort_by=profile_sort, row_limit=12))

@@ -7,7 +7,6 @@ import torch.utils.benchmark
 from torch import nn
 from transformers.activations import ACT2FN
 
-
 class SiglipMLP(nn.Module):
     """保留 SigLIP checkpoint 权重名称的两层 MLP。"""
 
@@ -19,7 +18,6 @@ class SiglipMLP(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         return self.fc2(self.activation(self.fc1(hidden_states)))
-
 
 if __name__ == "__main__":
     test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -33,38 +31,93 @@ if __name__ == "__main__":
     engine = SiglipMLP(config).eval()
     engine.load_state_dict(baseline.state_dict(), strict=True)
     hidden_states = torch.randn(2, 5, config.hidden_size)
-    with torch.inference_mode():
-        engine_output = engine(hidden_states)
-        baseline_output = baseline(hidden_states)
-    print("==========engine===========")
-    print(f"shape={tuple(engine_output.shape)}, sample={engine_output[0, 0, :4].tolist()}")
-    print("==========baseline==========")
-    print(f"shape={tuple(baseline_output.shape)}, sample={baseline_output[0, 0, :4].tolist()}")
-    torch.testing.assert_close(engine_output, baseline_output, atol=1e-6, rtol=1e-6)
-    print(f"Mage-VL SigLIP MLP matches the Transformers baseline on {test_device}.")
 
-    # Bench：固定视觉 token 数与 hidden 宽度，测量 SigLIP MLP。
-    with torch.inference_mode():
-        mlp_bench = torch.utils.benchmark.Timer(
-            stmt="engine(hidden_states)", globals=locals()
-        ).blocked_autorange(min_run_time=0.3)
-    print(f"Bench: SigLIP MLP {mlp_bench}")
-
-    # Profile：定位两层 Linear、GELU 与中间激活的开销。
+    components = [
+        ("SigLIP MLP", baseline, engine, (hidden_states,), (hidden_states,), {}, {}, None, None, 1e-6, 1e-6, False),
+    ]
     profile_activities = [torch.profiler.ProfilerActivity.CPU]
     if test_device.type == "cuda":
         profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
-    with torch.inference_mode():
-        with torch.profiler.profile(
-            activities=profile_activities,
-            record_shapes=True,
-            profile_memory=True,
-        ) as mlp_profile:
-            engine(hidden_states)
-    if test_device.type == "cuda":
-        torch.cuda.synchronize(test_device)
-        profile_sort = "self_cuda_time_total"
-    else:
-        profile_sort = "self_cpu_time_total"
-    print("Profile: SigLIP MLP operators")
-    print(mlp_profile.key_averages().table(sort_by=profile_sort, row_limit=12))
+    profile_sort = "self_cuda_time_total" if test_device.type == "cuda" else "self_cpu_time_total"
+
+    for (
+        component_name,
+        baseline,
+        enhanced,
+        baseline_args,
+        enhanced_args,
+        baseline_kwargs,
+        enhanced_kwargs,
+        baseline_selector,
+        enhanced_selector,
+        atol,
+        rtol,
+        compare_hidden_states,
+    ) in components:
+        baseline_output = None
+        baseline_raw_output = None
+        baseline_median = None
+        for stage, module, args, kwargs, selector in (
+            ("baseline", baseline, baseline_args, baseline_kwargs, baseline_selector),
+            ("enhanced", enhanced, enhanced_args, enhanced_kwargs, enhanced_selector),
+        ):
+            print(f"================= {stage} =================")
+            print("   test:")
+            print(f"       component={component_name}")
+            with torch.inference_mode():
+                raw_output = module(*args, **kwargs)
+            if isinstance(selector, str):
+                output = raw_output[selector] if isinstance(raw_output, dict) else getattr(raw_output, selector)
+            elif selector is not None:
+                output = raw_output[selector]
+            else:
+                output = raw_output
+            if stage == "baseline":
+                torch.testing.assert_close(output, output, atol=atol, rtol=rtol)
+                baseline_output, baseline_raw_output = output, raw_output
+                output_tensor = output if isinstance(output, torch.Tensor) else output[0]
+                print(f"       PASS, shape={tuple(output_tensor.shape)}, dtype={output_tensor.dtype}, device={output_tensor.device}")
+            else:
+                torch.testing.assert_close(output, baseline_output, atol=atol, rtol=rtol)
+                if compare_hidden_states:
+                    torch.testing.assert_close(
+                        tuple(raw_output.hidden_states), tuple(baseline_raw_output.hidden_states), atol=atol, rtol=rtol
+                    )
+                if isinstance(output, torch.Tensor):
+                    max_abs_error = (output - baseline_output).abs().max().item()
+                    output_tensor = output
+                else:
+                    max_abs_error = max(
+                        (
+                            (actual - expected).abs().max().item()
+                            for actual, expected in zip(output, baseline_output)
+                            if isinstance(actual, torch.Tensor)
+                        ),
+                        default=0.0,
+                    )
+                    output_tensor = output[0]
+                print(f"       parity=PASS, max_abs_error={max_abs_error:.3e}, shape={tuple(output_tensor.shape)}")
+            print("   bench:")
+            with torch.inference_mode():
+                bench = torch.utils.benchmark.Timer(
+                    stmt="module(*args, **kwargs)",
+                    globals={"module": module, "args": args, "kwargs": kwargs},
+                ).blocked_autorange(min_run_time=0.2)
+            if stage == "baseline":
+                baseline_median = bench.median
+                print(f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}")
+            else:
+                print(
+                    f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}, speedup={baseline_median / bench.median:.3f}x"
+                )
+            print("   profile:")
+            with torch.inference_mode():
+                with torch.profiler.profile(
+                    activities=profile_activities,
+                    record_shapes=True,
+                    profile_memory=True,
+                ) as profile:
+                    module(*args, **kwargs)
+            if test_device.type == "cuda":
+                torch.cuda.synchronize(test_device)
+            print(profile.key_averages().table(sort_by=profile_sort, row_limit=12))

@@ -8,7 +8,6 @@ import torch.utils.benchmark
 import torch.nn as nn
 from ..architecture.configuration_mage_vl import MageVLVisionConfig
 
-
 class VisionRotaryEmbedding(nn.Module):
     """
     3D (T,H,W) Rotary frequency constructor with 4:6:6 split.
@@ -149,7 +148,6 @@ class VisionRotaryEmbedding(nn.Module):
         freqs = torch.cat([ft[t_ids], fh[h_ids], fw[w_ids]], dim=-1)
         return freqs
 
-
 def rotate_half(x):
     """
     Interleaved rotation to match Source model's implementation.
@@ -158,7 +156,6 @@ def rotate_half(x):
     x_even = x[..., ::2]
     x_odd = x[..., 1::2]
     return torch.stack((-x_odd, x_even), dim=-1).flatten(-2)
-
 
 def apply_rotary_pos_emb(q, k, freqs):
     # q, k: (B, H, L, D)
@@ -177,7 +174,6 @@ def apply_rotary_pos_emb(q, k, freqs):
     q_embed = q_embed.to(orig_q_dtype)
     k_embed = k_embed.to(orig_k_dtype)
     return q_embed, k_embed
-
 
 if __name__ == "__main__":
     test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -211,44 +207,121 @@ if __name__ == "__main__":
         + [[0, h, w] for h in range(2) for w in range(2)],
         dtype=torch.long,
     )
-    with torch.inference_mode():
-        engine_grid = engine(grid_thw)
-        baseline_grid = baseline(grid_thw)
-        engine_positions = engine.forward_from_positions(positions)
-        baseline_positions = baseline.forward_from_positions(positions)
-        engine_thw = engine.forward_with_thw(2, 2, 2)
-        baseline_thw = baseline.forward_with_thw(2, 2, 2)
-    torch.testing.assert_close(engine_grid, baseline_grid, atol=0, rtol=0)
-    torch.testing.assert_close(engine_positions, baseline_positions, atol=0, rtol=0)
-    torch.testing.assert_close(engine_thw, baseline_thw, atol=0, rtol=0)
-    print("==========engine===========")
-    print(f"grid RoPE shape={tuple(engine_grid.shape)}, sample={engine_grid[0, :4].tolist()}")
-    print("==========baseline==========")
-    print(f"official Mage-VL shape={tuple(baseline_grid.shape)}, sample={baseline_grid[0, :4].tolist()}")
-    print(f"Mage-VL vision RoPE grid, explicit-position, and THW paths match the official source on {test_device}.")
 
-    # Bench：量测常规 THW 网格对应的位置频率计算。
-    with torch.inference_mode():
-        rope_bench = torch.utils.benchmark.Timer(
-            stmt="engine(grid_thw)", globals=locals()
-        ).blocked_autorange(min_run_time=0.3)
-    print(f"Bench: Mage-VL vision RoPE {rope_bench}")
-
-    # Profile：查看位置索引、频率乘法和频率表构造成本。
+    components = [
+        ("Mage-VL vision RoPE", baseline, engine, (grid_thw,), (grid_thw,), {}, {}, None, None, 0, 0, False),
+        (
+            "Mage-VL RoPE from positions",
+            baseline.forward_from_positions,
+            engine.forward_from_positions,
+            (positions,),
+            (positions,),
+            {},
+            {},
+            None,
+            None,
+            0,
+            0,
+            False,
+        ),
+        (
+            "Mage-VL RoPE from THW",
+            baseline.forward_with_thw,
+            engine.forward_with_thw,
+            (2, 2, 2),
+            (2, 2, 2),
+            {},
+            {},
+            None,
+            None,
+            0,
+            0,
+            False,
+        ),
+    ]
     profile_activities = [torch.profiler.ProfilerActivity.CPU]
     if test_device.type == "cuda":
         profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
-    with torch.inference_mode():
-        with torch.profiler.profile(
-            activities=profile_activities,
-            record_shapes=True,
-            profile_memory=True,
-        ) as rope_profile:
-            engine(grid_thw)
-    if test_device.type == "cuda":
-        torch.cuda.synchronize(test_device)
-        profile_sort = "self_cuda_time_total"
-    else:
-        profile_sort = "self_cpu_time_total"
-    print("Profile: Mage-VL vision RoPE operators")
-    print(rope_profile.key_averages().table(sort_by=profile_sort, row_limit=12))
+    profile_sort = "self_cuda_time_total" if test_device.type == "cuda" else "self_cpu_time_total"
+
+    for (
+        component_name,
+        baseline,
+        enhanced,
+        baseline_args,
+        enhanced_args,
+        baseline_kwargs,
+        enhanced_kwargs,
+        baseline_selector,
+        enhanced_selector,
+        atol,
+        rtol,
+        compare_hidden_states,
+    ) in components:
+        baseline_output = None
+        baseline_raw_output = None
+        baseline_median = None
+        for stage, module, args, kwargs, selector in (
+            ("baseline", baseline, baseline_args, baseline_kwargs, baseline_selector),
+            ("enhanced", enhanced, enhanced_args, enhanced_kwargs, enhanced_selector),
+        ):
+            print(f"================= {stage} =================")
+            print("   test:")
+            print(f"       component={component_name}")
+            with torch.inference_mode():
+                raw_output = module(*args, **kwargs)
+            if isinstance(selector, str):
+                output = raw_output[selector] if isinstance(raw_output, dict) else getattr(raw_output, selector)
+            elif selector is not None:
+                output = raw_output[selector]
+            else:
+                output = raw_output
+            if stage == "baseline":
+                torch.testing.assert_close(output, output, atol=atol, rtol=rtol)
+                baseline_output, baseline_raw_output = output, raw_output
+                output_tensor = output if isinstance(output, torch.Tensor) else output[0]
+                print(f"       PASS, shape={tuple(output_tensor.shape)}, dtype={output_tensor.dtype}, device={output_tensor.device}")
+            else:
+                torch.testing.assert_close(output, baseline_output, atol=atol, rtol=rtol)
+                if compare_hidden_states:
+                    torch.testing.assert_close(
+                        tuple(raw_output.hidden_states), tuple(baseline_raw_output.hidden_states), atol=atol, rtol=rtol
+                    )
+                if isinstance(output, torch.Tensor):
+                    max_abs_error = (output - baseline_output).abs().max().item()
+                    output_tensor = output
+                else:
+                    max_abs_error = max(
+                        (
+                            (actual - expected).abs().max().item()
+                            for actual, expected in zip(output, baseline_output)
+                            if isinstance(actual, torch.Tensor)
+                        ),
+                        default=0.0,
+                    )
+                    output_tensor = output[0]
+                print(f"       parity=PASS, max_abs_error={max_abs_error:.3e}, shape={tuple(output_tensor.shape)}")
+            print("   bench:")
+            with torch.inference_mode():
+                bench = torch.utils.benchmark.Timer(
+                    stmt="module(*args, **kwargs)",
+                    globals={"module": module, "args": args, "kwargs": kwargs},
+                ).blocked_autorange(min_run_time=0.2)
+            if stage == "baseline":
+                baseline_median = bench.median
+                print(f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}")
+            else:
+                print(
+                    f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}, speedup={baseline_median / bench.median:.3f}x"
+                )
+            print("   profile:")
+            with torch.inference_mode():
+                with torch.profiler.profile(
+                    activities=profile_activities,
+                    record_shapes=True,
+                    profile_memory=True,
+                ) as profile:
+                    module(*args, **kwargs)
+            if test_device.type == "cuda":
+                torch.cuda.synchronize(test_device)
+            print(profile.key_averages().table(sort_by=profile_sort, row_limit=12))

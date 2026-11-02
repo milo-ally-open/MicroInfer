@@ -10,224 +10,148 @@ from .vision_embeddings import MageVLVisionEmbeddings, MageVLVisionPatchMerger
 from .vision_attention import MageVLVisionAttention, eager_attention_forward, get_norm_layer
 from .vision_stack import MageVLVisionEncoder, MageVLVisionEncoderLayer
 
-
 if __name__ == "__main__":
-    test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    torch.set_default_device(test_device)
-    import torch.nn.functional as functional
-    from transformers.models.siglip2.configuration_siglip2 import Siglip2VisionConfig
-    from transformers.models.siglip2.modeling_siglip2 import Siglip2EncoderLayer
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(device)
 
-    from ..architecture.configuration_mage_vl import MageVLConfig, MageVLVisionConfig
+    import importlib.util
+    import sys
+    import types
+    from pathlib import Path
 
-    torch.manual_seed(61)
+    from ..architecture.configuration_mage_vl import MageVLVisionConfig
+
+    official_snapshot = Path(__file__).resolve().parents[5] / "checkpoints" / "microsoft-Mage-VL-d88b153"
+    official_package_name = "_mage_vl_official_d88b153"
+    official_package = types.ModuleType(official_package_name)
+    official_package.__path__ = [str(official_snapshot)]
+    sys.modules[official_package_name] = official_package
+    official_name = f"{official_package_name}.modeling_mage_vl"
+    official_spec = importlib.util.spec_from_file_location(official_name, official_snapshot / "modeling_mage_vl.py")
+    if official_spec is None or official_spec.loader is None:
+        raise RuntimeError(f"Unable to load official Mage-VL source: {official_snapshot}")
+    official = importlib.util.module_from_spec(official_spec)
+    sys.modules[official_name] = official
+    official_spec.loader.exec_module(official)
+
+    # 聚合入口对照完整视觉编码器；单个算子的基线在各自模块中测试。
     config = MageVLVisionConfig(
         hidden_size=64,
         intermediate_size=128,
-        num_hidden_layers=1,
+        num_hidden_layers=2,
         num_attention_heads=2,
-        num_channels=3,
-        image_size=8,
-        patch_size=2,
-        out_hidden_size=32,
-        spatial_merge_size=2,
-        layer_norm_eps=1e-6,
-        layer_norm_type="layer_norm",
         attention_dropout=0.0,
     )
-
-    # Check the three-axis RoPE against its explicit frequency-table definition.
-    rope = VisionRotaryEmbedding(config).eval()
-    grid_thw = torch.tensor([[2, 2, 2]])
-    positions = torch.tensor(
-        [[t, h, w] for t in range(2) for h in range(2) for w in range(2)], dtype=torch.long
+    baseline_config = official.MageVLVisionConfig(
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        attention_dropout=0.0,
     )
-    unit = rope.half // 16
-    inv_t = 1.0 / (config.rope_theta ** (torch.arange(4 * unit).float() / (4 * unit)))
-    inv_h = 1.0 / (config.rope_theta ** (torch.arange(6 * unit).float() / (6 * unit)))
-    inv_w = 1.0 / (config.rope_theta ** (torch.arange(6 * unit).float() / (6 * unit)))
-    baseline_rope = torch.cat(
+    config._attn_implementation = "eager"
+    baseline_config._attn_implementation = "eager"
+    baseline = official.MageVLVisionEncoder(baseline_config).to(device).eval()
+    enhanced = MageVLVisionEncoder(config).to(device).eval()
+    enhanced.load_state_dict(baseline.state_dict(), strict=True)
+    hidden_states = torch.randn(1, 8, config.hidden_size, device=device)
+    grid_thw = torch.tensor([[2, 2, 2]], device=device)
+    frequencies = official.VisionRotaryEmbedding(baseline_config)(grid_thw)
+    rotary_pos_emb = torch.cat((frequencies, frequencies), dim=-1).unsqueeze(0)
+    cu_seqlens = torch.tensor([0, 4, 8], dtype=torch.int32, device=device)
+    call_kwargs = {
+        "rotary_pos_emb": rotary_pos_emb,
+        "output_hidden_states": True,
+        "return_dict": True,
+        "cu_seqlens": cu_seqlens,
+        "max_seqlen": 4,
+    }
+    components = [
         (
-            torch.outer(positions[:, 0].float(), inv_t),
-            torch.outer(positions[:, 1].float(), inv_h),
-            torch.outer(positions[:, 2].float(), inv_w),
+            "Mage-VL vision encoder aggregate",
+            baseline,
+            enhanced,
+            (hidden_states,),
+            (hidden_states,),
+            call_kwargs,
+            call_kwargs,
+            "last_hidden_state",
+            "last_hidden_state",
+            1e-6,
+            1e-6,
+            True,
         ),
-        dim=-1,
-    )
-    engine_rope = rope(grid_thw)
-    torch.testing.assert_close(engine_rope, baseline_rope, atol=1e-6, rtol=1e-6)
-    torch.testing.assert_close(rope.forward_from_positions(positions), baseline_rope, atol=1e-6, rtol=1e-6)
-    print("==========engine===========")
-    print(f"VisionRotaryEmbedding={engine_rope[0, :4].tolist()}")
-    print("==========baseline==========")
-    print(f"three-axis frequency table={baseline_rope[0, :4].tolist()}")
-
-    # Verify patch projection order with the equivalent convolution operation.
-    embeddings = MageVLVisionEmbeddings(config).eval()
-    pixel_patches = torch.randn(4, config.num_channels, config.patch_size, config.patch_size)
-    with torch.inference_mode():
-        engine_embeddings = embeddings(pixel_patches)
-        baseline_embeddings = functional.conv2d(
-            pixel_patches,
-            embeddings.patch_embedding.weight,
-            bias=None,
-            stride=config.patch_size,
-        ).view(-1, config.hidden_size)
-    torch.testing.assert_close(engine_embeddings, baseline_embeddings, atol=1e-6, rtol=1e-6)
-    print("==========engine===========")
-    print(f"MageVLVisionEmbeddings={engine_embeddings[0, :4].tolist()}")
-    print("==========baseline==========")
-    print(f"conv2d patch projection={baseline_embeddings[0, :4].tolist()}")
-
-    # Compare the packed eager attention and full encoder block with Transformers SigLIP2.
-    siglip_config = Siglip2VisionConfig(
-        hidden_size=config.hidden_size,
-        intermediate_size=config.intermediate_size,
-        num_hidden_layers=1,
-        num_attention_heads=config.num_attention_heads,
-        hidden_act=config.hidden_act,
-        layer_norm_eps=config.layer_norm_eps,
-        attention_dropout=0.0,
-    )
-    siglip_config._attn_implementation = "eager"
-    baseline_layer = Siglip2EncoderLayer(siglip_config).eval()
-    engine_layer = MageVLVisionEncoderLayer(config).eval()
-    with torch.no_grad():
-        engine_layer.layer_norm1.load_state_dict(baseline_layer.layer_norm1.state_dict(), strict=True)
-        engine_layer.layer_norm2.load_state_dict(baseline_layer.layer_norm2.state_dict(), strict=True)
-        engine_layer.mlp.load_state_dict(baseline_layer.mlp.state_dict(), strict=True)
-        engine_layer.self_attn.qkv.weight.copy_(
-            torch.cat(
-                (
-                    baseline_layer.self_attn.q_proj.weight,
-                    baseline_layer.self_attn.k_proj.weight,
-                    baseline_layer.self_attn.v_proj.weight,
-                ),
-                dim=0,
-            )
-        )
-        engine_layer.self_attn.qkv.bias.copy_(
-            torch.cat(
-                (
-                    baseline_layer.self_attn.q_proj.bias,
-                    baseline_layer.self_attn.k_proj.bias,
-                    baseline_layer.self_attn.v_proj.bias,
-                ),
-                dim=0,
-            )
-        )
-        engine_layer.self_attn.proj.load_state_dict(baseline_layer.self_attn.out_proj.state_dict(), strict=True)
-    hidden_states = torch.randn(2, 5, config.hidden_size)
-    normalized = engine_layer.layer_norm1(hidden_states)
-    with torch.inference_mode():
-        engine_attention, _ = engine_layer.self_attn(normalized)
-        baseline_attention = baseline_layer.self_attn(normalized)[0]
-        engine_output = engine_layer(hidden_states)[0]
-        baseline_output = baseline_layer(hidden_states, attention_mask=None)
-    torch.testing.assert_close(engine_attention, baseline_attention, atol=1e-5, rtol=1e-5)
-    torch.testing.assert_close(engine_output, baseline_output, atol=1e-5, rtol=1e-5)
-    print("==========engine===========")
-    print(f"MageVLVisionEncoderLayer={engine_output[0, 0, :4].tolist()}")
-    print("==========baseline==========")
-    print(f"Siglip2EncoderLayer={baseline_output[0, 0, :4].tolist()}")
-
-    # Check the patch merger against explicit normalization, flattening, and projection.
-    merger = MageVLVisionPatchMerger(
-        dim=config.out_hidden_size,
-        context_dim=16,
-        spatial_merge_size=2,
-        layer_norm_eps=config.layer_norm_eps,
-    ).eval()
-    patch_group = torch.randn(4, 16)
-    with torch.inference_mode():
-        engine_merged = merger(patch_group)
-        normalized_group = functional.layer_norm(
-            patch_group,
-            (16,),
-            merger.ln_q.weight,
-            merger.ln_q.bias,
-            merger.ln_q.eps,
-        ).reshape(1, 64)
-        baseline_merged = functional.linear(normalized_group, merger.mlp[0].weight, merger.mlp[0].bias)
-        baseline_merged = functional.gelu(baseline_merged)
-        baseline_merged = functional.linear(baseline_merged, merger.mlp[2].weight, merger.mlp[2].bias)
-    torch.testing.assert_close(engine_merged, baseline_merged, atol=1e-6, rtol=1e-6)
-    print("==========engine===========")
-    print(f"MageVLVisionPatchMerger={engine_merged[0, :4].tolist()}")
-    print("==========baseline==========")
-    print(f"explicit patch merge={baseline_merged[0, :4].tolist()}")
-    print(f"Mage-VL vision encoder modules match their Transformers/PyTorch baselines on {test_device}.")
-
-    # Bench：分别量测 RoPE、patch embedding、Attention、Encoder Layer 和 Merger。
-    with torch.inference_mode():
-        rope_bench = torch.utils.benchmark.Timer(
-            stmt="rope(grid_thw)", globals=locals()
-        ).blocked_autorange(min_run_time=0.2)
-        patch_bench = torch.utils.benchmark.Timer(
-            stmt="embeddings(pixel_patches)", globals=locals()
-        ).blocked_autorange(min_run_time=0.2)
-        attention_bench = torch.utils.benchmark.Timer(
-            stmt="engine_layer.self_attn(normalized)", globals=locals()
-        ).blocked_autorange(min_run_time=0.2)
-        encoder_layer_bench = torch.utils.benchmark.Timer(
-            stmt="engine_layer(hidden_states)", globals=locals()
-        ).blocked_autorange(min_run_time=0.2)
-        merger_bench = torch.utils.benchmark.Timer(
-            stmt="merger(patch_group)", globals=locals()
-        ).blocked_autorange(min_run_time=0.2)
-    print(f"Bench: VisionRotaryEmbedding {rope_bench}")
-    print(f"Bench: MageVLVisionEmbeddings {patch_bench}")
-    print(f"Bench: MageVLVisionAttention {attention_bench}")
-    print(f"Bench: MageVLVisionEncoderLayer {encoder_layer_bench}")
-    print(f"Bench: MageVLVisionPatchMerger {merger_bench}")
-
-    # Profile：每个视觉子组件单独开一个 profiler，便于直接比较热点。
+    ]
     profile_activities = [torch.profiler.ProfilerActivity.CPU]
-    if test_device.type == "cuda":
+    if device.type == "cuda":
         profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
-    with torch.inference_mode():
-        with torch.profiler.profile(
-            activities=profile_activities,
-            record_shapes=True,
-            profile_memory=True,
-        ) as rope_profile:
-            rope(grid_thw)
-        with torch.profiler.profile(
-            activities=profile_activities,
-            record_shapes=True,
-            profile_memory=True,
-        ) as patch_profile:
-            embeddings(pixel_patches)
-        with torch.profiler.profile(
-            activities=profile_activities,
-            record_shapes=True,
-            profile_memory=True,
-        ) as attention_profile:
-            engine_layer.self_attn(normalized)
-        with torch.profiler.profile(
-            activities=profile_activities,
-            record_shapes=True,
-            profile_memory=True,
-        ) as encoder_layer_profile:
-            engine_layer(hidden_states)
-        with torch.profiler.profile(
-            activities=profile_activities,
-            record_shapes=True,
-            profile_memory=True,
-        ) as merger_profile:
-            merger(patch_group)
-    if test_device.type == "cuda":
-        torch.cuda.synchronize(test_device)
-        profile_sort = "self_cuda_time_total"
-    else:
-        profile_sort = "self_cpu_time_total"
-    print("Profile: VisionRotaryEmbedding operators")
-    print(rope_profile.key_averages().table(sort_by=profile_sort, row_limit=10))
-    print("Profile: MageVLVisionEmbeddings operators")
-    print(patch_profile.key_averages().table(sort_by=profile_sort, row_limit=10))
-    print("Profile: MageVLVisionAttention operators")
-    print(attention_profile.key_averages().table(sort_by=profile_sort, row_limit=12))
-    print("Profile: MageVLVisionEncoderLayer operators")
-    print(encoder_layer_profile.key_averages().table(sort_by=profile_sort, row_limit=15))
-    print("Profile: MageVLVisionPatchMerger operators")
-    print(merger_profile.key_averages().table(sort_by=profile_sort, row_limit=12))
+    profile_sort = "self_cuda_time_total" if device.type == "cuda" else "self_cpu_time_total"
+
+    for (
+        component_name,
+        baseline,
+        enhanced,
+        baseline_args,
+        enhanced_args,
+        baseline_kwargs,
+        enhanced_kwargs,
+        baseline_selector,
+        enhanced_selector,
+        atol,
+        rtol,
+        compare_hidden_states,
+    ) in components:
+        baseline_output = None
+        baseline_raw_output = None
+        baseline_median = None
+        for stage, module, args, kwargs, selector in (
+            ("baseline", baseline, baseline_args, baseline_kwargs, baseline_selector),
+            ("enhanced", enhanced, enhanced_args, enhanced_kwargs, enhanced_selector),
+        ):
+            print(f"================= {stage} =================")
+            print("   test:")
+            print(f"       component={component_name}")
+            with torch.inference_mode():
+                raw_output = module(*args, **kwargs)
+            output = getattr(raw_output, selector) if isinstance(selector, str) else raw_output
+            if stage == "baseline":
+                torch.testing.assert_close(output, output, atol=atol, rtol=rtol)
+                baseline_output, baseline_raw_output = output, raw_output
+                print(f"       PASS, shape={tuple(output.shape)}, dtype={output.dtype}, device={output.device}")
+            else:
+                torch.testing.assert_close(output, baseline_output, atol=atol, rtol=rtol)
+                if compare_hidden_states:
+                    torch.testing.assert_close(
+                        tuple(raw_output.hidden_states),
+                        tuple(baseline_raw_output.hidden_states),
+                        atol=atol,
+                        rtol=rtol,
+                    )
+                max_abs_error = (output - baseline_output).abs().max().item()
+                print(f"       parity=PASS, max_abs_error={max_abs_error:.3e}, shape={tuple(output.shape)}")
+
+            print("   bench:")
+            with torch.inference_mode():
+                bench = torch.utils.benchmark.Timer(
+                    stmt="module(*args, **kwargs)",
+                    globals={"module": module, "args": args, "kwargs": kwargs},
+                ).blocked_autorange(min_run_time=0.2)
+            if stage == "baseline":
+                baseline_median = bench.median
+                print(f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}")
+            else:
+                print(
+                    f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}, speedup={baseline_median / bench.median:.3f}x"
+                )
+
+            print("   profile:")
+            with torch.inference_mode():
+                with torch.profiler.profile(
+                    activities=profile_activities,
+                    record_shapes=True,
+                    profile_memory=True,
+                ) as profile:
+                    module(*args, **kwargs)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            print(profile.key_averages().table(sort_by=profile_sort, row_limit=15))
