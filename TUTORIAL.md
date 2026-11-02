@@ -1,304 +1,721 @@
-# 新模型接入教程与工程规范
+# 新模型接入流程
 
-本教程以一个固定版本的 Hugging Face 纯文字模型为例，讲解如何把新模型接入本仓库，并说明模型包、依赖、配置、Runtime 和发布验收的工程规范。对 Hub 模型，应固定上游 revision；对组织内部制品，应记录不可变制品版本或等效校验信息。模型能力按实际需要实现；Gateway 和 Live 媒体服务是可选发布路径。
+按本顺序操作：先用 Hugging Face 原生实现完成 **Test、Bench、Profile**，再接入 Inference，最后验收服务。本文用仓库现有的 **Qwen3-0.6B** 说明实际目录、配置和命令；VLM、视频模型按能力增加组件与测试。
 
-教程以 [`Qwen/Qwen2.5-0.5B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/tree/c89bee90d9f811437d9735454613c35b4a3c4dc8) 说明纯文字 `standard` profile。该模型仅作为可复现的讲解样例，不表示它已经登记为仓库模型，也不表示示例中的资源参数适合所有 GPU。模型快照包含模型配置、Safetensors、Tokenizer 和 chat template；ONNX 目录通过下载过滤排除。该 revision 对应的[固定版模型卡](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/blob/c89bee90d9f811437d9735454613c35b4a3c4dc8/README.md)说明其为 causal language model，并提供 Transformers 使用方式。
+## 1. 判断接入方式
 
-## 目标、适用范围与规范用语
-
-- **必须**：任何新模型都要完成的要求，例如唯一 alias、模型内配置、Runtime 工厂、独立依赖 extra 和静态预检。
-- **可选**：仅当模型真实提供相应能力时实现，例如 `tool_calling.py`、`live.py`、图片或视频编码器。
-- **standard profile**：输入为纯文字、模型符合标准 causal LM/Cache 接口且能复用项目共用 Runner 和输入处理器的模型。
-- **custom profile**：模型需要自定义拓扑、权重映射、Cache、模态预处理、增量输出或能力适配的模型。
-
-本指南默认从仓库根目录和 `inference` Conda 环境执行 WSL/Linux Bash 命令。将模型部署到其他 OS、Python、PyTorch 或 CUDA 组合时，先重做对应环境验证。不要把参考配置直接视为生产容量承诺。
-
-## 接入流程概览
-
-| 步骤 | 产物 | 进入下一步骤的条件 |
+| 模型 | 接入方式 | 必须验证 |
 | --- | --- | --- |
-| 模型评估与定版 | 上游 `repo_id`、完整 revision、license/使用约束、模态与架构结论 | 确认模型来源、用途和硬件依赖可接受 |
-| 权重下载 | `checkpoints/<snapshot>/` 完整本地快照 | 必需配置、权重、Tokenizer/Processor 文件均存在 |
-| 模型包与依赖 | `src/inference/models/<package_name>/` 和对应 extra | Launcher 能发现模型，安装范围只包含目标模型依赖 |
-| Runtime 与配置 | manifest、inference/network 配置、Runner/Adapter | 静态预检通过，能力声明与实现一致 |
-| 运行时验证 | 健康检查、非流式和 SSE 请求证据 | 模型成功加载，输出、结束原因、用量和流终止符合预期 |
-| 可选发布集成 | Gateway 路由；如使用 Live，再加媒体配置 | 认证、alias、路由和声明能力均有端到端证据 |
+| 纯文本 | `standard`（模型符合标准 Causal LM/Cache 行为）；否则 `custom` | Tokenizer、生成、Prefill/Decode、Cache |
+| VLM / 视频 | `custom` | 文本及对应图片、视频输入；声明支持的每项能力 |
 
-**控制原则：**某一步失败时先修复该步骤，不要通过临时改 alias、关闭校验、伪造能力或绕过配置来继续启动。
+`model.yml` 中每个能力都必须有实现和测试；不支持的能力设为 `false`。
 
-## 示例模型的上游定版
+## 2. 固定模型并下载权重
 
-本示例固定 `Qwen/Qwen2.5-0.5B-Instruct` 的完整 commit `c89bee90d9f811437d9735454613c35b4a3c4dc8`，避免 `main` 移动后同一教程解析到不同权重和配置。Hugging Face Hub 支持按 revision 下载整个 snapshot，并使用 `ignore_patterns` 排除文件；revision 应使用完整 commit，而不是短哈希或可移动分支。[官方 snapshot 下载说明](https://huggingface.co/docs/huggingface_hub/en/guides/download)
-
-| 定版项目 | 示例值 | 接入前要确认的内容 |
-| --- | --- | --- |
-| Hugging Face `repo_id` | `Qwen/Qwen2.5-0.5B-Instruct` | 来源可信、仓库类型为 model、访问权限满足部署要求 |
-| revision | `c89bee90d9f811437d9735454613c35b4a3c4dc8` | 固定完整 40 位 commit；配置、权重、Tokenizer 来自同一 snapshot |
-| 模型类型 | causal decoder-only text model | `AutoModelForCausalLM` 可识别，模型返回 logits 和可复用 Cache |
-| 权重与 Tokenizer | Safetensors、Tokenizer JSON/config、Chat Template | 所有必要文件均来自固定 snapshot，离线加载不依赖 Hub |
-| license | Apache-2.0（以[固定 revision 的 LICENSE](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/blob/c89bee90d9f811437d9735454613c35b4a3c4dc8/LICENSE)为准） | 使用方确认 license、数据政策和组织审批适用于目标场景 |
-| Transformers 版本 | `5.19.0`（本项目示例依赖锁定） | 上游模型卡建议使用较新的 Transformers；升级该 pin 前必须验证模型加载、生成、Cache 与 SSE 回归 |
-
-模型加载采用 Transformers 的 `from_pretrained()` Auto 类，具体类由模型配置识别；上游 Qwen 模型需要模型自带的 Chat Template，而不是由项目自行拼接特殊 token。[Transformers 模型加载](https://huggingface.co/docs/transformers/en/models)、[Chat Template](https://huggingface.co/docs/transformers/main/chat_templating)、[Qwen 官方模型卡](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct)
-
-## 导航
-
-- [模型包目录标准](#模型包目录标准)
-- [模型架构与组件职责](#目录和组件各自负责什么)
-- [选择 standard 或 custom profile](#决定使用-standard-还是-custom)
-- [三种模型包形态](#三种模型包形态)
-- [请求数据流](#请求如何经过这些目录)
-- [模块级调试和测试放置位置](#模块级调试和测试放哪里)
-- [步骤 0：环境与硬件基线](#步骤-0环境与硬件基线)
-- [步骤 1：下载固定 revision](#步骤-1下载固定-revision)
-- [步骤 2：创建模型包](#步骤-2创建模型包)
-- [步骤 3：登记运行依赖](#步骤-3登记运行依赖)
-- [步骤 4：声明模型插件与 API 能力](#步骤-4声明模型插件与-api-能力)
-- [步骤 5：配置模型、Engine 和网络](#步骤-5配置模型engine-和网络)
-- [步骤 6：组装 Runtime](#步骤-6组装-runtime)
-- [步骤 7：静态发现与配置预检](#步骤-7静态发现与配置预检)
-- [步骤 8：启动 Inference 并验证 API](#步骤-8启动-inference-并验证-api)
-- [步骤 9：可选的 Gateway 发布](#步骤-9可选的-gateway-发布)
-- [验收口径与发布交接](#验收口径与发布交接)
-- [故障处理与回退](#故障处理与回退)
-- [custom profile 的接入要求](#custom-profile-的接入要求)
-- [官方数据](#官方数据)
-
-## 模型包目录标准
-
-每个模型都放在 `src/inference/models/<package_name>/` 下。目录名使用 Python 包名格式（小写字母和下划线）；公开 alias、Hugging Face `repo_id` 与目录名各自独立。Launcher 通过每个模型的 `configs/model.yml` 发现模型，不需要在共用 API、Engine 或 Launcher 中增加模型名称分支。
-
-### 每个模型都要有的骨架
-
-```text
-src/inference/models/<package_name>/
-├── __init__.py                 # 让模型目录成为可导入的 Python 包
-├── runtime.py                  # 必须：create_runtime() 连接模型 Runner/Adapter 与共用 Worker
-├── example.py                  # 必须：最小可运行示例；文字模型默认展示流式输出
-├── requirements.txt            # 必须：该模型单独安装所需的 Python 依赖
-└── configs/                    # 必须：模型自己的配置，不从其他模型目录借配置
-    ├── model.yml                # 必须：alias、profile、工厂路径、API 能力
-    ├── inference.yml            # 必须：模型 revision、权重路径、dtype、Engine 等运行参数
-    └── network.yml              # 必须：该模型 Inference 服务监听地址
-```
-
-`requirements.txt` 通过 `src/inference/pyproject.toml` 中同名的独立 extra 注册。例如目录名为 `qwen2_5_0_5b`，extra 名也用 `qwen2_5_0_5b`。这样不会因为安装一个模型而连带安装其他模型的专属依赖。开发环境可用 editable 安装；发布环境应构建并安装带目标 extra 的 wheel，不应依赖源码目录或 editable link。PyTorch/CUDA 是环境级依赖，应按目标机器单独准备，不要在模型 extra 中意外替换 CUDA 版 PyTorch。
-
-本项目要求每个模型保留 `example.py`，但模型计算组件只按实际职责增加。**目录名统一，目录数量按模型需要**：没有自定义模型拓扑就不建 `model/`；没有自定义算子就不建 `layers/`；复用共用 Runner 和 Processor 时不建空的 `components/`。不要为了看起来整齐创建空模块，也不要把单模型逻辑放入共用 `engine/` 或 `network/`。
-
-### 目录和组件各自负责什么
-
-| 文件或目录 | 放什么 | 不要放什么 |
-| --- | --- | --- |
-| `configs/` | 本模型 manifest、推理配置和网络配置；所有模型都必须有 | Python 常量、密钥、别的模型配置路径 |
-| `runtime.py` | `create_runtime()`：构造该模型 Runner 与 Adapter，并返回 `ModelRuntime`；所有模型必须有 | 模型全部计算细节、服务启动器、复制的 Scheduler/Worker |
-| `model/` | 模型结构与网络拓扑：把 embeddings、各层、norm、输出 head 按官方结构组合起来；自定义模型需要 | 请求排队、HTTP 处理、Engine 生命周期 |
-| `layers/` | 可独立检查、替换的数值计算模块，如 Attention、RoPE、MLP、RMSNorm、视觉编码层；需要自定义计算时创建 | 请求解析、Tokenizer、Cache 生命周期或模型整体拓扑 |
-| `components/` | 模型执行周边协作组件，见下表；自定义 Runtime 需要拆分这些职责时创建 | 一整个庞大的 `InputProcessor`、通用 API 路由或重复的共用 Scheduler |
-| `utils/loader.py` | 加载上游 Config/Tokenizer/Processor、读取固定 snapshot、权重 key/shape 转换；模型有专属加载流程时创建 | `max_context_tokens`、batch 大小等服务参数（这些放 YAML） |
-| `processor.py` | API 输入/输出边界的薄门面；`custom + token_ids` 模型在 manifest 配 `api.input_processor` 时使用 | 把 Tokenizer、Encoder、Decoder、图像/视频预处理、sampling 全写进一个大类 |
-| `tool_calling.py`（可选） | 把模型输出解析成项目标准 tool call，并维护流式增量解析；仅模型支持并启用工具调用时创建 | 执行外部工具。模型只提出调用，Agent/客户端负责授权和执行 |
-| `live.py`（可选） | 该模型的 Live session manager 与实时帧生成适配；仅宣告 `live_video: true` 时创建 | MediaMTX 服务本身 |
-| `example.py` | 该模型最短的可运行示例，优先展示实际流式输出；多模态模型加入一个小素材输入示例 | 大量测试矩阵或测试框架封装 |
-| `requirements.txt` | 本模型直接依赖及经过验证的版本，配合 pyproject 的同名 extra 安装 | 所有模型共用的依赖大杂烩 |
-
-`components/` 按单一职责命名。对话输入链路可拆成：
-
-| 组件 | 输入与输出 | 主要职责 |
-| --- | --- | --- |
-| `encoder.py` | 标准 chat request → 模型输入计划 | 校验/规范化消息，分离文字、图片、视频内容，准备模型需要的元信息和生成参数；不要在这里实现 Attention |
-| `tokenizer.py` | 消息/文字 → token IDs | 加载或调用该模型的词表及 Chat Template；若上游 `AutoProcessor` 同时做图像预处理，就清晰说明并复用它，不要复制上游逻辑 |
-| `decoder.py` | 完整 token ID 序列 → 最终文字 | 处理完整结果的解码规则；不持有模型权重或 KV Cache |
-| `detokenizer.py` | 单个新 token → 当前可安全显示的文字片段 | 维护请求级增量解码状态，避免把跨 token 的字节/特殊 token 错误切开 |
-| `model_runner.py` | Scheduler 的 `ScheduledWorkItem` → Worker 结果 | 执行 prefill/decode，调用模型前向，持有每个请求的生成状态与 Cache，并处理取消/结束 |
-| `adapter.py` | 共用 `ModelRuntime` 契约 ↔ 模型 Runner | 转换共用请求、采样选项、Cache 绑定与结果；对接共用 Worker，不重复实现调度器 |
-| `input_batch.py` | 多个 request 的输入计划 → 实际 batch 张量 | 只有模型真正支持合批时才创建；不能仅有文件就宣称支持 batch |
-| `sampler.py` | logits + 生成历史 + 参数 → 下一个 token | 只有模型采样行为与共用实现不同，或需要模块级分析时才创建 |
-| `paged_kv_cache.py` / `cache_manager.py` | request/block 操作 → 模型实际 Cache 状态 | 管理模型自身 Cache 的物理读写；与共用 Engine 的 block reservation 区分开 |
-
-`model/` 表示**整张模型计算图如何组成**；`layers/` 表示**图中的数值计算块**；`components/` 表示**输入、生成、Cache 和共用引擎契约的协作流程**。例如，Attention 的矩阵计算应在 `layers/attention.py`，由哪些 decoder block 按什么顺序组成网络写在 `model/<model>.py`，每个请求如何分块 prefill、更新 Cache 并把 logits 转成 Worker 结果写在 `components/model_runner.py` / `components/adapter.py`。
-
-### 决定使用 standard 还是 custom
-
-| 判断项 | standard 可复用路径 | custom 模型专属路径 |
-| --- | --- | --- |
-| 输入模态 | 纯文字 `chat_inputs: [text]` | 图片/视频、特殊消息结构或专属 Processor |
-| 模型加载 | `AutoModelForCausalLM` 可直接加载本地 snapshot | 自定义拓扑、权重 key/shape 转换、`trust_remote_code` 经过审查后必需 |
-| 生成协议 | logits + Transformers 可复用 `past_key_values`，可逐步 decode | 专属 Cache、非标准生成状态、模型输出已是 `text_delta` |
-| API 输入输出 | token IDs + 共用 `DefaultChatInputProcessor` | 模型专属 Encoder/Tokenizer/Decoder/Detokenizer 或视频/Live 方法 |
-| 实现位置 | `runtime.py` 组合共用 `StandardTextModelRunner`/Adapter | 模型包 `model/`、`layers/`、`components/`、`processor.py` 按职责实现 |
-
-Launcher 的静态检查会阻止 standard profile 宣告图片、视频上传或 Live；但静态检查无法证明模型真实的 Cache 语义。遇到一项不满足，就按 custom 设计并通过运行测试证明契约；不能把多模态数据剥掉后冒充 text-only 来通过检查。
-
-`model.yml` 中的 capability 是服务契约，不是模型卡能力的复述。每个 `true` 都要有相应处理代码和验收证据：`streaming` 必须在 SSE 返回真实增量；`tool_calling` 必须配 tool adapter 并支持声明的解析形式；`video_upload` / `live_video` 必须实现相应 Runtime 方法和限制配置。未实现时保持 `false`。
-
-### 三种模型包形态
-
-**A. 可复用 standard profile 的纯文字模型（本教程的 Qwen2.5）**只使用共用 `StandardTextModelRunner` 和 `DefaultChatInputProcessor`：
-
-```text
-qwen2_5_0_5b/
-├── __init__.py
-├── runtime.py                  # 组合共用 Runner + Adapter
-├── example.py
-├── requirements.txt
-└── configs/
-    ├── model.yml
-    ├── inference.yml
-    └── network.yml
-```
-
-这种形态**没有**模型专属 `model/`、`layers/`、`components/`、`utils/loader.py` 和 `processor.py`。模型结构与 cache 由 Transformers 提供；manifest 不填写 `api.input_processor`，Launcher 会选择共用默认处理器。若缺少 Chat Template、模型 forward 不返回可复用的 `past_key_values`，或输入不是纯文字，就不能继续套 standard。
-
-**B. 自研文字计算图的 custom 模型（参考 Qwen3）**：
-
-```text
-qwen3_0_6b/
-├── __init__.py
-├── runtime.py
-├── example.py
-├── processor.py                # API 薄门面，组合小组件
-├── tool_calling.py             # 可选：仅支持并启用工具调用时需要
-├── requirements.txt
-├── configs/
-├── model/qwen3.py              # 官方 Qwen3 网络拓扑与模型 forward
-├── layers/                     # attention.py、rope.py、layers.py 等计算块
-├── components/
-│   ├── adapter.py
-│   ├── model_runner.py
-│   ├── encoder.py
-│   ├── tokenizer.py
-│   ├── decoder.py
-│   ├── detokenizer.py
-│   ├── sampler.py
-│   ├── input_batch.py
-│   └── paged_kv_cache.py
-└── utils/loader.py             # 配置、Tokenizer 与权重加载/映射
-```
-
-Qwen3 的 `processor.py` 只组装 Encoder、Tokenizer、Decoder；真正的计算图在 `model/`、算子在 `layers/`、逐请求执行和 Cache 在 `components/`。它的 Cache 是模型内部实体 KV page；共用 Engine 负责 Scheduler 和 block reservation，两者不要混为一谈。
-
-**C. 上游多模态模型（参考 Mage-VL）**也使用同一套根目录与 `configs/`，但按实际模态增加组件：
-
-```text
-mage_vl_4b/
-├── __init__.py
-├── runtime.py
-├── example.py
-├── processor.py                # 兼容入口；具体逻辑仍在 components/
-├── live.py                     # 可选：仅声明 live_video: true 时需要
-├── requirements.txt
-├── configs/
-├── model/                      # 多模态模型与视觉/文字子网络拓扑
-├── layers/                     # 视觉与文字网络层、RoPE、Attention 等
-├── components/
-│   ├── adapter.py
-│   ├── model_runner.py
-│   ├── encoder.py
-│   ├── image_encoder.py
-│   ├── video_encoder.py
-│   ├── tokenizer.py
-│   ├── decoder.py
-│   ├── detokenizer.py
-│   ├── stepwise_generation.py
-│   ├── cache_manager.py
-│   └── component_registry.py
-└── utils/loader.py
-```
-
-Mage-VL 复用上游 `AutoProcessor` 处理文字和视觉输入，不要为了目录对称再实现一套词表或视觉预处理。`image_encoder.py`、`video_encoder.py` 和 `live.py` 只在模型真正提供这些能力时需要。可直接查看 `src/inference/models/qwen3_0_6b/` 与 `src/inference/models/mage_vl_4b/` 中对应的实现作为项目内样板。
-
-### 请求如何经过这些目录
-
-```mermaid
-flowchart LR
-    A[OpenAI chat request] --> B[API Network]
-    B --> C[processor.py 门面或共用 DefaultChatInputProcessor]
-    C --> D[components Encoder / Tokenizer]
-    D --> E[共用 Scheduler]
-    E --> F[runtime.py 创建的 ModelRuntime]
-    F --> G[components Adapter / ModelRunner]
-    G --> H[model 模型拓扑]
-    H --> I[layers Attention / RoPE / MLP]
-    G --> J[components Cache / Sampler]
-    G --> K[token_ids 或 text_delta]
-    K --> L[Decoder / Detokenizer]
-    L --> M[chat response 或 SSE]
-```
-
-`processor.py` 在 API 进程处理输入与增量输出；`runtime.py` 创建的 Runtime 在 Worker 进程执行模型。通常 Encoder/Tokenizer 在生成前准备输入，ModelRunner 执行 forward，Decoder/Detokenizer 负责完整解码或 SSE 片段。具体模块应顺着数据流组合，避免互相导入整套模型，形成循环依赖。
-
-### 模块级调试和测试放哪里
-
-`layers/` 中的计算模块应提供小尺寸、可重复的前向验证入口（适合时用 `if __name__ == "__main__":`），检查输入输出 shape、dtype、device、数值有限性，并与官方 Transformers 对应层或简化公式对照。该入口只做组件级诊断，不加载整套服务、不下载权重、不取代 `tests/` 的验收脚本。模型的集成、性能与端到端脚本仍放在 `tests/<package_name>/`，不要放到 `scripts/` 或模型包的 `components/`。
-
-### 步骤 0：环境与硬件基线
-
-以下命令在仓库根目录的 WSL/Linux Bash 中运行。PyTorch CUDA wheel 需要与本地驱动、CUDA 运行时匹配；不要让模型 extra 替你重装 PyTorch。
+以下命令在仓库根目录的 WSL/Linux Bash 中执行。推理默认使用 CUDA，仅在 CUDA 不可用时回退 CPU；CUDA OOM 应调整配置，不能当作回退条件。
 
 ```bash
 conda activate inference
-python -c "import torch; print('torch:', torch.__version__); print('cuda:', torch.cuda.is_available()); print('gpu:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU fallback')"
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
 ```
 
-环境基线应显示 `cuda: True` 和 GPU 名称。项目的 `torch_cuda` Platform 会优先使用 CUDA，仅 `torch.cuda.is_available()` 为 false 时回退到 CPU；CUDA 可用但显存不足时会报错，不会自动把模型切到 CPU。记录 GPU 型号、显存、驱动、PyTorch/CUDA 版本；没有足够显存时，先调整并重新记录模型参数，不能把 OOM 当作自动 CPU fallback。
+在模型卡确认许可证，并记录 Hub 仓库和完整 commit revision。仓库中的 Qwen3-0.6B 定版信息如下：
 
-先确保下载脚本依赖已安装。若当前环境已经有 `huggingface_hub`，此命令会保持当前版本：
-
-```bash
-python -c "import huggingface_hub; print(huggingface_hub.__version__)" || python -m pip install "huggingface_hub==1.33.0"
+```text
+repo_id: Qwen/Qwen3-0.6B
+revision: c1899de289a04d12100db370d81485cdf75e47ca
+package: qwen3_0_6b
+alias: qwen3-0.6b
 ```
 
-### 步骤 1：下载固定 revision
-
-必须从仓库根目录运行。不要用 `main` 代替 revision；固定 commit 才能保证配置、权重和 Tokenizer 来自同一版快照。
+将权重保存到被 Git 忽略的 `checkpoints/`：
 
 ```bash
 python scripts/download.py \
-  --repo-id Qwen/Qwen2.5-0.5B-Instruct \
-  --revision c89bee90d9f811437d9735454613c35b4a3c4dc8 \
-  --local-dir checkpoints/Qwen2.5-0.5B-Instruct-c89bee \
+  --repo-id Qwen/Qwen3-0.6B \
+  --revision c1899de289a04d12100db370d81485cdf75e47ca \
+  --local-dir checkpoints/Qwen3-0.6B-c1899de \
   --ignore-pattern 'onnx/**'
 ```
 
-脚本结束时应打印 `download_status: complete`。完整文件位于根目录 `checkpoints/`，该目录由 `.gitignore` 忽略，不要把权重或 Hub 缓存提交到 Git。使用 `local_dir` 时，Hub 会在目标目录创建 `.cache/huggingface/` 下载元数据；这不是模型权重，保留它能改善同一 snapshot 的续传与重复下载体验。
+确认目录中有 `config.json`、模型权重和 Tokenizer 文件。私有模型用 `HF_TOKEN` 环境变量认证，不要把令牌写入文件。
 
-对于 gated 或私有仓库，下载脚本默认从 `HF_TOKEN` 环境变量读取凭据（可用 `--token-env` 改名）。使用组织批准的 secret store 或受保护的环境配置注入 token；不要将 token 写入 YAML、脚本、命令历史、日志或 Git。[Hub 环境变量说明](https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables)
+## 3. 接入 Engine 前完成原生基线
 
-```bash
-python - <<'PY'
+此阶段只用固定 revision 的 Hugging Face 模型和 Processor，不导入项目 `inference`、不改模型实现。按 **Test → Bench → Profile** 顺序执行，并保存脚本、配置和原始结果。
+
+| 顺序 | 文件 | 要写的代码 | 通过条件 |
+| --- | --- | --- | --- |
+| 1. Test | `scripts/<package>/forward.py` | 只用 Transformers 加载本地快照；按官方 Processor/Chat Template 编码固定输入；执行一次生成；断言输出非空并打印输入 token 数、输出 token 数和设备 | 固定 revision 离线加载成功，模型确实生成内容 |
+| 2. Bench | `tests/<package>/test_performance.py` | 加载与 Test 相同的模型/输入；先预热，再同步 GPU 并多轮计时；分别记录 Prefill、Decode 或 API 总延迟、生成 token 数、吞吐和峰值显存 | 输出机器可读的数值报告；固定输入和环境可重复运行 |
+| 3. Profile | `scripts/<package>/forward.py` | 对 Prefill 和单步 Decode 分别包 PyTorch Profiler/NVTX；开启 shape、memory 采集；导出 trace 和算子表 | trace 可打开，记录包含阶段、shape、调用次数和耗时 |
+
+Bench 与 Profile 分开运行；Profiler 有采集开销，不能用 Profile 耗时作性能基准。不同模态和输入规模分别测量。
+
+### 3.1 先写 Hugging Face 原生 Test
+
+新模型的 `scripts/<package>/forward.py` 先只导入 Transformers，不导入 `inference`。以下代码可作为 Qwen3 的起步版：固定本地 snapshot、revision、prompt 和 dtype，用官方 Chat Template 编码，再确认输出非空。
+
+```python
 from pathlib import Path
 
-snapshot = Path("checkpoints/Qwen2.5-0.5B-Instruct-c89bee")
-required = ("config.json", "generation_config.json", "model.safetensors", "tokenizer.json", "tokenizer_config.json")
-missing = [name for name in required if not (snapshot / name).is_file()]
-if missing:
-    raise SystemExit(f"模型快照缺少文件：{missing}")
-print(f"模型快照检查通过：{snapshot.resolve()}")
-PY
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+ROOT = Path(__file__).resolve().parents[2]
+MODEL_PATH = ROOT / "checkpoints/Qwen3-0.6B-c1899de"
+REVISION = "c1899de289a04d12100db370d81485cdf75e47ca"
+DTYPE = torch.bfloat16
+DEVICE_MAP = 0 if torch.cuda.is_available() else "cpu"
+
+
+def forward_transformer():
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_PATH, revision=REVISION, local_files_only=True
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_PATH,
+        revision=REVISION,
+        local_files_only=True,
+        use_safetensors=True,
+        dtype=DTYPE,
+        device_map=DEVICE_MAP,
+    ).eval()
+    input_ids = tokenizer.apply_chat_template(
+        [{"role": "user", "content": "用一句话说明大型语言模型推理服务。"}],
+        tokenize=True,
+        add_generation_prompt=True,
+        enable_thinking=False,
+        return_tensors="pt",
+    ).to(model.get_input_embeddings().weight.device)
+    with torch.inference_mode():
+        output_ids = model.generate(input_ids, max_new_tokens=8, do_sample=False)
+    answer = tokenizer.decode(output_ids[0, input_ids.shape[-1]:], skip_special_tokens=True)
+    assert answer.strip(), "模型没有生成文本"
+    print(answer)
+    return model, tokenizer, input_ids
+
+
+if __name__ == "__main__":
+    model, tokenizer, input_ids = forward_transformer()
 ```
 
-文件检查只证明 snapshot 中的必要文件存在，不能证明 Transformers 能加载、GPU 兼容或生成质量符合业务要求。遇到 401/403 时，确认模型访问审批、账号权限和 `HF_TOKEN` 注入；revision 不存在时，确认使用完整 commit 哈希。本示例模型公开下载，但仍须遵守它在固定 revision 中附带的 license。
+运行前确认本地有完整权重。Test 通过条件：模型离线加载成功、Chat Template 能编码、生成文本非空。先固定 prompt、dtype、revision 与 GPU 型号，这些值后续必须用于同输入对照。
 
-### 步骤 2：创建模型包
+### 3.2 Bench：在 `test_performance.py` 单独测速度
 
-新模型包名、公开 alias 和 Hugging Face `repo_id` 是三种不同标识。本例选用：
+`test_performance.py` 是独立测试程序，不从 `scripts/` 导入 Python 代码；它从自己的 `test.yml` 读取模型快照、revision、prompt 和测量轮数。下面代码是纯文本 Transformers 基线的可运行测量主体。多模态模型还要通过对应 Processor 加载固定图片/视频，并把相同模态输入用于所有轮次。集成后在同一文件中增加 HTTP API 测量，不能把 HF 模型和 Engine 模型在同一进程中的显存峰值误当成同一条推理路径。
 
-| 标识 | 本例值 | 写在哪里 |
-| --- | --- | --- |
-| Python 包目录 | `qwen2_5_0_5b` | `src/inference/models/` |
-| 对外 alias / Inference `api.model_id` | `qwen2.5-0.5b-instruct` | `configs/model.yml` |
-| Hugging Face `repo_id` | `Qwen/Qwen2.5-0.5B-Instruct` | `configs/inference.yml` 的 `model.id` |
-| 固定 revision | `c89bee90d9f811437d9735454613c35b4a3c4dc8` | `configs/inference.yml` 的 `model.revision` |
+测速期间不要启用 Profiler。CUDA 计时前后同步；实际生成 token 数从输出形状计算，不用请求上限代替：
 
-创建目录和空的 Python 包入口：
+```python
+from pathlib import Path
+import json
+import statistics
+import time
+
+import torch
+import yaml
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+TEST_CONFIG = Path(__file__).resolve().with_name("test.yml")
+settings = yaml.safe_load(TEST_CONFIG.read_text(encoding="utf-8"))
+snapshot = (TEST_CONFIG.parent / settings["snapshot"]).resolve()
+revision = str(settings["revision"])
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+dtype = getattr(torch, settings["component"]["dtype"])
+tokenizer = AutoTokenizer.from_pretrained(snapshot, revision=revision, local_files_only=True)
+model = AutoModelForCausalLM.from_pretrained(
+    snapshot,
+    revision=revision,
+    local_files_only=True,
+    use_safetensors=True,
+    torch_dtype=dtype,
+).to(device).eval()
+messages = [{"role": "user", "content": settings["prompt"]}]
+input_ids = tokenizer.apply_chat_template(
+    messages,
+    tokenize=True,
+    add_generation_prompt=True,
+    return_tensors="pt",
+).to(device)
+max_new_tokens = int(settings["max_new_tokens"])
+warmups = int(settings["warmup_requests"])
+iterations = int(settings["iterations"])
+for _ in range(warmups):
+    with torch.inference_mode():
+        model.generate(input_ids, max_new_tokens=max_new_tokens, do_sample=False)
+if device.type == "cuda":
+    torch.cuda.synchronize(device)
+    torch.cuda.reset_peak_memory_stats(device)
+latencies, token_rates, token_counts = [], [], []
+
+for _ in range(iterations):
+    started = time.perf_counter()
+    with torch.inference_mode():
+        output_ids = model.generate(input_ids, max_new_tokens=max_new_tokens, do_sample=False)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elapsed = time.perf_counter() - started
+    generated_tokens = int(output_ids.shape[-1] - input_ids.shape[-1])
+    latencies.append(elapsed)
+    token_counts.append(generated_tokens)
+    token_rates.append(generated_tokens / elapsed)
+
+assert token_counts and min(token_counts) > 0, "模型没有生成 token"
+report = {
+    "model_alias": settings["model_alias"],
+    "revision": revision,
+    "device": str(device),
+    "warmup_requests": warmups,
+    "iterations": iterations,
+    "input_tokens": int(input_ids.shape[-1]),
+    "completion_tokens": token_counts,
+    "latency_seconds_median": statistics.median(latencies),
+    "tokens_per_second_median": statistics.median(token_rates),
+    "peak_cuda_memory_bytes": torch.cuda.max_memory_allocated(device) if device.type == "cuda" else 0,
+}
+print(json.dumps(report, ensure_ascii=False, indent=2))
+```
+
+测试 YAML 需包含 `revision` 字段，例如 `c1899de289a04d12100db370d81485cdf75e47ca`。代码输出包含模型、输入输出 token 数、median 延迟、tokens/s 和峰值显存；接入后的完整配置解析、HF/API 双路径和汇总实现见 [Qwen3 test_performance.py](tests/qwen3_0_6b/test_performance.py)。新模型按自己的模型类、Processor 和输出协议改写，不能保留 Qwen3 类型假设。
+
+集成之后，在同一 `test_performance.py` 中增加下面代码请求启动中的 Qwen3 服务；测量 HTTP 的完整请求延迟，并记录返回的生成 token 数。新模型接入前不要执行这段：
+
+```python
+import json
+import time
+from urllib.request import Request, urlopen
+
+body = {
+    "model": "qwen3-0.6b",
+    "messages": [{"role": "user", "content": "用一句话说明大型语言模型推理服务。"}],
+    "max_tokens": 32,
+    "stream": False,
+}
+request = Request(
+    "http://127.0.0.1:8011/v1/chat/completions",
+    data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+started = time.perf_counter()
+with urlopen(request, timeout=300) as response:
+    result = json.loads(response.read())
+elapsed = time.perf_counter() - started
+assert result["choices"][0]["message"]["content"]
+generated_tokens = int(result["usage"]["completion_tokens"])
+print("engine_seconds:", elapsed)
+print("engine_tokens_per_second:", generated_tokens / elapsed)
+```
+
+固定 warmup 次数、测量次数、输入长度、输出上限和并发；同时记录 Prefill/首 Token、Decode 速度及峰值显存。短 prompt 与长 prompt、不同 batch 分开测，不把不同配置的结果放在同一组比较。
+
+### 3.3 Profile：在 `forward.py` 分开采 Prefill 和 Decode
+
+在 `scripts/<package>/forward.py` 的 `forward_transformer()` 中，独立采集 Transformers Prefill 和 Decode；接入后在 `forward_inference()` 对 Inference 执行同样输入。先对完整 prompt 做 Prefill 并保留 Transformers Cache，再用刚产生的一个 token 做 Decode。以下代码用于说明采集边界；完整版本还要在文件顶部导入 `torch`、定义 `TRACE_DIR` 并先创建目录。仓库可直接运行的实现见 [Qwen3 forward.py](scripts/qwen3_0_6b/forward.py)：
+
+```python
+TRACE_DIR = ROOT / "artifacts/qwen3_0_6b/traces"
+TRACE_DIR.mkdir(parents=True, exist_ok=True)
+activities = [torch.profiler.ProfilerActivity.CPU]
+if torch.cuda.is_available():
+    activities.append(torch.profiler.ProfilerActivity.CUDA)
+
+with torch.profiler.profile(
+    activities=activities, record_shapes=True, profile_memory=True
+) as prefill_profile:
+    with torch.inference_mode():
+        prefill = model(input_ids=input_ids, use_cache=True, return_dict=True)
+next_token = prefill.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+prefill_profile.export_chrome_trace(str(TRACE_DIR / "transformers-prefill.json"))
+
+decode_ids = torch.cat((input_ids, next_token), dim=-1)
+decode_inputs = model.prepare_inputs_for_generation(
+    decode_ids,
+    past_key_values=prefill.past_key_values,
+    attention_mask=torch.ones_like(decode_ids),
+    use_cache=True,
+)
+with torch.profiler.profile(
+    activities=activities, record_shapes=True, profile_memory=True
+) as decode_profile:
+    with torch.inference_mode():
+        decode = model(**decode_inputs, return_dict=True)
+decode_profile.export_chrome_trace(str(TRACE_DIR / "transformers-decode.json"))
+for phase, profile in (("prefill", prefill_profile), ("decode", decode_profile)):
+    sort_key = "self_cuda_time_total" if torch.cuda.is_available() else "self_cpu_time_total"
+    print(phase, profile.key_averages(group_by_input_shape=True).table(sort_by=sort_key, row_limit=20))
+```
+
+Bench 和 Profile 必须分开；Profiler 耗时不能当作基准。模型负责人还要决定是否用 Nsight Systems 查 CPU/GPU 时间线、用 Nsight Compute 分析热点 Kernel，并保留采集命令、输入 shape 和原始报告。
+
+写入 `analysis.py` 的原始 JSON 应保留可自动生成 XLSX 的数值字段，至少有运行环境、实现名称、阶段和每个算子的 shape/调用次数/耗时/显存。例如：
+
+```json
+{
+  "run": {
+    "model_alias": "qwen3-0.6b",
+    "revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+    "gpu_name": "GPU name",
+    "dtype": "torch.bfloat16",
+    "batch_size": 1,
+    "query_tokens": 128,
+    "kv_tokens": 129
+  },
+  "operator_records": [
+    {
+      "implementation": "transformers",
+      "phase": "prefill",
+      "operator": "aten::linear",
+      "input_shapes": [[1, 128, 1024], [1024, 1024]],
+      "call_count": 1,
+      "self_cuda_time_total_us": 123.4,
+      "self_cuda_memory_usage_bytes": 4096
+    }
+  ]
+}
+```
+
+示例数值只说明字段类型，实际值必须由测量脚本写出。`analysis.py` 从这些记录映射到 XLSX 列；问题、方案、效果只写在 Markdown，不写进机器数据表。
+
+### 3.4 接入后增加 Inference 路径
+
+模型接入并通过组件测试后，才在同一个 `forward.py` 加入 `forward_inference()`。两条路径必须接收同一份 `input_ids`；Prefill 比较最后位置 logits，Decode 用相同的首 token 和 Cache 长度比较 logits。项目配置必须先指向 `scripts/<package>/` 下的本地副本，再导入读取配置的模型模块：
+
+```python
+import os
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+CONFIG_PATH = ROOT / "scripts/qwen3_0_6b/inference.yml"
+NETWORK_CONFIG_PATH = ROOT / "scripts/qwen3_0_6b/network.yml"
+MANIFEST_PATH = ROOT / "scripts/qwen3_0_6b/model.yml"
+os.environ["INFERENCE_PROJECT_ROOT"] = str(ROOT)
+os.environ["INFERENCE_MODEL_ALIAS"] = "qwen3-0.6b"
+os.environ["INFERENCE_MODEL_MANIFEST"] = str(MANIFEST_PATH)
+os.environ["INFERENCE_CONFIG"] = str(CONFIG_PATH)
+os.environ["INFERENCE_NETWORK_CONFIG"] = str(NETWORK_CONFIG_PATH)
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+# 配置环境后，在模块顶部导入模型 Runtime。
+from inference.models.qwen3_0_6b.runtime import create_runtime
+```
+
+Qwen3 的 Inference 核心调用如下，完整配置和指标收集见 [`forward.py`](scripts/qwen3_0_6b/forward.py)：
+
+```python
+def forward_inference():
+    runtime = create_runtime()
+    try:
+        runtime.load()
+        runner = runtime.model_runner
+        token_count = int(INPUT_IDS_CPU.shape[-1])
+        block_size = runner.cache.block_size_tokens
+        block_count = (token_count + 1 + block_size - 1) // block_size
+        if block_count > runner.cache.num_blocks:
+            raise ValueError("prompt plus one decode token exceeds KV page capacity")
+        request_id = "qwen3-forward-analysis"
+        block_table = tuple(range(block_count))
+        runner.cache.bind(request_id, block_table)
+        input_ids = INPUT_IDS_CPU.to(runner.input_device)
+
+        with torch.inference_mode():
+            prefill_logits = runner.model.forward_batch(
+                input_ids,
+                token_lengths=(token_count,),
+                position_offsets=(0,),
+                request_ids=(request_id,),
+                block_tables=(block_table,),
+                cache=runner.cache,
+            )
+            next_token = TRANSFORMERS_NEXT_TOKEN.to(runner.input_device)
+            decode_logits = runner.model.forward_batch(
+                next_token,
+                token_lengths=(1,),
+                position_offsets=(token_count,),
+                request_ids=(request_id,),
+                block_tables=(block_table,),
+                cache=runner.cache,
+            )
+        runner.cache.release(request_id)
+        return prefill_logits, decode_logits
+    finally:
+        runtime.close()
+```
+
+启动前把 `INFERENCE_CONFIG`、`INFERENCE_NETWORK_CONFIG`、`INFERENCE_MODEL_MANIFEST` 指向 `scripts/<package>/` 下的副本；不能让分析脚本依赖别的模型目录。实际脚本还要分别对两个阶段采集 Profiler/NVTX，并校验 logits 与 Transformers 基线的差值。
+
+**Test、Bench、Profile 脚本由模型接入负责人编写和维护；项目不会自动生成。** `forward.py` 在接入前测 Hugging Face 基线，接入后再增加上面的 Inference 路径；负责人固定工作负载、预热、计时和采集范围，并选择配置 PyTorch Profiler、Nsight Systems 或 Nsight Compute。`analysis.py` 从原始数值 JSON/Profiler CSV 生成 XLSX；结论记录在 `analysis/<package>/analysis.md`，简要说明问题、方案和效果。XLSX 数据必须来自脚本生成的测量值，不手工填入结论文字。
+
+脚本与配置放在独立目录，不从 `src/` 读取配置：
+
+```text
+scripts/<package>/
+├── forward.py
+├── analysis.py
+├── model.yml
+├── inference.yml
+└── network.yml
+```
+
+新模型接入前，`forward.py` 只运行 Hugging Face 路径。接入后再增加 Inference 路径，与基线使用相同输入对照。仓库中已集成的 Qwen3 示例可这样运行：
 
 ```bash
-mkdir -p src/inference/models/qwen2_5_0_5b/configs
-touch src/inference/models/qwen2_5_0_5b/__init__.py
+python scripts/qwen3_0_6b/forward.py
+python scripts/qwen3_0_6b/analysis.py --input artifacts/qwen3-0.6b-forward.json
 ```
 
-把 `src/inference/models/qwen2_5_0_5b/__init__.py` 写成模型包的统一 Engine Client 入口：
+`analysis.py` 默认将 XLSX 写入 `analysis/qwen3_0_6b/analysis.xlsx`。
+
+## 4. 建立模型包
+
+模型代码放在 `src/inference/models/<package>/`。新建模型包时，先从仓库根目录创建必需目录和入口文件：
+
+```bash
+PACKAGE=my_model
+mkdir -p "src/inference/models/$PACKAGE/configs" "scripts/$PACKAGE" "tests/$PACKAGE" "analysis/$PACKAGE"
+touch "src/inference/models/$PACKAGE/__init__.py" \
+      "src/inference/models/$PACKAGE/runtime.py" \
+      "src/inference/models/$PACKAGE/example.py" \
+      "src/inference/models/$PACKAGE/requirements.txt" \
+      "scripts/$PACKAGE/forward.py" \
+      "scripts/$PACKAGE/analysis.py" \
+      "tests/$PACKAGE/test.yml" \
+      "tests/$PACKAGE/test_components.py" \
+      "tests/$PACKAGE/test_performance.py" \
+      "tests/$PACKAGE/test_end2end.py" \
+      "analysis/$PACKAGE/analysis.md"
+cp scripts/qwen3_0_6b/model.yml scripts/qwen3_0_6b/inference.yml scripts/qwen3_0_6b/network.yml "scripts/$PACKAGE/"
+cp src/inference/models/qwen3_0_6b/configs/model.yml \
+   src/inference/models/qwen3_0_6b/configs/inference.yml \
+   src/inference/models/qwen3_0_6b/configs/network.yml \
+   "src/inference/models/$PACKAGE/configs/"
+cp tests/qwen3_0_6b/test.yml "tests/$PACKAGE/"
+```
+
+这些是 Qwen3 配置模板；必须改模型 ID、revision、alias、模块工厂、权重路径、网络端口和测试输入。不要把 Qwen3 专属模型结构复制成另一个架构的实现。只在确实要新增的子目录中写入组件文件。
+
+下面是仓库现有 Qwen3-0.6B 的完整结构；其中模型拓扑、计算层、执行组件各自独立：
+
+```text
+src/inference/models/qwen3_0_6b/
+├── __init__.py
+├── runtime.py
+├── example.py
+├── requirements.txt
+├── processor.py
+├── tool_calling.py
+├── configs/
+│   ├── model.yml
+│   ├── inference.yml
+│   └── network.yml
+├── model/
+│   └── qwen3.py
+├── layers/
+│   ├── attention.py
+│   ├── layers.py
+│   └── rope.py
+├── components/
+│   ├── adapter.py
+│   ├── decoder.py
+│   ├── detokenizer.py
+│   ├── encoder.py
+│   ├── input_batch.py
+│   ├── model_runner.py
+│   ├── paged_kv_cache.py
+│   ├── sampler.py
+│   └── tokenizer.py
+└── utils/
+    └── loader.py
+```
+
+新模型目录名换成自己的 `<package>`。`tool_calling.py`、VLM 的图像/视频 Encoder、`live.py` 都按能力添加；没有实现的能力不要声明为 `true`。不要为了凑目录创建空文件。
+
+Qwen3 的实际拆分是：`model/qwen3.py` 组装网络；`layers/` 实现 Attention、RoPE 等计算；`components/` 分别放 Tokenizer、Encoder、Decoder/Detokenizer、Sampler、KV Cache、Runner 和 Adapter；`processor.py` 适配 API 输入输出，`tool_calling.py` 解析工具调用。新模型按需要选取组件，不要复制不支持的能力。
+
+各文件不是空壳；需要实现的职责和对应代码入口如下：
+
+| 文件 | 要写的代码 | Qwen3 实现 / 验收重点 |
+| --- | --- | --- |
+| `utils/loader.py` | 从固定 snapshot 读取官方 Config、Tokenizer 和 Safetensors，并校验权重 key/shape | [loader.py](src/inference/models/qwen3_0_6b/utils/loader.py)：不能静默漏载权重 |
+| `model/qwen3.py` | 按官方层数和维度组装 Embedding、Decoder Layer、Norm、LM Head；实现带 Cache 的 forward | [qwen3.py](src/inference/models/qwen3_0_6b/model/qwen3.py)：输出 logits 与 HF 对照 |
+| `layers/attention.py` | GQA 的 Q/K/V 投影、Q/K Norm、RoPE、因果注意力和 KV 读写 | [attention.py](src/inference/models/qwen3_0_6b/layers/attention.py)：覆盖 Prefill、单 token Decode、不同 KV 长度 |
+| `layers/rope.py`、`layers/layers.py` | RoPE、RMSNorm、MLP 等数学算子 | 对照 Transformers 对应层；检查 dtype、shape、误差 |
+| `components/paged_kv_cache.py` | 物理 KV pages 的分配、写入、读取、释放和 block table 映射 | 多请求隔离、边界、变长 Prefill 和 Decode |
+| `components/model_runner.py` | 加载权重；实现请求状态、Prefill、Decode、采样、完成/取消和资源清理 | [model_runner.py](src/inference/models/qwen3_0_6b/components/model_runner.py)：遵守 Engine 传入的阶段和 block table |
+| `components/adapter.py` | 把 Engine 的请求/调度项转换成模型 Runner 操作，再把结果转换回共用类型 | [adapter.py](src/inference/models/qwen3_0_6b/components/adapter.py)：校验 alias、token 数和 finish reason |
+| `components/tokenizer.py`、`encoder.py` | 应用 Chat Template、整理消息、工具 schema、采样参数和上下文长度 | tokenizer 输出 IDs；encoder 输出 `PreparedChatInput` |
+| `components/decoder.py`、`detokenizer.py` | 完整解码及增量解码，支持逐 token SSE | [decoder.py](src/inference/models/qwen3_0_6b/components/decoder.py)：分片拼接后与完整 decode 一致 |
+| `processor.py`、`tool_calling.py` | 组合输入/输出组件；把模型工具格式解析为标准 Tool Call | 实现 Processor 契约；只解析和校验，不执行工具 |
+
+### 4.1 按依赖顺序逐个实现组件
+
+不要先写一个大 `forward()` 再把代码拆散。按下面顺序实现：低层张量运算先通过数值对照，模型前向再复用这些层，最后才接调度和 API。每个代码文件要有明确输入、输出和失败条件；不能只建空类或用 `pass` 占位。
+
+| 顺序 | 文件 | 必须实现的代码 | 先做的局部验收 |
+| --- | --- | --- | --- |
+| 1 | `layers/rope.py`、`layers/layers.py` | RoPE 的频率缓存和旋转；RMSNorm 的归一化；MLP 的 gate/up/down 投影及激活；构造参数从模型 Config 读取 | 输入输出 shape 不变、dtype/device 不变、值有限；与 Transformers 对应层共享权重后 `assert_close` |
+| 2 | `layers/attention.py` | Q/K/V 投影和 head reshape；Q/K norm（若模型有）；RoPE；GQA/MQA head 映射；causal mask；Prefill/Decode 分支；按层读写 Cache | Prefill 的每个 token 只读可见历史；Decode query 长度为 1；Cache 的逻辑长度、物理 page 写入位置正确；对比 HF attention 输出 |
+| 3 | `components/paged_kv_cache.py` | 分配固定形状的 K/V page；维护 request 到 block table 映射；支持 bind/extend/write/read/release；检查层号、偏移和 page 容量 | 写入后读回相同数据；跨 page 边界正确；两个 request 互不污染；释放后可重新分配 |
+| 4 | `model/<model>.py` | 从 Config 构造 embedding、N 层 decoder、final norm 和 LM head；实现单批次 `forward_batch`；将 token 长度、位置偏移、request ID、block table 和 Cache 传至每一层 | HF 与自有实现加载同一权重；分别对比 Prefill logits、单 token Decode logits；检查 batch 元数据错误会明确报错 |
+| 5 | `utils/loader.py` | 读取本模型配置和本地 snapshot；创建模型结构；逐个加载 Safetensors；校验 missing/unexpected key、shape、dtype；加载 Tokenizer/Processor | 加载权重报告没有未解释的缺失或多余 key；参数总量、设备和 dtype 符合配置 |
+| 6 | `components/sampler.py`、`model_runner.py` | logits 按 sampling 参数处理并选 token；Runner 管每个 request 的输入、生成 token、Prefill 进度、Cache 长度、停止条件、取消和资源释放 | greedy 输出可复现；EOS/max tokens 正确结束；取消请求后 Cache 被释放；Prefill chunk 与连续 Prefill 等价 |
+| 7 | `components/adapter.py`、`processor.py` | Adapter 将 Engine 的生命周期/调度操作转成 Runner 调用；Processor 在 API 边界解析请求并构造 `PreparedChatInput`，负责完整与增量解码 | alias/参数错误返回明确的 4xx；流式 delta 拼接等于完整 decode；完成、取消都清理 request 状态 |
+| 8 | `runtime.py`、`__init__.py`、`example.py` | Runtime 组合 Runner 和 Adapter；包入口提供 Engine Client 工厂；example 展示可复制的 Python 用法和流式输出 | `inference validate --model <alias>` 通过；example 能实际生成并在结束时关闭 Engine |
+
+#### 模型计算层必须遵守的前向接口
+
+以 Qwen3 为例，模型层接收 token 和 Engine 已经分配好的 KV 资源；它不自行调度请求，也不自行执行 HTTP。变长 batch 的每个样本用相同索引位置的 metadata 描述：`token_lengths[i]` 是本次 query token 数，`position_offsets[i]` 是 query 在上下文中的起点，`request_ids[i]` 和 `block_tables[i]` 指向该请求的 KV。
+
+```python
+def forward_batch(
+    self,
+    input_ids: torch.Tensor,                  # [batch, padded_query_tokens]
+    *,
+    token_lengths: Sequence[int],             # 每条实际 query 长度
+    position_offsets: Sequence[int],          # Prefill chunk 起点或 Decode 位置
+    request_ids: Sequence[str],
+    block_tables: Sequence[Sequence[int]],
+    cache: PagedKVCache,
+) -> torch.Tensor:                            # [batch, vocab_size]，每条取最后有效 token logits
+    ...
+```
+
+入口至少校验：`input_ids` 是二维且非空；batch 大小与 metadata 数量一致；request ID 不重复；每个有效长度在 `[1, query_width]`；position offset 非负；模型、输入和 Cache 的设备及 dtype 一致。最后只返回每条序列最后一个有效位置的 logits，避免把 padding token 当作预测结果。Qwen3 的真实实现见 [`model/qwen3.py`](src/inference/models/qwen3_0_6b/model/qwen3.py)。
+
+Attention 的一次前向按固定顺序实现，后续优化 Kernel 时也保持这个数学契约：
+
+```text
+hidden_states
+  → q_proj / k_proj / v_proj
+  → reshape 为 [batch, heads, query, head_dim]
+  → Q/K norm（模型定义有时才做）
+  → RoPE(position_ids)
+  → 将本次 K/V 写入 paged cache
+  → query 对可见的历史 K/V 做 causal attention
+  → merge heads → o_proj
+```
+
+Prefill 处理一段 query，query 长度可以大于 1；Decode 每步只处理一个新 token，query 长度必须为 1，但 K/V 读取范围是完整历史。把 “写入新 K/V” 和 “attention 读取范围” 分开核对：Prefill 第 `j` 个 query 不能看见比自身位置更晚的 K/V；Decode 要能读取之前所有 token 加本步 token。使用 FlashAttention 或其他算子时，先保持输入布局、mask、RoPE 位置和 Cache 更新语义一致，再测速度。
+
+#### Runner 与 Adapter 的 Engine 调用边界
+
+Engine 通过 Adapter 调用模型专属生命周期，再把 `ScheduledWorkItem` 批次交给 `execute_batch()`。Runner 拥有模型、Cache 和逐请求状态；Adapter 转换 Engine 的类型与模型输入，不直接实现矩阵运算。Qwen3 的 Adapter/Runner 已给出可运行参考：[`adapter.py`](src/inference/models/qwen3_0_6b/components/adapter.py)、[`model_runner.py`](src/inference/models/qwen3_0_6b/components/model_runner.py)。
+
+```python
+class ModelAdapter:
+    def prepare_chat_generation(self, request_id, request_body, prepared_input=None):
+        # 校验 alias/输入；生成 PreparedChatInput；通知 Runner 建立 request 状态。
+        ...
+
+    def bind_generation_cache(self, request_id, block_ids):
+        # 把 Engine 分配的 KV block 绑定给 Runner。
+        ...
+
+    def execute_batch(self, requests):
+        # 只委托给 Runner；结果必须按传入 work item 顺序返回。
+        return self.model_runner.execute_batch(requests)
+
+    def finish_chat_generation(self, request_id):
+        # 回收 Runner 状态并转换为 InferenceResult。
+        ...
+
+    def cancel_generation(self, request_id):
+        # 释放 Cache 和 request 状态；允许重复取消按契约处理。
+        ...
+```
+
+`ModelRuntime(model_runner, model_adapter)` 负责把 Adapter 操作暴露给 Worker，把 `load()`、`close()`、GPU 状态交给 Runner。新模型的 `runtime.py` 只做组装，不要把加载权重、tokenize、采样或 API 逻辑塞进工厂函数。
+
+#### Tokenize、Encoder、Decoder、Detokenize 分工
+
+这四个名称表示不同边界，不要重新合并成一个笼统的 `InputProcessor`：
+
+1. **Tokenizer**：封装 HF tokenizer/processor 的底层调用。输入是字符串或按模型协议整理好的消息，输出 token IDs（多模态时还包括 image/video tensors 与对应 metadata）。这里不决定生成参数，也不产生 HTTP 响应。
+2. **Encoder**：校验 API message 和模态输入；应用模型 Chat Template；调用 Tokenizer；校验上下文长度；组装 `PreparedChatInput`（模型 alias、token IDs、sampling params 和模态张量）。同一消息只在此处转换一次。
+3. **Decoder**：把完整 token ID 序列解成完整文本，用于非流式响应、日志或离线比较。需要保留模型的 special-token 和 skip-special-token 规则。
+4. **Detokenizer**：保留增量解码状态；每收到 token ID 返回当前可安全输出的文本增量；`finish()` 刷出缓存中的最后部分。必须验证所有增量拼起来与 Decoder 对同一 token 序列的完整解码一致。
+
+统一 API 契约见 [`network/input_processor.py`](src/inference/network/input_processor.py)：Processor 实现 `start()`、`prepare_chat(request_body)`、`close()`；流式能力实现 `create_stream_output_processor()`，非流式 token 输出实现 `decode_tokens(token_ids)`。多模态项目应把图片预处理/视频帧采样独立放在对应 Encoder 子组件中，并把模态张量随 `PreparedChatInput` 传给 Runner；不能只把图片路径转成文本假装图像理解。
+
+#### 在接入前做模块数值对照
+
+每个数学模块先用合成张量对齐 Transformers，再用真实权重做整模型对照。Qwen3 的典型本地入口是 `python -m inference.models.qwen3_0_6b.layers.rope` 或直接执行对应模块文件（以模块自身说明为准）。入口至少写出以下逻辑：
+
+```python
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+torch.manual_seed(17)
+module = MyLayer(...).to(device).eval()
+inputs = torch.randn(..., device=device, dtype=module_dtype)
+with torch.inference_mode():
+    actual = module(inputs)
+assert actual.shape == expected_shape
+assert actual.dtype == inputs.dtype and actual.device == device
+assert torch.isfinite(actual).all()
+torch.testing.assert_close(actual, reference, atol=..., rtol=...)
+```
+
+当官方层输入输出格式不同，先显式转换张量布局；不要为了让测试通过随意放宽容差。无法做逐层官方对照的项目，要至少写明参考实现、转换方式和采用的误差阈值。跑完模块入口后，再执行 `test_components.py` 验证真实 checkpoint 的权重映射和整模型 Prefill/Decode。
+
+Qwen3 的模型主前向边界是 `Qwen3ForCausalLM.forward_batch(input_ids, token_lengths, position_offsets, request_ids, block_tables, cache)`。Runner 管请求和 KV 状态；Attention/Model 只做张量计算。把这条边界保持清楚，后续才能单独替换算子或 Cache。
+
+### 把设计落实成代码：Qwen3-0.6B 逐文件顺序
+
+下面是实际写代码时的顺序。每一步都先写当前文件，再运行对应的局部入口；不要一次创建全部空文件后再集中调试。Qwen3 的类名和实现可直接在链接文件中查看；新模型应保留 Engine 契约，只替换模型结构、权重映射和模态处理。
+
+| 步骤 | 先写的文件 | 必须落地的代码 | 写完立即运行 |
+| --- | --- | --- | --- |
+| 1 | `layers/rope.py` | `RoPE.__init__` 校验维度并建立 cos/sin cache；`forward(pos, query, key)` 按位置旋转 Q/K，保留非旋转维度；文件尾的 `__main__` 用官方 RoPE 共享输入对照 | `python -m inference.models.qwen3_0_6b.layers.rope` |
+| 2 | `layers/layers.py` | `Qwen3RMSNorm.forward(x)` 做 FP32 方差计算、归一化后乘可学习权重；`Qwen3MLP.forward(x)` 实现 `down_proj(act(gate_proj(x)) * up_proj(x))` | `python -m inference.models.qwen3_0_6b.layers.layers` |
+| 3 | `components/paged_kv_cache.py` | 初始化 `[layer, block, K/V, kv_head, block_offset, head_dim]` 的设备张量；`bind/extend` 管 block table；`write` 按 `position_offset` 跨页写入；`read_batch` 按有效长度拼出历史 K/V；`release` 解除请求与物理页关联 | `python -m inference.models.qwen3_0_6b.components.paged_kv_cache` |
+| 4 | `layers/attention.py` | 从 hidden state 计算 Q/K/V；Q/K 做 RMSNorm 和 RoPE；把 K/V 写入 Cache；读回历史 K/V；应用 causal mask 并计算 GQA；合并 heads 后过 `o_proj` | `python -m inference.models.qwen3_0_6b.layers.attention` |
+| 5 | `model/qwen3.py` | 按配置构建 embedding、N 个 DecoderLayer、final norm 和 LM head；每层做 `x += attention(norm(x))`、`x += mlp(norm(x))`；最后取每条序列最后一个有效 token 的 logits | `python -m inference.models.qwen3_0_6b.model.qwen3` |
+| 6 | `utils/loader.py`、`components/model_runner.py` | 校验本地 snapshot/revision；从 Safetensors 按 key 和 shape 装载权重；Runner 初始化模型、Tokenizer 和 Cache，并实现请求状态、Prefill、Decode、采样、EOS/长度结束与释放 | `python tests/qwen3_0_6b/test_components.py --config tests/qwen3_0_6b/test.yml` |
+| 7 | `components/adapter.py`、`runtime.py` | Adapter 将 Engine work item 转给 Runner，保持返回顺序；Runtime 只负责组装 `ModelRuntime(runner, adapter)` | `inference validate --model qwen3-0.6b` |
+| 8 | `components/tokenizer.py`、`encoder.py`、`decoder.py`、`detokenizer.py` | 依次完成 Chat Template→IDs、请求校验→`PreparedChatInput`、完整 decode、增量 decode；流式增量拼接必须等于完整 decode | 运行 `src/inference/models/qwen3_0_6b/example.py`，再跑 `test_end2end.py` |
+
+以下三段是实现时要保持的关键代码结构。变量和类名与 Qwen3 对齐；如果新模型的接口不同，应转换到同一组 metadata 契约，而不是删去校验。
+
+**Decoder Layer：先归一化，再加 Attention 残差，再归一化并加 MLP 残差。**
+
+```python
+def forward_batch(self, hidden_states, *, layer_index, request_ids,
+                  token_lengths, position_offsets, block_tables, cache):
+    attention_output = self.self_attn.forward_batch(
+        self.input_layernorm(hidden_states),
+        layer_index=layer_index,
+        request_ids=request_ids,
+        token_lengths=token_lengths,
+        position_offsets=position_offsets,
+        block_tables=block_tables,
+        cache=cache,
+    )
+    hidden_states = hidden_states + attention_output
+    return hidden_states + self.mlp(self.post_attention_layernorm(hidden_states))
+```
+
+**Attention：写入本轮 K/V 后，读取到当前有效上下文长度，再做因果注意力。**
+
+```python
+query, key = self.rope(position_ids, query, key)
+key_lengths = []
+for index, (request_id, offset, length, blocks) in enumerate(
+    zip(request_ids, position_offsets, token_lengths, block_tables, strict=True)
+):
+    key_lengths.append(cache.write(
+        request_id=request_id,
+        layer_index=layer_index,
+        block_table=blocks,
+        position_offset=offset,
+        key=key[index, :, :length, :],
+        value=value[index, :, :length, :],
+    ))
+key_states, value_states = cache.read_batch(
+    layer_index=layer_index,
+    request_ids=request_ids,
+    block_tables=block_tables,
+    lengths=key_lengths,
+)
+# attention_mask 需同时屏蔽 padding query、未写入的 KV 和未来 token。
+# 后续再按模型的 GQA/MQA 头映射计算 softmax(QKᵀ / sqrt(head_dim))V。
+```
+
+**模型输出：batch metadata 必须与 input_ids 的 batch 对齐，返回最后有效位置 logits。**
+
+```python
+hidden_states = self.model.embed_tokens(input_ids)
+for layer_index, layer in enumerate(self.model.layers):
+    hidden_states = layer.forward_batch(
+        hidden_states,
+        layer_index=layer_index,
+        request_ids=request_ids,
+        token_lengths=token_lengths,
+        position_offsets=position_offsets,
+        block_tables=block_tables,
+        cache=cache,
+    )
+hidden_states = self.model.norm(hidden_states)
+batch_indices = torch.arange(input_ids.shape[0], device=input_ids.device)
+last_indices = torch.as_tensor(token_lengths, device=input_ids.device) - 1
+return self.lm_head(hidden_states[batch_indices, last_indices])
+```
+
+每段结构在仓库中的完整实现分别见 [`Qwen3DecoderLayer`](src/inference/models/qwen3_0_6b/model/qwen3.py)、[`Qwen3Attention`](src/inference/models/qwen3_0_6b/layers/attention.py) 和 [`PagedKVCache`](src/inference/models/qwen3_0_6b/components/paged_kv_cache.py)。上面的片段解释控制流，不代替完整实现：完整代码还必须包含输入检查、GQA 形状处理、mask 构造、Cache 越界检查、设备/dtype 校验和异常清理。
+
+**权重加载要显式校验，不要用 `strict=False` 掩盖结构不匹配。** 读取 Safetensors 前先对照模型 `state_dict()` 检查 checkpoint key、重复 key 和每个 tensor shape；所有必需 key 匹配后，再逐 tensor 复制到模型设备。只有经过解释并记录的 tied weights 或模型头差异才可以做映射。Qwen3 的参考实现是 [`utils/loader.py`](src/inference/models/qwen3_0_6b/utils/loader.py) 中的 `load_safetensors()`；新模型需根据自己的 checkpoint 命名写 key 映射，并在组件测试中断言缺失/多余 key 为空。
+
+**Runner 和 Adapter 不写模型数学。** Runner 的实现顺序是：`load()` 加载模型 → `begin_generation()` 创建 request 状态 → `bind_generation_cache()` 接受 Engine 分配的页 → `execute_batch()` 按 `ExecutionPhase.PREFILL/DECODE` 执行并产出 `WorkerResult` → `finish_generation()` 返回 token IDs 和结束原因；取消或异常时统一释放 Cache 和 request 状态。Adapter 则实现 Worker 所需入口：`prepare_chat_generation()` 校验 alias 并构造 prompt，`bind_generation_cache()` / `execute_batch()` 委托 Runner，`finish_chat_generation()` 转为 `InferenceResult`，`cancel_generation()` 清理状态。可运行实现见 [`model_runner.py`](src/inference/models/qwen3_0_6b/components/model_runner.py) 与 [`adapter.py`](src/inference/models/qwen3_0_6b/components/adapter.py)。
+
+逐层数值调试时，先用小随机配置验证公式，再用正式 checkpoint 验证权重映射。至少保存以下对照点，某一级失败就停在该层修复：
+
+| 对照点 | 输入/输出 | 要断言什么 |
+| --- | --- | --- |
+| Tokenizer | 固定 messages → token IDs | 与 Hugging Face `apply_chat_template` IDs 完全一致 |
+| Embedding/RoPE/Norm/MLP | 同一 tensor 和同一份权重 → hidden states | shape、dtype、device 一致，`assert_close` 在声明的容差内 |
+| Attention | 固定 Q/K/V、位置与 mask → attention output | Prefill 和单 token Decode 分别与官方实现比较 |
+| KV Cache | 写入位置和 block table → 读回 K/V | 跨 block 边界数据一致；不同 request 隔离；释放可复用 |
+| 整层/整模型 | 同 checkpoint、同 token IDs → hidden/logits | Prefill 最后位置 logits 与 Decode logits 分别通过 `assert_close` |
+| 生成协议 | greedy 参数与固定 prompt → token IDs | 首个不同 token 定位；EOS/max token stop reason 正确 |
+
+不要只比较最终自然语言文本：相同文本可能来自不同 token 序列，数值或 Cache 错误也可能被掩盖。局部检查通过后，才进入完整服务集成。
+
+`api.input_processor` 指向的类必须实现 `start()`、`prepare_chat()`、`close()`；当 `output_mode: token_ids` 时还必须实现 `decode_tokens()` 和 `create_stream_output_processor()`。启用 `tool_calling` 时，tool adapter 必须提供 `parse_output()` 和 `create_stream_parser()`。Launcher 的 `inference validate` 会检查这些方法是否存在。
+
+每个可独立优化的 `layers/*.py` 和轻量 `components/*.py` 都要有模块级前向入口：随机种子固定、CUDA 优先、执行一次前向、检查输出 shape/dtype/finite；能对齐 Transformers 官方模块时，把权重复制到两边后用 `torch.testing.assert_close` 验证数值。例子：
+
+```python
+if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.manual_seed(43)
+    rope = RoPE(
+        head_size=16, rotary_dim=16, max_pos_emb=64, base=10_000.0,
+        dtype=torch.float32, device=device,
+    )
+    positions = torch.arange(5, device=device)
+    query = torch.randn(1, 4, 5, 16, device=device)
+    key = torch.randn(1, 2, 5, 16, device=device)
+    with torch.inference_mode():
+        rotated_query, rotated_key = rope(positions, query, key)
+    assert rotated_query.shape == query.shape and rotated_key.shape == key.shape
+    assert torch.isfinite(rotated_query).all() and torch.isfinite(rotated_key).all()
+    print(f"RoPE forward OK: device={device}, shape={tuple(rotated_query.shape)}")
+```
+
+Qwen3 的可运行对照入口包括 [RoPE](src/inference/models/qwen3_0_6b/layers/rope.py)、[RMSNorm/MLP](src/inference/models/qwen3_0_6b/layers/layers.py)、[Attention](src/inference/models/qwen3_0_6b/layers/attention.py) 和 [PagedKVCache](src/inference/models/qwen3_0_6b/components/paged_kv_cache.py)。它们直接对照 Transformers 或检查 Cache 不变量；不是只打印一个 tensor 就算通过。完整模型与多组件仍由 `tests/<package>/test_components.py` 验收。
+
+请求在系统中的执行顺序是：
+
+```text
+OpenAI Chat Request
+  → Qwen3InputProcessor
+  → Encoder (message / sampling validation)
+  → Tokenizer (Qwen3 Chat Template → token IDs)
+  → Engine Scheduler (Prefill / Decode work items)
+  → Qwen3ModelAdapter → Qwen3ModelRunner
+  → Qwen3ForCausalLM → Attention / RoPE / MLP + PagedKVCache
+  → logits → Sampler → token ID
+  → Decoder / Detokenizer → text delta or tool-call delta
+```
+
+Qwen3 使用 `custom` Runtime。它在 `runtime.py` 中把模型专属 Runner 和 Adapter 交给共用 Worker：
+
+```python
+from inference.engine.worker import ModelRuntime
+
+from .components.adapter import Qwen3ModelAdapter
+from .components.model_runner import Qwen3ModelRunner
+
+def create_runtime() -> ModelRuntime:
+    runner = Qwen3ModelRunner()
+    return ModelRuntime(runner, Qwen3ModelAdapter(runner))
+```
+
+只有符合标准 Causal LM/Cache 行为的纯文本模型才适合复用共用 `StandardTextModelRunner`；其他模型实现自己的 Runner/Adapter，并遵守 `inference.engine.worker.ModelRuntime` 契约。
+
+Qwen3 包入口 `__init__.py` 对外提供 Engine Client 工厂。新模型可照此实现，让使用者不用了解 Launcher 内部：
 
 ```python
 from importlib import import_module
@@ -317,308 +734,277 @@ def create_engine_client(
         inference_config_path=inference_config_path,
         network_config_path=network_config_path,
     )
-
-
-__all__ = ["create_engine_client"]
 ```
 
-Qwen2.5 的 `standard` 包只需要上述入口、`runtime.py`、`example.py`、`requirements.txt` 和三个 YAML；不需要复制 Qwen3 的 `model/`、`layers/`、`components/` 或 `utils/loader.py`。模型拓扑与 Cache 由共用 `StandardTextModelRunner`/Transformers 负责，Tokenizer/Chat Template 由共用 `DefaultChatInputProcessor` 负责。
-
-### 步骤 3：登记运行依赖
-
-创建 `src/inference/models/qwen2_5_0_5b/requirements.txt`：
-
-```text
-transformers==5.19.0
-accelerate==1.15.0
-safetensors==0.8.0
-```
-
-项目把每个模型的依赖作为独立 extra 安装。打开 `src/inference/pyproject.toml`，在 `[tool.setuptools.dynamic.optional-dependencies]` 中增加一行：
-
-```toml
-qwen2_5_0_5b = { file = ["models/qwen2_5_0_5b/requirements.txt"] }
-```
-
-然后从仓库根目录安装本项目和这个模型 extra：
-
-```bash
-# 本地开发：editable 安装，便于直接调试源码。
-python -m pip install -e "src/inference[qwen2_5_0_5b]"
-python -m pip check
-```
-
-发布环境不要使用 editable 安装。完成代码审查和版本定版后，构建并安装 wheel；交付时应把 wheel 与该模型的依赖 extra 作为同一发布单元：
-
-```bash
-python -m pip install build
-python -m build --wheel --outdir dist src/inference
-python -m pip install "dist/inference-0.1.0-py3-none-any.whl[qwen2_5_0_5b]"
-python -m pip check
-```
-
-wheel 文件名包含项目版本；若 `inference.__version__` 已更新，应使用构建生成的实际文件名。生产部署还应使用锁定的 Python/系统依赖镜像，并在制品仓库记录 wheel 的版本与校验值。权重和环境配置作为独立部署制品提供，不能假定它们包含在 Python wheel 中。
-
-PyPA 将这类可按功能安装的依赖称为 packaging extra；本仓库通过 setuptools 从模型 `requirements.txt` 动态生成 extra。安装命令必须只选择目标模型 extra，不能用 `inference[all]` 或把其他模型 extra 一起安装到单模型环境。[Python Packaging：`pyproject.toml` 和 optional dependencies](https://packaging.python.org/en/latest/guides/writing-pyproject-toml/)
-
-CUDA 版 PyTorch 是环境级依赖，需在安装前按机器选择正确的 wheel。模型 extra 只安装模型需要的 Transformers、Accelerate 和 Safetensors，不应把另一模型的依赖一起装进来。`pip check` 应无依赖冲突；再记录 `python --version`、`torch.__version__`、`transformers.__version__` 与 CUDA 设备信息，作为本次构建的运行环境基线。
-
-### 步骤 4：声明模型插件与 API 能力
-
-创建 `src/inference/models/qwen2_5_0_5b/configs/model.yml`：
-
-```yaml
-alias: qwen2.5-0.5b-instruct
-display_name: Qwen2.5-0.5B-Instruct
-integration_profile: standard
-backend: transformers_standard_text
-runtime_factory: inference.models.qwen2_5_0_5b.runtime:create_runtime
-inference_config: inference.yml
-network_config: network.yml
-api:
-  model_id: qwen2.5-0.5b-instruct
-  capabilities:
-    chat_inputs: [text]
-    streaming: true
-    tool_calling: false
-    output_mode: token_ids
-    video_upload: false
-    live_video: false
-```
-
-本例**不写 `api.input_processor`**：`standard` profile 会选用项目的 `DefaultChatInputProcessor`，它读取模型自己的 Chat Template，并负责 tokenize 与 stream detokenize。仅当模型要定制输入处理时才登记自己的工厂。`tool_calling` 保持 `false`；即便模型卡提到工具能力，也必须先实现工具适配器并完成验收才可以改为 `true`。
-
-### 步骤 5：配置模型、Engine 和网络
-
-创建 `src/inference/models/qwen2_5_0_5b/configs/inference.yml`：
-
-```yaml
-model:
-  id: Qwen/Qwen2.5-0.5B-Instruct
-  revision: c89bee90d9f811437d9735454613c35b4a3c4dc8
-  dtype: float16
-  device: cuda:0
-
-runtime:
-  platform: torch_cuda
-  local_model_path: checkpoints/Qwen2.5-0.5B-Instruct-c89bee
-  local_files_only: true
-  worker_startup_timeout_seconds: 900
-  worker_request_timeout_seconds: 300
-  engine_core_startup_timeout_seconds: 930
-  engine_core_request_timeout_seconds: 330
-
-api:
-  max_chat_request_bytes: 2097152
-  max_context_tokens: 4096
-
-engine:
-  max_num_seqs: 2
-  max_waiting_requests: 8
-  max_num_scheduled_tokens: 2048
-  batch_wait_seconds: 0.01
-  prefill_chunk_size_tokens: 512
-  kv_cache:
-    block_size_tokens: 16
-    num_blocks: 640
-
-generation:
-  max_new_tokens: 128
-  temperature: 0.0
-  top_p: 1.0
-  top_k: 0
-  min_p: null
-  repetition_penalty: 1.0
-  no_repeat_ngram_size: 0
-  num_beams: 1
-```
-
-以上数值是此 Qwen2.5 示例的 smoke 起始配置，不是生产容量建议。`max_context_tokens: 4096` 是服务侧的输入加输出总 token 限额，必须不超过模型支持的位置范围；它不要求使用模型的最大上下文。以本组参数计算，Scheduler 的逻辑 KV 预算为 `640 × 16 = 10,240` token；两个并发请求各自最多预留 4,096 token，总需求为 8,192 token，逻辑预算余量为 2,048 token。实际部署应根据目标并发、输入长度分布、生成上限和显存测量重新定值。
-
-在 `standard` profile 中，Engine KV block 是 Scheduler 的容量租约，实际历史 K/V 由 Transformers Cache 按请求保存；这不代表模型使用了项目的实体 paged KV。`max_num_scheduled_tokens` 和 `prefill_chunk_size_tokens` 控制调度与分块 prefill，不会改变模型原生上下文能力。`float16` 也必须由目标 GPU 与模型支持；若使用 BF16，需同时验证硬件支持、模型输出和性能，不应仅因某个 dtype 更快就修改配置。
-
-创建 `src/inference/models/qwen2_5_0_5b/configs/network.yml`：
-
-```yaml
-api:
-  host: 127.0.0.1
-  port: 8012
-```
-
-本示例使用 Inference 端口 8012；实际端口必须与同一主机上的现有服务错开，并以模型 `network.yml` 为准。
-
-`127.0.0.1` 只适用于同一网络命名空间内的本地调用。如果 Gateway 部署在 Docker 或其他主机，必须把上游地址设为该部署网络中可达的 Inference 地址，并按组织的防火墙策略限制暴露范围；不要为了联通而直接把推理服务绑定到公网接口。
-
-### 步骤 6：组装 Runtime
-
-创建 `src/inference/models/qwen2_5_0_5b/runtime.py`：
-
-```python
-"""Qwen2.5 文字模型使用共用 Transformers standard Runtime。"""
-
-from inference.engine.standard_text import StandardTextModelAdapter, StandardTextModelRunner
-from inference.engine.worker import ModelRuntime
-
-
-def create_runtime() -> ModelRuntime:
-    runner = StandardTextModelRunner()
-    adapter = StandardTextModelAdapter(runner)
-    return ModelRuntime(runner, adapter)
-```
-
-这个小工厂是模型包接入共用 Worker 的边界。权重加载时，`StandardTextModelRunner` 以 `model.id` 对应的本地目录调用 `AutoModelForCausalLM.from_pretrained`，使用固定 revision、配置中的 dtype 和 CUDA 设备。它会检查模型是 causal decoder，并要求 forward 返回可复用的 `past_key_values` 和 logits。Tokenizer 由共用 `DefaultChatInputProcessor` 从同一快照加载。
-
-模型目录中的 `example.py` 按项目约定展示 Tokenizer 准备输入、Engine 逐 token 生成和增量 Detokenizer 打印。它会自行启动 Engine Core 与 Worker，不需要先启动步骤 8 的 HTTP 服务；两种运行方式各自都会加载一份模型，验收时分开运行，避免重复占用显存。下面的代码刻意保持短小以展示数据流；长期服务应在应用启动/关闭钩子中创建与关闭 Engine 和 Processor，并用 `try/finally` 或等效生命周期机制确保异常时清理进程与显存：
+`example.py` 验证库的 Python 调用路径。Qwen3 的最小流式流程如下；保留顶部导入、显式组件和默认流式打印：
 
 ```python
 from pathlib import Path
 
-from inference.models.qwen2_5_0_5b import create_engine_client
-from inference.network.default_chat_processor import DefaultChatInputProcessor
+from inference.models.qwen3_0_6b import create_engine_client
+from inference.models.qwen3_0_6b.components.decoder import Qwen3Decoder
+from inference.models.qwen3_0_6b.components.encoder import Qwen3Encoder
+from inference.models.qwen3_0_6b.components.tokenizer import Qwen3Tokenizer
 
 INFERENCE_CONFIG = Path(__file__).resolve().parent / "configs" / "inference.yml"
-
 engine = create_engine_client(inference_config_path=INFERENCE_CONFIG)
-processor = DefaultChatInputProcessor()
-processor.start()
+tokenizer = Qwen3Tokenizer()
+encoder = Qwen3Encoder()
+decoder = Qwen3Decoder(tokenizer)
 request = {
-    "model": "qwen2.5-0.5b-instruct",
-    "messages": [{"role": "user", "content": "用一句话介绍 KV Cache。"}],
+    "model": "qwen3-0.6b",
+    "messages": [{"role": "user", "content": "介绍一下 Paged KV Cache。"}],
     "max_tokens": 64,
 }
-prepared_input = processor.prepare_chat(request)
-engine.start()
-detokenizer = processor.create_stream_output_processor()
-stream = engine.stream_chat(request, prepared_input)
 
+engine.start()
+tokenizer.start()
+plan = encoder.prepare(request)
+token_ids = tokenizer.tokenize_chat(
+    plan.messages, tools=plan.template_tools, enable_thinking=plan.enable_thinking
+)
+prepared_input = encoder.build(plan, token_ids)
+detokenizer = decoder.create_detokenizer()
+stream = engine.stream_chat(request, prepared_input)
 for event in stream:
     if event.kind == "token" and event.token_id is not None:
         print(detokenizer.push(event.token_id), end="", flush=True)
     elif event.kind == "finish":
         print(detokenizer.finish(), end="", flush=True)
 print()
-
 stream.close()
-processor.close()
+tokenizer.close()
 engine.close()
 ```
 
-如果你的模型不能通过 `AutoModelForCausalLM` 加载，输出不是标准 causal LM logits/cache，使用多模态输入，或需要专属 Cache/权重 key 转换，就不要勉强套这段工厂；应改走下文的 `custom` profile。
+新模型的 `example.py` 需要按自己实际的 Tokenizer/Encoder/Decoder 名称调整；不要为了示例把它们合并成一个大 `InputProcessor`。
 
-### 步骤 7：静态发现与配置预检
+## 5. 配置、安装并预检
 
-先从仓库根目录执行：
+`configs/model.yml` 声明模型别名、运行工厂及真实能力；`configs/inference.yml` 固定模型 ID、revision、dtype、设备和本地权重路径；`configs/network.yml` 配置 API 地址。可复制最相近模型的配置后修改，确保三份配置与权重 revision 一致。
 
-```bash
-inference list
-inference validate --model qwen2.5-0.5b-instruct
-```
-
-`list` 应出现新 alias；`validate` 应报告 `valid profile=standard`。这一步会检查 manifest、YAML、工厂路径、依赖于模型能力的必需字段和固定 revision 格式，**不会下载或加载权重，也不会初始化 GPU**。如果失败，先修复错误并重复该步骤，不要直接启动服务。
-
-### 步骤 8：启动 Inference 并验证 API
-
-在终端 A 启动服务：
-
-```bash
-inference start --model qwen2.5-0.5b-instruct
-```
-
-首次加载应只读本地权重，因为 `local_files_only: true`。启动成功后，在终端 B 检查健康状态和普通聊天：
-
-```bash
-curl --fail http://127.0.0.1:8012/health
-
-curl --fail http://127.0.0.1:8012/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen2.5-0.5b-instruct",
-    "messages": [{"role": "user", "content": "用一句话解释什么是 KV Cache。"}],
-    "max_tokens": 32,
-    "stream": false
-  }'
-```
-
-HTTP 状态应为 200，响应的 `model` 应为 `qwen2.5-0.5b-instruct`，`choices[0].message.content` 非空。再验收 SSE：
-
-```bash
-curl --no-buffer --fail http://127.0.0.1:8012/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen2.5-0.5b-instruct",
-    "messages": [{"role": "user", "content": "只回答：流式正常"}],
-    "max_tokens": 16,
-    "stream": true
-  }'
-```
-
-SSE 应逐段输出 `data: ...`，最后以 `data: [DONE]` 收尾。若服务启动时报找不到文件，检查 `local_model_path` 是否相对仓库根目录、文件是否下载齐全，以及 `local_files_only` 是否为 true；若报 CUDA OOM，先降低 `max_num_seqs`、`max_context_tokens` 和 KV block 总数，再重新验收。
-
-### 步骤 9：可选的 Gateway 发布
-
-只通过 Inference API 使用模型时，不需要改 Gateway。要从 Gateway 公开时，在 `src/gateway/configs/gateway.yml` 的 `models` 下追加：
+Qwen3 的 `configs/model.yml` 声明自定义 Runtime、Tokenizer 处理器和工具调用能力：
 
 ```yaml
-  qwen2.5-0.5b-instruct:
-    upstream_model: qwen2.5-0.5b-instruct
-    base_url: http://127.0.0.1:8012
-    capabilities:
-      text_chat: true
-      image_chat: false
-      streaming: true
-      tool_calling: false
-      video_upload: false
-      live_video: false
+alias: qwen3-0.6b
+display_name: Qwen3-0.6B
+integration_profile: custom
+backend: qwen3_native_torch
+runtime_factory: inference.models.qwen3_0_6b.runtime:create_runtime
+inference_config: inference.yml
+network_config: network.yml
+api:
+  model_id: qwen3-0.6b
+  input_processor: inference.models.qwen3_0_6b.processor:Qwen3InputProcessor
+  capabilities:
+    chat_inputs: [text]
+    streaming: true
+    tool_calling: true
+    output_mode: token_ids
+    video_upload: false
+    live_video: false
+  tool_call_adapter: inference.models.qwen3_0_6b.tool_calling:Qwen3ToolCallAdapter
 ```
 
-Gateway 的 `upstream_model` 必须等于模型 manifest 的 `api.model_id`，alias 则是客户端传给 Gateway 的 `model` 值。配置 `VIDEO_API_KEY` 后可用 `tests/client.py` 的普通聊天方式，或把 `tests/<package_name>/test_end2end.py` 的 URL、alias 和 `test.yml` 指向新模型，做带认证的 Gateway 验收。Gateway `/readyz` 会检查配置中的全部上游；若现有 Mage-VL/Qwen3 上游没启动，readyz 不会全绿，这不代表新模型的 8012 路由失败。先直接检查新模型的 `/health` 和 chat，再判断 Gateway 路由。
+Qwen3 的 `configs/inference.yml` 固定 revision、离线权重路径和运行参数。容量值是该模型配置，不应原样套用到其他模型：
 
-## 验收口径与发布交接
+```yaml
+model:
+  id: Qwen/Qwen3-0.6B
+  revision: c1899de289a04d12100db370d81485cdf75e47ca
+  dtype: bfloat16
+  device: cuda:0
+runtime:
+  platform: torch_cuda
+  local_model_path: checkpoints/Qwen3-0.6B-c1899de
+  local_files_only: true
+  worker_startup_timeout_seconds: 900
+  worker_request_timeout_seconds: 300
+  engine_core_startup_timeout_seconds: 930
+  engine_core_request_timeout_seconds: 330
+api:
+  max_chat_request_bytes: 2097152
+  max_context_tokens: 8192
+engine:
+  max_num_seqs: 4
+  max_waiting_requests: 16
+  max_num_scheduled_tokens: 8192
+  batch_wait_seconds: 0.01
+  prefill_chunk_size_tokens: 2048
+  kv_cache:
+    block_size_tokens: 16
+    num_blocks: 1024
+generation:
+  max_new_tokens: 256
+  temperature: 0.0
+  top_p: 0.8
+  top_k: 20
+  min_p: null
+  repetition_penalty: 1.0
+  no_repeat_ngram_size: 0
+  num_beams: 1
+  enable_thinking: false
+```
 
-各步骤的验证结论必须与证据层级一致：
+`network.yml` 示例：
 
-- **下载完成**只证明固定 revision 的文件已落盘，不证明该模型可由当前 Transformers 版本加载。
-- **`inference validate` 成功**只证明 manifest、配置、工厂路径和静态能力检查通过，不会加载权重或初始化 GPU。
-- **`GET /health` 成功**证明 API 和 Worker 已启动并报告运行状态，不证明模型能够处理 chat 请求。
-- **非流式 chat 成功**证明一次请求完成；**SSE 成功**还必须观察到文本增量和 `data: [DONE]`。两者都不证明负载容量、吞吐 SLA 或任务精度。
-- **Gateway 验收**只在对外路由时需要；必须单独验证认证、公开 alias、上游 `api.model_id`、非流式与 SSE 路由。Inference 直连成功不能代替 Gateway 验收。
+```yaml
+api:
+  host: 127.0.0.1
+  port: 8011
+```
 
-交付前应把代码 commit、模型 `repo_id` 与完整 revision、配置版本、模型依赖版本、Python/PyTorch/CUDA/GPU 信息，以及各步骤实际命令和脱敏结果写入变更记录或发布记录。API key、HF token、原始请求中的个人信息和完整敏感日志不得写入记录。未执行的验证必须明确标为“未验证”，不要把计划、静态检查或一次短请求写成容量与质量结论。
+依赖只装该模型使用的包。Qwen3 当前的 `requirements.txt` 是：
 
-## 故障处理与回退
+```text
+transformers==5.19.0
+accelerate==1.15.0
+safetensors==0.8.0
+jsonschema==4.26.0
+```
 
-| 现象 | 优先检查 | 处理原则 |
-| --- | --- | --- |
-| 下载返回 401/403 | repo 是否 gated、账号权限、`HF_TOKEN` 是否注入到执行下载的环境 | 走组织批准的访问审批；不把 token 放进 YAML 或命令参数 |
-| revision 或文件不存在 | revision 是否为完整 commit；上游仓库是否在该 revision 包含 `model.safetensors`、配置和 Tokenizer | 先修正源版本与文件过滤，再重下快照；不要临时换 `main` 后沿用旧配置 |
-| `inference validate` 失败 | 模型 alias 唯一性、manifest 路径、文件名大小写、`runtime_factory` 符号、能力字段 | 按报错修复 manifest/配置；不要通过降低能力校验或改共用路由绕过 |
-| Chat Template 或 tokenizer 加载失败 | 固定 snapshot 中是否包含 `tokenizer_config.json`、`tokenizer.json` 和有效 `chat_template` | standard profile 依赖上游模板；若模型没有兼容模板，提供模型专属 processor 或改走 custom profile，不要自行伪造上游特殊 token |
-| worker 找不到权重 | `local_model_path` 是否相对仓库根目录、`local_files_only` 是否启用、下载目录文件是否完整 | 修正本地路径并重新执行启动；部署环境不应在服务启动时意外访问网络 |
-| CUDA OOM | 权重 dtype、上下文、并发、生成上限、其他进程的显存占用 | 依序降低并发和上下文预算，重新测量；CUDA 可用但显存不足时不会自动 fallback CPU |
-| health 正常但 chat 失败 | Worker 日志、Tokenizer 准备结果、模型 forward 的 logits/Cache 返回、请求上限 | 用单一短 prompt 定位加载、输入、前向或采样环节；不要用健康状态代替请求验收 |
-| Gateway `/readyz` 未就绪 | 配置中的其他上游是否也启动、`base_url` 和 upstream model 是否匹配 | 先直连检查目标 Inference；区分目标模型路由故障和其他上游未就绪 |
+Qwen3 的配置副本位于 `scripts/qwen3_0_6b/`，其服务配置位于 `src/inference/models/qwen3_0_6b/configs/`。新模型要把自己的配置放在对应目录，不能在脚本中读取另一个模型的配置。
 
-若发布后要回退，应恢复该模型对应的代码 commit 与配置版本，移除或停用其 Gateway 路由，并按组织的权重保留策略管理本地 checkpoint。不得回退共用 API/Engine 来掩盖单模型配置错误，也不得清理其他模型的 checkpoint。
+在 `src/inference/pyproject.toml` 注册模型专属依赖，PyTorch/CUDA 由环境单独安装：
 
-## custom profile 的接入要求
+Qwen3 的 `qwen3` extra 已在该表注册。新模型在同一个表中新增一行，例如：
 
-当模型使用图片/视频输入、自定义计算图、特殊权重映射或 Cache、非标准文本增量时，不能只复制 standard YAML。custom profile 应按以下责任实现：
+```toml
+my_model = { file = ["models/my_model/requirements.txt"] }
+```
 
-1. **Loader 与模型图**：在 `utils/loader.py` 读取固定 snapshot、加载准确的 Transformers Config/Processor，或映射上游 checkpoint key；在 `model/` 组装官方模型拓扑，在 `layers/` 实现需要自研或替换的数值计算。每个算子保留官方 shape、dtype、RoPE、mask、残差和 norm 语义，并提供可直接运行的小型前向对照。
-2. **Runner 与 Adapter**：`components/model_runner.py` 实现模型加载、prefill/decode、Cache 状态和取消/结束清理；`components/adapter.py` 把请求和 `ScheduledWorkItem`/`WorkerResult` 转成模型 Runner 能处理的数据。`runtime.py:create_runtime()` 必须返回组合好的 `ModelRuntime`。
+然后安装并预检：
 
-   `ModelRuntime` 必须满足 `load`、`gpu_status`、`close`、`health_info`、`generation_options`、`prepare_chat_generation`、`bind_generation_cache`、`execute_batch`、`finish_chat_generation`、`cancel_generation`。启用 `video_upload` 时，还必须提供 `prepare_video_generation`/`finish_video_generation`；启用 `live_video` 时，还必须提供 `prepare_live_frames_generation`、`prepare_live_video_generation` 和 `finish_live_generation`。共用 Worker 在启动时会按 manifest 能力检查这些方法。
-3. **输入和输出**：按需要拆分 Encoder、Tokenizer、Decoder、Detokenizer、图像/视频编码器；`processor.py` 仅保留 API 边界需要的薄门面。`token_ids` 输出的 custom 模型必须在 manifest 配置 `api.input_processor`，并实现 `start`、`prepare_chat`、`close`、`decode_tokens` 和 `create_stream_output_processor`。
-4. **能力与契约**：tool calling、video upload、Live 必须同时具备相应 adapter/manager、Runtime 方法和配置，并在 `model.yml` 如实声明。工具调用解析只负责生成标准 tool call，不执行外部工具；Agent/客户端仍负责授权和执行。
-5. **逐级验证**：先做层级 shape/数值对照，再做 Runner 与 Cache 生命周期验证，然后执行 `test_components.py`、`test_performance.py` 和 `test_end2end.py`。三个测试脚本放在 `tests/<package_name>/`；算子分析脚本放 `scripts/<package_name>/`，两者用途不能混用。
+```bash
+python -m pip install -e "src/inference[qwen3]"
+python -m pip check
+inference list
+inference validate --model qwen3-0.6b
+```
 
-项目中的 Qwen3 是自研 PyTorch 文字图与实体 KV page 的参考；Mage-VL 是上游 Transformers 多模态骨干并由模型包负责输入和视频能力的参考。具体文件可对照 `src/inference/models/qwen3_0_6b/` 与 `src/inference/models/mage_vl_4b/`。不要因为模型共用 HTTP endpoint，就把模型计算图、Tokenizer、Cache 或加载流程移进共用 `engine/`。
+`validate` 通过后，再编写或适配 `tests/<package>/test.yml`、`test_components.py`、`test_performance.py` 和 `test_end2end.py`。测试脚本也由模型负责人按能力维护，不会自动生成。Qwen3 测试配置如下；相对路径以 `test.yml` 所在目录为基准：
 
-## 官方数据
+```yaml
+model_alias: qwen3-0.6b
+revision: c1899de289a04d12100db370d81485cdf75e47ca
+snapshot: ../../checkpoints/Qwen3-0.6B-c1899de
+inference_config: ../../src/inference/models/qwen3_0_6b/configs/inference.yml
+inference_url: http://127.0.0.1:8011
+gateway_url: http://127.0.0.1:8000
+api_key_env: VIDEO_API_KEY
+prompt: "请用一句话说明大型语言模型推理服务。"
+max_new_tokens: 32
+warmup_requests: 1
+iterations: 3
+timeout_seconds: 300
+component:
+  engine_module: ../../src/inference
+  dtype: bfloat16
+operator_analysis:
+  batch_size: 1
+  prompt_tokens: 512
+  warmup_iterations: 2
+  iterations: 5
+  top_operators: 20
+```
 
-- [Hugging Face Hub：下载文件与固定 revision](https://huggingface.co/docs/huggingface_hub/en/guides/download) — snapshot、完整 revision 与 `ignore_patterns`。
-- [Hugging Face Hub：环境变量](https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables) — `HF_TOKEN` 等凭据变量。
-- [Transformers：模型加载](https://huggingface.co/docs/transformers/en/models) — Auto 类与 `from_pretrained()`。
-- [Transformers：Chat Templates](https://huggingface.co/docs/transformers/main/chat_templating) — 角色消息、模板与 generation prompt。
-- [Python Packaging User Guide：`pyproject.toml`](https://packaging.python.org/en/latest/guides/writing-pyproject-toml/) — optional dependencies 与 extras。
-- [Qwen2.5-0.5B-Instruct：固定 revision 文件树](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/tree/c89bee90d9f811437d9735454613c35b4a3c4dc8)、[固定版模型卡](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/blob/c89bee90d9f811437d9735454613c35b4a3c4dc8/README.md)和[固定版 LICENSE](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/blob/c89bee90d9f811437d9735454613c35b4a3c4dc8/LICENSE) — 示例模型的架构、文件、依赖建议和许可信息。
+### 每个测试文件要写什么
+
+| 文件 | 必须写入的代码 | 明确的通过断言 | 可逐段对照的仓库实现 |
+| --- | --- | --- | --- |
+| `test_components.py` | 解析 `test.yml`；读取固定快照 Config；构造 HF 基线和模型自有实现；逐 key/shape 检查并加载权重；按层检查 Tokenizer、RoPE、Attention、Cache、Sampler；对相同输入前向 | 加载权重无缺失/多余项；输出 shape/dtype 正确且 finite；Cache 写读/释放后状态正确；HF 与自有 logits 在定义的 `atol/rtol` 内 | [Qwen3 test_components.py](tests/qwen3_0_6b/test_components.py) |
+| `test_performance.py` | 读同一个 `test.yml`；独立加载 HF 和运行中的 Inference API；分别做 warmup 与正式计时；GPU 计时同步；保存每轮延迟/token 数并输出 JSON | 两条路径都返回非空结果和正 token 数；报告 median 延迟与 tokens/s；运行配置和输入一致 | [Qwen3 test_performance.py](tests/qwen3_0_6b/test_performance.py) |
+| `test_end2end.py` | 读取 Gateway URL/alias/key；发真实 OpenAI Chat Completions SSE 请求；逐行解析 `data:` JSON；收集增量文本和结束事件 | HTTP 200；返回 alias 正确；至少一个文本 delta；无错误事件；观察到 `finish_reason` 和 `[DONE]` | [Qwen3 test_end2end.py](tests/qwen3_0_6b/test_end2end.py) |
+
+按这个顺序把代码写进测试文件：先让 `test_components.py` 在不启动服务时通过，再让 `test_performance.py` 对运行中的 Inference 完成 HF/API 对照，最后启动 Gateway 运行 SSE 验收。不要把测试写成只检查进程存活或只打印结果；失败条件必须通过 Python `assert` 或抛出异常让进程以非零状态退出。Qwen3 的三个测试文件是可直接运行的成品参考，应复制测试逻辑后替换模型专属 Config、类名、输入格式和预期数值范围。
+
+端到端 SSE 循环必须明确记录终止条件。收到文本 delta、结束原因和 `[DONE]` 是三个独立事实，不能只因为连接关闭就判定成功：
+
+```python
+saw_text_delta = False
+saw_finish_reason = False
+saw_done = False
+for line in response:
+    if not line.startswith(b"data:"):
+        continue
+    data = line[5:].strip()
+    if data == b"[DONE]":
+        saw_done = True
+        break
+    event = json.loads(data)
+    if event.get("error"):
+        raise RuntimeError(f"Gateway SSE error: {event['error']}")
+    for choice in event.get("choices", []):
+        delta = choice.get("delta", {})
+        saw_text_delta |= bool(delta.get("content"))
+        saw_finish_reason |= choice.get("finish_reason") is not None
+
+assert saw_text_delta, "SSE 没有返回文本增量"
+assert saw_finish_reason, "SSE 缺少 finish_reason 事件"
+assert saw_done, "SSE 流没有以 [DONE] 结束"
+```
+
+仓库当前 [Qwen3 SSE 示例](tests/qwen3_0_6b/test_end2end.py)检查 HTTP、文本 delta、alias 和错误事件，并在读到 `[DONE]` 时停止；把它适配到新模型时，还应按上面代码显式断言终止标记及 `finish_reason`，避免连接提前关闭被误判为通过。
+
+新模型测试要替换 Qwen3 专属 import 和配置，不要只改目录名。组件测试发现数值不一致时先定位层级：Tokenizer IDs、Embedding、单层 Attention、整层 logits、完整模型 logits；不要直接用 API 最终文本相似度代替算子正确性。
+
+`tests/<package>/test_components.py`、`test_performance.py`、`test_end2end.py` 采用可直接运行的脚本：常量在顶部，测试步骤和断言直接写在文件主体，不再包一层测试框架或辅助方法。共用输入参数放在 `test.yml`，避免相同 prompt/revision 在三个脚本中各自漂移。
+
+Qwen3 的模块级算子 Profile 可单独运行；`--operator-report` 写入机器可读 JSON：
+
+```bash
+python tests/qwen3_0_6b/test_components.py \
+  --config tests/qwen3_0_6b/test.yml \
+  --profile-attention \
+  --operator-report artifacts/qwen3-0.6b-attention.json
+```
+
+该报告与整模型 `scripts/qwen3_0_6b/forward.py` 的 Profile 目标不同：前者对照指定 Attention 层和合成输入，后者对照 Prefill/Decode 的整体执行路径。两种结果不要混成一项指标。
+
+## 6. 集成验收
+
+先运行组件测试：
+
+```bash
+python tests/qwen3_0_6b/test_components.py --config tests/qwen3_0_6b/test.yml
+```
+
+再在终端 A 启动 Inference（该命令持续运行）：
+
+```bash
+inference start --model qwen3-0.6b
+```
+
+终端 B 运行服务性能测试：
+
+```bash
+python tests/qwen3_0_6b/test_performance.py --config tests/qwen3_0_6b/test.yml
+```
+
+如需 Gateway 端到端验收，按 `src/gateway/README.md` 配置并启动 Gateway，在终端 C 设置 API Key 后运行：
+
+```bash
+export VIDEO_API_KEY='<Gateway API Key>'
+python tests/qwen3_0_6b/test_end2end.py --config tests/qwen3_0_6b/test.yml
+python tests/client.py
+```
+
+Qwen3 声明了 `tool_calling: true`，因此还要运行 `tests/client.py` 验证工具调用；该示例由客户端执行工具。
+
+性能结果与接入前基线使用相同硬件、dtype、输入和测量方式对照。API 至少验证非流式和流式请求；多模态模型还要为声明的每种输入准备真实素材并验收。Health 检查不能替代生成请求。未实际运行的项标为未验证。
+
+## 7. 常见问题
+
+| 现象 | 检查 |
+| --- | --- |
+| 下载 401/403 | Hub 权限、模型许可和 `HF_TOKEN` |
+| `inference validate` 失败 | alias、配置路径、Runtime 工厂和能力声明 |
+| 找不到权重 | 本地 snapshot 路径、revision 和文件是否完整 |
+| CUDA OOM | dtype、上下文长度、并发、KV 容量及其他 GPU 进程 |
+| Health 正常但生成失败 | Worker 日志、Tokenizer/Processor、模型 forward 和 Cache |
+
+## 官方资料
+
+- Hugging Face Hub [固定 revision 下载](https://huggingface.co/docs/huggingface_hub/en/guides/download)
+- Transformers [Auto Classes](https://huggingface.co/docs/transformers/model_doc/auto)、[Processors](https://huggingface.co/docs/transformers/processors)、[Benchmarks](https://huggingface.co/docs/transformers/main/benchmarks)
+- [Qwen3-0.6B 固定 revision](https://huggingface.co/Qwen/Qwen3-0.6B/tree/c1899de289a04d12100db370d81485cdf75e47ca)

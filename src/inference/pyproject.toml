@@ -42,3 +42,4 @@ version = { attr = "inference.__version__" }
 [tool.setuptools.dynamic.optional-dependencies]
 mage-vl = { file = ["models/mage_vl_4b/requirements.txt"] }
 qwen3 = { file = ["models/qwen3_0_6b/requirements.txt"] }
+qwen3-vl-2b = { file = ["models/qwen3_vl_2b/requirements.txt"] }

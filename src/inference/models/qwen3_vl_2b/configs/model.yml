@@ -1,0 +1,16 @@
+alias: qwen3-vl-2b
+display_name: Qwen3-VL-2B-Instruct
+integration_profile: custom
+backend: transformers
+runtime_factory: inference.models.qwen3_vl_2b.runtime:create_runtime
+inference_config: inference.yml
+network_config: network.yml
+api:
+  model_id: qwen3-vl-2b
+  capabilities:
+    chat_inputs: [text, image]
+    streaming: true
+    tool_calling: false
+    output_mode: text_delta
+    video_upload: false
+    live_video: false
