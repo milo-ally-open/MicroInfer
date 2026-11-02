@@ -1,31 +1,99 @@
-# Python 环境与快取
-**/.venv/
-__pycache__/
+# Python bytecode, environments, package builds, and test/tool caches
+**/__pycache__/
 *.py[cod]
+**/.venv/
+**/venv/
+**/.conda/
 **/.cache/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.tox/
+**/.nox/
+**/.nvidia-omniperf/
+**/.ipynb_checkpoints/
+**/*.egg-info/
+**/pip-wheel-metadata/
+/.eggs/
+/.coverage
+/.coverage.*
+/coverage.xml
+/htmlcov/
+**/build/
+**/dist/
+/**/*.whl
 
-# 本机模型权重与 Hugging Face 快取
-/checkpoints/**
+# Local model downloads and generated inference/profile results
+**/checkpoints/
 *.safetensors
 *.bin
 *.pt
 *.pth
-
-# 本机执行输出
+*.ckpt
+*.gguf
+*.onnx
+*.engine
+*.plan
 /artifacts/
 /logs/
 /results/
+/outputs/
+/runs/
 *.log
+*.log.*
 *.pid
-/build/
-/src/build/
-/src/inference/build/
-**/*.egg-info/
+*.prof
+*.trace
+*.nsys-rep
+*.ncu-rep
+*.qdstrm
 
-# 本地密钥、私人 Codex 配置与 IDE 目录
+# Local secrets and credentials; keep safe examples trackable
 .env
 .env.*
 !.env.example
-.vscode/
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.secrets
+*.secrets.*
+credentials.local.*
+
+# Personal editor, assistant, and operating-system files
 .codex/
+.vscode/
+.idea/
+.fleet/
+.cursor/
+.history/
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+*.lnk
+
+# Temporary files, local downloads, and external source checkouts
+/tmp/
+/temp/
+/downloads/
 /repos/
+*.tmp
+*.temp
+*.bak
+*.orig
+*.swp
+*.swo
+*~
+~$*
+
+# Compiled native and Go test outputs
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.test
+/coverage.out
