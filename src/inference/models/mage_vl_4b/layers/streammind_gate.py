@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from transformers import Qwen3Config
 from transformers.models.qwen3 import Qwen3ForCausalLM
 
+
 class PreNet(nn.Module):
     def __init__(self, d_code, d_model):
         super().__init__()
@@ -17,6 +18,7 @@ class PreNet(nn.Module):
 
     def forward(self, x):
         return F.leaky_relu(self.fc3(x))
+
 
 class PostNet(nn.Module):
     def __init__(self, d_model, n_class):
@@ -26,30 +28,29 @@ class PostNet(nn.Module):
     def forward(self, x):
         return self.fc3(F.leaky_relu(x))
 
+
 @dataclass
 class SSMConfig:
     d_model: int = 2560
     n_ssm: int = 1
+
 
 class VideoMamba(nn.Module):
     def __init__(self, config):
         super().__init__()
         from mamba_ssm.models.mixer_seq_simple import create_block
 
-        self.ssms = nn.ModuleList(
-            [create_block(config.d_model, d_intermediate=0, layer_idx=i) for i in range(config.n_ssm)]
-        )
+        self.ssms = nn.ModuleList([create_block(config.d_model, d_intermediate=0, layer_idx=i) for i in range(config.n_ssm)])
         self.norm_fn = nn.LayerNorm(config.d_model)
 
     def forward(self, embeds, inference_params=None):
         hidden_states = embeds
         residual = None
         for ssm in self.ssms:
-            hidden_states, residual = ssm(
-                hidden_states, residual, inference_params=inference_params
-            )
+            hidden_states, residual = ssm(hidden_states, residual, inference_params=inference_params)
         residual = hidden_states + residual if residual is not None else hidden_states
         return self.norm_fn(residual.to(dtype=self.norm_fn.weight.dtype))
+
 
 class Qwen3ForCausalLMCls(Qwen3ForCausalLM):
     def forward(self, inputs_embeds=None, labels=None, attention_mask=None, **kwargs):
@@ -59,10 +60,9 @@ class Qwen3ForCausalLMCls(Qwen3ForCausalLM):
         if labels is not None:
             shift_logits = logits[..., :-1, :].contiguous().view(-1, self.config.vocab_size)
             shift_labels = labels[..., 1:].contiguous().view(-1).to(shift_logits.device)
-            loss = nn.CrossEntropyLoss(
-                weight=torch.tensor([0.15, 0.85], device=shift_logits.device)
-            )(shift_logits, shift_labels)
+            loss = nn.CrossEntropyLoss(weight=torch.tensor([0.15, 0.85], device=shift_logits.device))(shift_logits, shift_labels)
         return {"loss": loss, "logits": logits}
+
 
 class ClsNet(nn.Module):
     def __init__(self, hidden_size=2560, num_layers=4):
@@ -84,6 +84,7 @@ class ClsNet(nn.Module):
 
     def forward(self, x, labels=None, attention_mask=None):
         return self.cls_model(inputs_embeds=x, labels=labels, attention_mask=attention_mask)
+
 
 class StreamMindGate(nn.Module):
     def __init__(self, hidden_size=2560):
@@ -127,6 +128,7 @@ class StreamMindGate(nn.Module):
         # position 1, matching StreamMind's logits[..., :-1, :] evaluation.
         return output["logits"][:, 0].reshape(batch, time, 2)
 
+
 if __name__ == "__main__":
     test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.set_default_device(test_device)
@@ -162,6 +164,11 @@ if __name__ == "__main__":
     engine_classifier.load_state_dict(baseline_classifier.state_dict(), strict=True)
     classifier_inputs = torch.randn(2, 3, classifier_config.hidden_size, device=test_device)
     classifier_mask = torch.ones(2, 3, dtype=torch.long, device=test_device)
+    cls_net = ClsNet(hidden_size=32, num_layers=1).to(test_device).eval()
+    baseline_cls_net = Qwen3ForCausalLM(cls_net.cls_model.config).to(test_device).eval()
+    baseline_cls_net.load_state_dict(cls_net.cls_model.state_dict(), strict=True)
+    cls_net_inputs = torch.randn(1, 2, 32, device=test_device)
+    cls_net_mask = torch.ones(1, 2, dtype=torch.long, device=test_device)
 
     components = [
         ("StreamMind PreNet", baseline_pre, pre_net, (features,), (features,), {}, {}, None, None, 1e-6, 1e-6, False),
@@ -174,6 +181,20 @@ if __name__ == "__main__":
             (),
             {"inputs_embeds": classifier_inputs, "attention_mask": classifier_mask, "use_cache": False, "return_dict": True},
             {"inputs_embeds": classifier_inputs, "attention_mask": classifier_mask},
+            "logits",
+            "logits",
+            1e-5,
+            1e-5,
+            False,
+        ),
+        (
+            "StreamMind ClsNet",
+            baseline_cls_net,
+            cls_net,
+            (),
+            (cls_net_inputs,),
+            {"inputs_embeds": cls_net_inputs, "attention_mask": cls_net_mask, "use_cache": False, "return_dict": True},
+            {"attention_mask": cls_net_mask},
             "logits",
             "logits",
             1e-5,

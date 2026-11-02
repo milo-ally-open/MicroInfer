@@ -8,6 +8,7 @@ import torch.utils.benchmark
 import torch.nn as nn
 from ..architecture.configuration_mage_vl import MageVLVisionConfig
 
+
 class VisionRotaryEmbedding(nn.Module):
     """
     3D (T,H,W) Rotary frequency constructor with 4:6:6 split.
@@ -148,6 +149,7 @@ class VisionRotaryEmbedding(nn.Module):
         freqs = torch.cat([ft[t_ids], fh[h_ids], fw[w_ids]], dim=-1)
         return freqs
 
+
 def rotate_half(x):
     """
     Interleaved rotation to match Source model's implementation.
@@ -156,6 +158,7 @@ def rotate_half(x):
     x_even = x[..., ::2]
     x_odd = x[..., 1::2]
     return torch.stack((-x_odd, x_even), dim=-1).flatten(-2)
+
 
 def apply_rotary_pos_emb(q, k, freqs):
     # q, k: (B, H, L, D)
@@ -174,6 +177,7 @@ def apply_rotary_pos_emb(q, k, freqs):
     q_embed = q_embed.to(orig_q_dtype)
     k_embed = k_embed.to(orig_k_dtype)
     return q_embed, k_embed
+
 
 if __name__ == "__main__":
     test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -207,9 +211,41 @@ if __name__ == "__main__":
         + [[0, h, w] for h in range(2) for w in range(2)],
         dtype=torch.long,
     )
+    rotate_input = torch.randn(1, 2, 8, 32)
+    query = torch.randn(1, 2, 8, 32)
+    key = torch.randn_like(query)
+    rotary_frequencies = torch.randn(1, 8, 32)
 
     components = [
         ("Mage-VL vision RoPE", baseline, engine, (grid_thw,), (grid_thw,), {}, {}, None, None, 0, 0, False),
+        (
+            "Mage-VL rotate_half",
+            official.rotate_half,
+            rotate_half,
+            (rotate_input,),
+            (rotate_input,),
+            {},
+            {},
+            None,
+            None,
+            0,
+            0,
+            False,
+        ),
+        (
+            "Mage-VL apply_rotary_pos_emb",
+            official.apply_rotary_pos_emb,
+            apply_rotary_pos_emb,
+            (query, key, rotary_frequencies),
+            (query, key, rotary_frequencies),
+            {},
+            {},
+            None,
+            None,
+            1e-6,
+            1e-6,
+            False,
+        ),
         (
             "Mage-VL RoPE from positions",
             baseline.forward_from_positions,

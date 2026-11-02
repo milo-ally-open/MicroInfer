@@ -13,6 +13,7 @@ from ..architecture.configuration_mage_vl import MageVLVisionConfig
 from .siglip_mlp import SiglipMLP
 from .vision_attention import MageVLVisionAttention, get_norm_layer
 
+
 class MageVLVisionEncoderLayer(nn.Module):
     """Mage-VL 视觉 Encoder 层，采前置正规化与明确 eager 注意力。"""
 
@@ -53,6 +54,7 @@ class MageVLVisionEncoderLayer(nn.Module):
 
         outputs = (hidden_states, attn_weights) if output_attentions else (hidden_states,)
         return outputs
+
 
 class MageVLVisionEncoder(nn.Module):
     def __init__(self, config: MageVLVisionConfig):
@@ -117,6 +119,7 @@ class MageVLVisionEncoder(nn.Module):
             attentions=all_self_attentions,
         )
 
+
 if __name__ == "__main__":
     test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.set_default_device(test_device)
@@ -164,8 +167,23 @@ if __name__ == "__main__":
     frequencies = official.VisionRotaryEmbedding(reference_config)(grid_thw)
     rotary_pos_emb = torch.cat((frequencies, frequencies), dim=-1).unsqueeze(0)
     cu_seqlens = torch.tensor([0, 4, 8], dtype=torch.int32)
+    layer_kwargs = {"rotary_pos_emb": rotary_pos_emb, "cu_seqlens": cu_seqlens, "max_seqlen": 4}
 
     components = [
+        (
+            "Mage-VL vision encoder layer",
+            baseline.layers[0],
+            engine.layers[0],
+            (hidden_states,),
+            (hidden_states,),
+            layer_kwargs,
+            layer_kwargs,
+            0,
+            0,
+            1e-6,
+            1e-6,
+            False,
+        ),
         (
             "Mage-VL vision encoder stack",
             baseline,

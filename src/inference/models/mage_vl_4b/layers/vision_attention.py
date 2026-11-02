@@ -12,11 +12,13 @@ from ..architecture.configuration_mage_vl import MageVLVisionConfig
 from .siglip_mlp import SiglipMLP
 from .vision_rope import apply_rotary_pos_emb
 
+
 def get_norm_layer(config):
     if config.layer_norm_type == "rms_norm":
         return nn.RMSNorm(config.hidden_size, eps=config.layer_norm_eps)
     else:
         return nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+
 
 def eager_attention_forward(
     module: nn.Module,
@@ -33,9 +35,7 @@ def eager_attention_forward(
     attn_weights = torch.matmul(query, key.transpose(2, 3)) * scaling
     if attention_mask is not None:
         if attention_mask.dtype == torch.bool:
-            attn_weights = attn_weights.masked_fill(
-                ~attention_mask, torch.finfo(attn_weights.dtype).min
-            )
+            attn_weights = attn_weights.masked_fill(~attention_mask, torch.finfo(attn_weights.dtype).min)
         else:
             attn_weights = attn_weights + attention_mask
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
@@ -43,6 +43,7 @@ def eager_attention_forward(
     attn_output = torch.matmul(attn_weights, value)
     attn_output = attn_output.transpose(1, 2).contiguous()  # (B, L, H, D)
     return attn_output, attn_weights
+
 
 class MageVLVisionAttention(nn.Module):
     """以明确 eager 计算执行 Mage-VL 视觉注意力及 RoPE。"""
@@ -78,11 +79,7 @@ class MageVLVisionAttention(nn.Module):
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         batch_size, q_len, _ = hidden_states.size()
         # (B, L, 3*H*D) -> (B, L, 3, H, D) -> 3 x (B, L, H, D) -> 3 x (B, H, L, D)
-        q, k, v = (
-            self.qkv(hidden_states).reshape(batch_size, q_len, 3, self.num_heads, self.head_dim)
-            .permute(2, 0, 1, 3, 4)
-            .unbind(0)
-        )
+        q, k, v = self.qkv(hidden_states).reshape(batch_size, q_len, 3, self.num_heads, self.head_dim).permute(2, 0, 1, 3, 4).unbind(0)
         query_states = q.transpose(1, 2)
         key_states = k.transpose(1, 2)
         value_states = v.transpose(1, 2)
@@ -133,6 +130,7 @@ class MageVLVisionAttention(nn.Module):
 
         return attn_output, None
 
+
 if __name__ == "__main__":
     test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.set_default_device(test_device)
@@ -164,12 +162,60 @@ if __name__ == "__main__":
     engine.load_state_dict(baseline.state_dict(), strict=True)
 
     hidden_states = torch.randn(1, 8, config.hidden_size)
+    query = torch.randn(1, 2, 8, 32)
+    key = torch.randn_like(query)
+    value = torch.randn_like(query)
+    attention_mask = torch.zeros(1, 1, 8, 8)
+    attention_owner = nn.Identity().eval()
+    norm_inputs = torch.randn(2, 8, config.hidden_size)
     grid_thw = torch.tensor([[2, 2, 2]])
     frequencies = official.VisionRotaryEmbedding(reference_config)(grid_thw)
     rotary_pos_emb = torch.cat((frequencies, frequencies), dim=-1).unsqueeze(0)
     cu_seqlens = torch.tensor([0, 4, 8], dtype=torch.int32)
 
     components = [
+        (
+            "Mage-VL eager_attention_forward",
+            official.eager_attention_forward,
+            eager_attention_forward,
+            (attention_owner, query, key, value, attention_mask, 32**-0.5),
+            (attention_owner, query, key, value, attention_mask, 32**-0.5),
+            {},
+            {},
+            None,
+            None,
+            1e-6,
+            1e-6,
+            False,
+        ),
+        (
+            "Mage-VL LayerNorm",
+            official.get_norm_layer(official.MageVLVisionConfig(hidden_size=64, layer_norm_type="layer_norm")),
+            get_norm_layer(MageVLVisionConfig(hidden_size=64, layer_norm_type="layer_norm")),
+            (norm_inputs,),
+            (norm_inputs,),
+            {},
+            {},
+            None,
+            None,
+            1e-6,
+            1e-6,
+            False,
+        ),
+        (
+            "Mage-VL RMSNorm",
+            official.get_norm_layer(official.MageVLVisionConfig(hidden_size=64, layer_norm_type="rms_norm")),
+            get_norm_layer(MageVLVisionConfig(hidden_size=64, layer_norm_type="rms_norm")),
+            (norm_inputs,),
+            (norm_inputs,),
+            {},
+            {},
+            None,
+            None,
+            1e-6,
+            1e-6,
+            False,
+        ),
         (
             "Mage-VL vision attention",
             baseline,
