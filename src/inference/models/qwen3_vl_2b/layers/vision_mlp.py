@@ -17,16 +17,8 @@ class Qwen3VLVisionMLP(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        self.linear_fc1 = nn.Linear(
-            self.hidden_size,
-            self.intermediate_size,
-            bias=True,
-        )
-        self.linear_fc2 = nn.Linear(
-            self.intermediate_size,
-            self.hidden_size,
-            bias=True,
-        )
+        self.linear_fc1 = nn.Linear(self.hidden_size, self.intermediate_size, bias=True)
+        self.linear_fc2 = nn.Linear(self.intermediate_size, self.hidden_size, bias=True)
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:

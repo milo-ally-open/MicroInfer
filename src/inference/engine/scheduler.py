@@ -143,8 +143,6 @@ def plan_batch(
     return BatchPlan(tuple(scheduled), scheduled_tokens, next_cursor)
 
 
-
-
 class SchedulerFullError(RuntimeError):
     """等待队列及执行序列均已达上限。"""
 

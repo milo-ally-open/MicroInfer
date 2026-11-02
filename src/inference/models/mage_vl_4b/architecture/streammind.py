@@ -88,9 +88,7 @@ class MageVLStreamMindMixin:
         ]
         lengths = [token.shape[1] for token in tokens]
         boundaries = torch.tensor(lengths).cumsum(0).tolist()
-        return self._load_streammind_gate()(
-            torch.cat(tokens, dim=1), response_positions=boundaries
-        )
+        return self._load_streammind_gate()(torch.cat(tokens, dim=1), response_positions=boundaries)
 
 
 if __name__ == "__main__":

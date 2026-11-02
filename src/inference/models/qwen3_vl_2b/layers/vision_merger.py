@@ -51,14 +51,8 @@ if __name__ == "__main__":
 
     # 普通 Merger 和 DeepStack Merger 的 LayerNorm 输入位置不同，分别对齐。
     for use_postshuffle_norm in (False, True):
-        reference = _ReferenceMerger(
-            config,
-            use_postshuffle_norm=use_postshuffle_norm,
-        )
-        local = Qwen3VLVisionPatchMerger(
-            config,
-            use_postshuffle_norm=use_postshuffle_norm,
-        )
+        reference = _ReferenceMerger(config, use_postshuffle_norm=use_postshuffle_norm)
+        local = Qwen3VLVisionPatchMerger(config, use_postshuffle_norm=use_postshuffle_norm)
         local.load_state_dict(reference.state_dict(), strict=True)
         local.to(device).eval()
         reference.to(device).eval()

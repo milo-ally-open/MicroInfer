@@ -315,9 +315,7 @@ class MageVLStepwiseGeneration:
             self.cache_manager.update(
                 request_id, split_caches[index], expected_length=expected_cache_length
             )
-            results.append(
-                self._record_token(state, output.logits[index : index + 1, -1, :])
-            )
+            results.append(self._record_token(state, output.logits[index:index + 1, -1, :]))
         return tuple(results)
 
     def finish(self, request_id: str) -> tuple[Any, str]:
@@ -502,10 +500,7 @@ class MageVLStepwiseGeneration:
             for row in range(batch_size):
                 row_pairs = []
                 for key, value in layer_pairs:
-                    row_pairs.append((
-                        key[row : row + 1].clone(),
-                        value[row : row + 1].clone(),
-                    ))
+                    row_pairs.append((key[row:row + 1].clone(), value[row:row + 1].clone()))
                 split.append(self._new_cache(cache, row_pairs))
             return split
         batch_split = getattr(cache, "batch_split", None)
@@ -693,11 +688,7 @@ if __name__ == "__main__":
         "use_cache": True,
         "eos_token_id": None,
     }
-    engine.begin(
-        request_id,
-        {"input_ids": input_ids, "attention_mask": attention_mask},
-        options,
-    )
+    engine.begin(request_id, {"input_ids": input_ids, "attention_mask": attention_mask}, options)
     try:
         with torch.inference_mode():
             baseline_prefill = baseline_model(
@@ -736,11 +727,7 @@ if __name__ == "__main__":
     # Bench：每轮都创建独立请求并完整执行 Prefill + 单 token Decode，避免复用 Cache。
     for warmup_index in range(2):
         warmup_id = f"stepwise-warmup-{warmup_index}"
-        engine.begin(
-            warmup_id,
-            {"input_ids": input_ids, "attention_mask": attention_mask},
-            options,
-        )
+        engine.begin(warmup_id, {"input_ids": input_ids, "attention_mask": attention_mask}, options)
         engine.execute_work_batch(
             (ScheduledWorkItem(warmup_id, ExecutionPhase.PREFILL, input_ids.shape[-1]),)
         )
@@ -761,9 +748,7 @@ if __name__ == "__main__":
             engine.execute_work_batch(
                 (ScheduledWorkItem(benchmark_id, ExecutionPhase.PREFILL, input_ids.shape[-1]),)
             )
-            engine.execute_work_batch(
-                (ScheduledWorkItem(benchmark_id, ExecutionPhase.DECODE, 1),)
-            )
+            engine.execute_work_batch((ScheduledWorkItem(benchmark_id, ExecutionPhase.DECODE, 1),))
             engine.cancel(benchmark_id)
         end_event.record()
         end_event.synchronize()
@@ -780,20 +765,14 @@ if __name__ == "__main__":
             engine.execute_work_batch(
                 (ScheduledWorkItem(benchmark_id, ExecutionPhase.PREFILL, input_ids.shape[-1]),)
             )
-            engine.execute_work_batch(
-                (ScheduledWorkItem(benchmark_id, ExecutionPhase.DECODE, 1),)
-            )
+            engine.execute_work_batch((ScheduledWorkItem(benchmark_id, ExecutionPhase.DECODE, 1),))
             engine.cancel(benchmark_id)
         stepwise_ms = (time.perf_counter() - started_at) * 1000 / 10
     print(f"Bench: Stepwise Prefill+Decode average={stepwise_ms:.3f} ms/request on {test_device}.")
 
     # Profile：分别采集调度层调用的 Prefill 和 Decode 两个模型前向。
     profile_id = "stepwise-profile"
-    engine.begin(
-        profile_id,
-        {"input_ids": input_ids, "attention_mask": attention_mask},
-        options,
-    )
+    engine.begin(profile_id, {"input_ids": input_ids, "attention_mask": attention_mask}, options)
     profile_activities = [torch.profiler.ProfilerActivity.CPU]
     if test_device.type == "cuda":
         profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
@@ -806,9 +785,7 @@ if __name__ == "__main__":
             engine.execute_work_batch(
                 (ScheduledWorkItem(profile_id, ExecutionPhase.PREFILL, input_ids.shape[-1]),)
             )
-            engine.execute_work_batch(
-                (ScheduledWorkItem(profile_id, ExecutionPhase.DECODE, 1),)
-            )
+            engine.execute_work_batch((ScheduledWorkItem(profile_id, ExecutionPhase.DECODE, 1),))
     engine.cancel(profile_id)
     if test_device.type == "cuda":
         torch.cuda.synchronize(test_device)

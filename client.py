@@ -11,10 +11,7 @@ GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://127.0.0.1:8000").rstrip("/")
 API_KEY = os.environ["VIDEO_API_KEY"]
 
 # 普通对话
-client = OpenAI(
-    api_key=API_KEY,
-    base_url=GATEWAY_URL + "/v1",
-)
+client = OpenAI(api_key=API_KEY, base_url=GATEWAY_URL + "/v1")
 
 response = client.chat.completions.create(
     model="qwen3-vl-2b",

@@ -166,13 +166,11 @@ def _resolve_factory_path(factory_path: str) -> None:
         raise ValueError("Worker factory must use 'module:function' notation.")
 
 
-
 import multiprocessing
 import threading
 import time
 from collections.abc import Sequence
 from typing import Any
-
 
 
 class LocalProcessExecutor:

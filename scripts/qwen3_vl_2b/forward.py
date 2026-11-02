@@ -66,11 +66,7 @@ print("revision:", REVISION)
 print("device:", torch.cuda.get_device_name(0) if CUDA_AVAILABLE else DEVICE)
 print("image:", IMAGE_PATH)
 
-processor = AutoProcessor.from_pretrained(
-    MODEL_PATH,
-    revision=REVISION,
-    local_files_only=True,
-)
+processor = AutoProcessor.from_pretrained(MODEL_PATH, revision=REVISION, local_files_only=True)
 model = Qwen3VLForConditionalGeneration.from_pretrained(
     MODEL_PATH,
     revision=REVISION,

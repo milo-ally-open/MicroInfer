@@ -62,14 +62,8 @@ class Qwen3VLTextAttention(nn.Module):
             config.hidden_size,
             bias=config.attention_bias,
         )
-        self.q_norm = Qwen3VLTextRMSNorm(
-            self.head_dim,
-            eps=config.rms_norm_eps,
-        )
-        self.k_norm = Qwen3VLTextRMSNorm(
-            self.head_dim,
-            eps=config.rms_norm_eps,
-        )
+        self.q_norm = Qwen3VLTextRMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.k_norm = Qwen3VLTextRMSNorm(self.head_dim, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -82,22 +76,13 @@ class Qwen3VLTextAttention(nn.Module):
         # 将投影结果拆成 heads，并在每个 head 的通道维上归一化 Q/K。
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
-        query_states = self.q_norm(
-            self.q_proj(hidden_states).view(hidden_shape)
-        ).transpose(1, 2)
-        key_states = self.k_norm(
-            self.k_proj(hidden_states).view(hidden_shape)
-        ).transpose(1, 2)
+        query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
         # 使用上层按文本/图像位置生成的 MRoPE，并将新 K/V 写入请求 Cache。
         cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(
-            query_states,
-            key_states,
-            cos,
-            sin,
-        )
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
         if past_key_values is not None:
             key_states, value_states = past_key_values.update(
                 key_states,
@@ -154,12 +139,7 @@ if __name__ == "__main__":
     reference.to(device).eval()
 
     batch_size, sequence_length = 2, 5
-    hidden_states = torch.randn(
-        batch_size,
-        sequence_length,
-        config.hidden_size,
-        device=device,
-    )
+    hidden_states = torch.randn(batch_size, sequence_length, config.hidden_size, device=device)
     cos = torch.randn(batch_size, sequence_length, config.head_dim, device=device)
     sin = torch.randn_like(cos)
     attention_mask = torch.triu(

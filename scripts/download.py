@@ -9,53 +9,28 @@ from pathlib import Path
 
 def build_parser() -> argparse.ArgumentParser:
     """创建通用模型快照下载器的命令行参数。"""
-    parser = argparse.ArgumentParser(
-        description="下载 Hugging Face Hub 上指定 revision 的完整模型快照。"
-    )
-    parser.add_argument(
-        "--repo-id",
-        required=True,
-        help="Hugging Face 模型 ID，例如 microsoft/Mage-VL。",
-    )
+    parser = argparse.ArgumentParser(description="下载 Hugging Face Hub 上指定 revision 的完整模型快照。")
+    parser.add_argument("--repo-id", required=True, help="Hugging Face 模型 ID，例如 microsoft/Mage-VL。")
     parser.add_argument(
         "--revision",
         required=True,
         help="要下载的 branch、tag 或 commit SHA；建议使用固定 commit SHA。",
     )
-    parser.add_argument(
-        "--local-dir",
-        required=True,
-        type=Path,
-        help="模型文件的明确下载目标目录。",
-    )
+    parser.add_argument("--local-dir", required=True, type=Path, help="模型文件的明确下载目标目录。")
     parser.add_argument(
         "--allow-pattern",
         action="append",
         default=None,
         help="只下载符合的文件模式；可重复指定。未指定时下载完整快照。",
     )
-    parser.add_argument(
-        "--ignore-pattern",
-        action="append",
-        default=None,
-        help="跳过符合的文件模式；可重复指定。",
-    )
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=8,
-        help="并行下载的工作数，默认为 8。",
-    )
+    parser.add_argument("--ignore-pattern", action="append", default=None, help="跳过符合的文件模式；可重复指定。")
+    parser.add_argument("--max-workers", type=int, default=8, help="并行下载的工作数，默认为 8。")
     parser.add_argument(
         "--token-env",
         default="HF_TOKEN",
         help="Hugging Face 访问令牌所在的环境变量名，默认为 HF_TOKEN。",
     )
-    parser.add_argument(
-        "--force-download",
-        action="store_true",
-        help="忽略本地缓存文件并重新下载。",
-    )
+    parser.add_argument("--force-download", action="store_true", help="忽略本地缓存文件并重新下载。")
     return parser
 
 

@@ -543,11 +543,7 @@ if __name__ == "__main__":
             record_shapes=True,
             profile_memory=True,
         ) as vision_tower_profile:
-            vision_model(
-                pixel_patches,
-                grid_thw=grid_thw,
-                patch_positions=patch_positions,
-            )
+            vision_model(pixel_patches, grid_thw=grid_thw, patch_positions=patch_positions)
     if test_device.type == "cuda":
         torch.cuda.synchronize(test_device)
         profile_sort = "self_cuda_time_total"

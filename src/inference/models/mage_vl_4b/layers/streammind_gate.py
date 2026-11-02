@@ -116,9 +116,7 @@ class StreamMindGate(nn.Module):
         target_ids = torch.zeros(batch, time, dtype=torch.long, device=tokens.device)
         if response_positions is not None:
             target_ids[:, torch.as_tensor(response_positions, device=tokens.device) - 1] = 1
-        targets = self.cls_net.cls_model.model.embed_tokens(
-            target_ids.reshape(batch * time)
-        )
+        targets = self.cls_net.cls_model.model.embed_tokens(target_ids.reshape(batch * time))
         pair = torch.stack((tokens.reshape(batch * time, dim), targets), dim=1)
         rotary = self.cls_net.cls_model.model.rotary_emb
         saved_inv_freq = rotary.inv_freq

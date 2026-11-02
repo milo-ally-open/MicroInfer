@@ -347,7 +347,6 @@ class MageVLForConditionalGeneration(MageVLPreTrainedModel, GenerationMixin):
         )
 
 
-
     def prepare_inputs_for_generation(
         self,
         input_ids,

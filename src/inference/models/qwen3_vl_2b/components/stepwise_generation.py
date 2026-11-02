@@ -143,9 +143,7 @@ class Qwen3VLStepwiseGeneration:
         past_length = self._cache_length(past_key_values)
         if past_length + 1 > len(state["logical_block_ids"]) * self.block_size_tokens:
             raise RuntimeError("Qwen3-VL Decode exceeded the Engine-reserved KV blocks.")
-        attention_mask = torch.ones(
-            (1, past_length + 1), dtype=torch.long, device=input_ids.device
-        )
+        attention_mask = torch.ones((1, past_length + 1), dtype=torch.long, device=input_ids.device)
         generation_kwargs = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
@@ -177,9 +175,7 @@ class Qwen3VLStepwiseGeneration:
         input_ids = state["input_ids"]
         token_id = self._sample(logits, input_ids[0].tolist(), state["options"])
         state["generated_ids"].append(token_id)
-        state["input_ids"] = torch.cat(
-            [input_ids, input_ids.new_tensor([[token_id]])], dim=-1
-        )
+        state["input_ids"] = torch.cat([input_ids, input_ids.new_tensor([[token_id]])], dim=-1)
         reached_limit = len(state["generated_ids"]) >= int(state["options"]["max_new_tokens"])
         is_eos = token_id in state["eos_token_ids"]
         state["done"] = reached_limit or is_eos
@@ -324,11 +320,7 @@ if __name__ == "__main__":
         "use_cache": True,
     }
     request_id = "qwen3-vl-stepwise-forward-check"
-    stepwise.begin(
-        request_id,
-        {"input_ids": input_ids, "attention_mask": attention_mask},
-        options,
-    )
+    stepwise.begin(request_id, {"input_ids": input_ids, "attention_mask": attention_mask}, options)
     stepwise.bind_cache(request_id, (0,))
 
     # Test：用 Transformers 独立模型检查 Prefill logits、Decode token 与 Cache 长度。

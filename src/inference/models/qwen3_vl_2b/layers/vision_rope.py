@@ -17,17 +17,11 @@ class Qwen3VLVisionRotaryEmbedding(nn.Module):
         self.config = config
         self.rope_type = config.rope_parameters["rope_type"]
         if self.rope_type != "axial":
-            raise ValueError(
-                f"Qwen3VL 视觉 RoPE 只支持 axial，收到 {self.rope_type}"
-            )
+            raise ValueError(f'Qwen3VL 视觉 RoPE 只支持 axial，收到 {self.rope_type}')
 
         inv_freq, self.attention_scaling = self.compute_axial_rope_parameters(config)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.register_buffer(
-            "original_inv_freq",
-            inv_freq.clone(),
-            persistent=False,
-        )
+        self.register_buffer("original_inv_freq", inv_freq.clone(), persistent=False)
 
     @staticmethod
     def compute_axial_rope_parameters(config, device=None, **kwargs):
@@ -52,16 +46,9 @@ class Qwen3VLVisionRotaryEmbedding(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # position_ids 第一行是 H 坐标，第二行是 W 坐标。
         coordinates = position_ids[..., None].float()
-        frequencies = coordinates * self.inv_freq.to(
-            device=hidden_states.device,
-            dtype=torch.float,
-        )
-        cos = self.recomposition_frequencies(
-            frequencies.cos() * self.attention_scaling
-        )
-        sin = self.recomposition_frequencies(
-            frequencies.sin() * self.attention_scaling
-        )
+        frequencies = coordinates * self.inv_freq.to(device=hidden_states.device, dtype=torch.float)
+        cos = self.recomposition_frequencies(frequencies.cos() * self.attention_scaling)
+        sin = self.recomposition_frequencies(frequencies.sin() * self.attention_scaling)
         return cos, sin
 
     def recomposition_frequencies(self, frequencies: torch.Tensor) -> torch.Tensor:

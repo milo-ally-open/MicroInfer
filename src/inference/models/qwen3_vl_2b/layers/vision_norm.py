@@ -18,13 +18,7 @@ class Qwen3VLVisionLayerNorm(nn.Module):
         self.bias = nn.Parameter(torch.zeros(hidden_size))
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return F.layer_norm(
-            hidden_states,
-            self.normalized_shape,
-            self.weight,
-            self.bias,
-            self.eps,
-        )
+        return F.layer_norm(hidden_states, self.normalized_shape, self.weight, self.bias, self.eps)
 
 
 if __name__ == "__main__":

@@ -36,9 +36,7 @@ class Qwen3VLModelRunner:
             from .. import loader as config
 
             block_size_tokens = int(config.ENGINE_CONFIG["kv_cache"]["block_size_tokens"])
-        self._stepwise = Qwen3VLStepwiseGeneration(
-            block_size_tokens=block_size_tokens,
-        )
+        self._stepwise = Qwen3VLStepwiseGeneration(block_size_tokens=block_size_tokens)
 
     def load(self) -> None:
         if self.model is not None:
@@ -52,9 +50,7 @@ class Qwen3VLModelRunner:
         if dtype not in supported_dtypes:
             raise ValueError(f"Unsupported Qwen3-VL dtype: {config.MODEL_DTYPE}.")
 
-        device = self.platform.resolve_device(
-            "cuda:0" if torch.cuda.is_available() else "cpu"
-        )
+        device = self.platform.resolve_device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.processor = AutoProcessor.from_pretrained(
             snapshot,
             revision=config.MODEL_REVISION,

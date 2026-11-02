@@ -292,9 +292,7 @@ if __name__ == "__main__":
             runner.execute_batch(
                 (ScheduledWorkItem(benchmark_id, ExecutionPhase.PREFILL, prompt.shape[-1]),)
             )
-            runner.execute_batch(
-                (ScheduledWorkItem(benchmark_id, ExecutionPhase.DECODE, 1),)
-            )
+            runner.execute_batch((ScheduledWorkItem(benchmark_id, ExecutionPhase.DECODE, 1),))
             runner.cancel_generation(benchmark_id)
         end_event.record()
         end_event.synchronize()
@@ -311,9 +309,7 @@ if __name__ == "__main__":
             runner.execute_batch(
                 (ScheduledWorkItem(benchmark_id, ExecutionPhase.PREFILL, prompt.shape[-1]),)
             )
-            runner.execute_batch(
-                (ScheduledWorkItem(benchmark_id, ExecutionPhase.DECODE, 1),)
-            )
+            runner.execute_batch((ScheduledWorkItem(benchmark_id, ExecutionPhase.DECODE, 1),))
             runner.cancel_generation(benchmark_id)
         runner_ms = (time.perf_counter() - started_at) * 1000 / 10
     print(f"Bench: ModelRunner Prefill+Decode average={runner_ms:.3f} ms/request on {test_device}.")
@@ -337,9 +333,7 @@ if __name__ == "__main__":
             runner.execute_batch(
                 (ScheduledWorkItem(profile_id, ExecutionPhase.PREFILL, prompt.shape[-1]),)
             )
-            runner.execute_batch(
-                (ScheduledWorkItem(profile_id, ExecutionPhase.DECODE, 1),)
-            )
+            runner.execute_batch((ScheduledWorkItem(profile_id, ExecutionPhase.DECODE, 1),))
     runner.cancel_generation(profile_id)
     if test_device.type == "cuda":
         torch.cuda.synchronize(test_device)

@@ -46,7 +46,6 @@ class EngineOutputProcessor:
         return ()
 
 
-
 @dataclass
 class _GenerationContext:
     """由 Engine Core 调度、并将结果送至单一 API stream 的请求状态。"""

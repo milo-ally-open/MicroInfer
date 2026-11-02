@@ -23,21 +23,11 @@ class Qwen3VLTextRotaryEmbedding(nn.Module):
         self.config = config
         self.rope_type = config.rope_parameters["rope_type"]
 
-        rope_init = ROPE_INIT_FUNCTIONS.get(
-            self.rope_type,
-            self.compute_default_rope_parameters,
-        )
+        rope_init = ROPE_INIT_FUNCTIONS.get(self.rope_type, self.compute_default_rope_parameters)
         inv_freq, self.attention_scaling = rope_init(config, device=device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.register_buffer(
-            "original_inv_freq",
-            inv_freq.clone(),
-            persistent=False,
-        )
-        self.mrope_section = config.rope_parameters.get(
-            "mrope_section",
-            [24, 20, 20],
-        )
+        self.register_buffer("original_inv_freq", inv_freq.clone(), persistent=False)
+        self.mrope_section = config.rope_parameters.get("mrope_section", [24, 20, 20])
 
     @staticmethod
     def compute_default_rope_parameters(config, device=None, **kwargs):
@@ -63,12 +53,8 @@ class Qwen3VLTextRotaryEmbedding(nn.Module):
             device=hidden_states.device,
             dtype=torch.float,
         )
-        cos = self.recomposition_frequencies(
-            frequencies.cos() * self.attention_scaling
-        )
-        sin = self.recomposition_frequencies(
-            frequencies.sin() * self.attention_scaling
-        )
+        cos = self.recomposition_frequencies(frequencies.cos() * self.attention_scaling)
+        sin = self.recomposition_frequencies(frequencies.sin() * self.attention_scaling)
         return cos.to(hidden_states.dtype), sin.to(hidden_states.dtype)
 
     def recomposition_frequencies(self, frequencies: torch.Tensor) -> torch.Tensor:

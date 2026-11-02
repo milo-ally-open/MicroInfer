@@ -22,10 +22,7 @@ class Qwen3VLTextDecoderLayer(nn.Module):
         self.hidden_size = config.hidden_size
         self.self_attn = Qwen3VLTextAttention(config, layer_idx)
         self.mlp = Qwen3VLTextMLP(config)
-        self.input_layernorm = Qwen3VLTextRMSNorm(
-            config.hidden_size,
-            eps=config.rms_norm_eps,
-        )
+        self.input_layernorm = Qwen3VLTextRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen3VLTextRMSNorm(
             config.hidden_size,
             eps=config.rms_norm_eps,
@@ -90,12 +87,7 @@ if __name__ == "__main__":
     reference.to(device).eval()
 
     batch_size, sequence_length = 2, 5
-    hidden_states = torch.randn(
-        batch_size,
-        sequence_length,
-        config.hidden_size,
-        device=device,
-    )
+    hidden_states = torch.randn(batch_size, sequence_length, config.hidden_size, device=device)
     cos = torch.randn(batch_size, sequence_length, config.head_dim, device=device)
     sin = torch.randn_like(cos)
 

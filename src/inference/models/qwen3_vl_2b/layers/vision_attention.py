@@ -39,12 +39,7 @@ class Qwen3VLVisionAttention(nn.Module):
         **kwargs,
     ) -> torch.Tensor:
         sequence_length = hidden_states.shape[0]
-        qkv = self.qkv(hidden_states).reshape(
-            sequence_length,
-            3,
-            self.num_heads,
-            self.head_dim,
-        )
+        qkv = self.qkv(hidden_states).reshape(sequence_length, 3, self.num_heads, self.head_dim)
         query, key, value = qkv.permute(1, 0, 2, 3).unbind(0)
 
         # 先对 Q/K 施加二维视觉 RoPE，再整理成 backend 需要的布局。
@@ -63,11 +58,7 @@ class Qwen3VLVisionAttention(nn.Module):
 
         if is_flash_attention_requested(self.config):
             # FlashAttention 直接消费边界数组，支持变长图像序列。
-            max_seqlen = get_max_seqlen(
-                cu_seqlens,
-                self.config,
-                kwargs={"max_seqlen": max_seqlen},
-            )
+            max_seqlen = get_max_seqlen(cu_seqlens, self.config, kwargs={"max_seqlen": max_seqlen})
             output, _ = attention(
                 self,
                 query,
@@ -102,11 +93,7 @@ class Qwen3VLVisionAttention(nn.Module):
                     is_causal=False,
                     **kwargs,
                 )[0]
-                for query_part, key_part, value_part in zip(
-                    query_splits,
-                    key_splits,
-                    value_splits,
-                )
+                for query_part, key_part, value_part in zip(query_splits, key_splits, value_splits)
             ]
             output = torch.cat(outputs, dim=1)
 

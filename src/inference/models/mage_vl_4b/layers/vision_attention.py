@@ -82,8 +82,7 @@ class MageVLVisionAttention(nn.Module):
         batch_size, q_len, _ = hidden_states.size()
         # (B, L, 3*H*D) -> (B, L, 3, H, D) -> 3 x (B, L, H, D) -> 3 x (B, H, L, D)
         q, k, v = (
-            self.qkv(hidden_states)
-            .reshape(batch_size, q_len, 3, self.num_heads, self.head_dim)
+            self.qkv(hidden_states).reshape(batch_size, q_len, 3, self.num_heads, self.head_dim)
             .permute(2, 0, 1, 3, 4)
             .unbind(0)
         )

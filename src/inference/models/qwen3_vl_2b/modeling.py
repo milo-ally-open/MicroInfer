@@ -37,22 +37,13 @@ class Qwen3VLVisionModel(_TransformersVisionModel):
         self.spatial_merge_unit = self.spatial_merge_size**2
 
         self.patch_embed = Qwen3VLVisionPatchEmbed(config)
-        self.pos_embed = nn.Embedding(
-            config.num_position_embeddings,
-            config.hidden_size,
-        )
+        self.pos_embed = nn.Embedding(config.num_position_embeddings, config.hidden_size)
         self.num_grid_per_side = int(config.num_position_embeddings**0.5)
         self.interpolation_align_corners = True
         self.interpolation_mode = "bilinear"
         self.rotary_pos_emb = Qwen3VLVisionRotaryEmbedding(config)
-        self.blocks = nn.ModuleList(
-            Qwen3VLVisionBlock(config)
-            for _ in range(config.depth)
-        )
-        self.merger = Qwen3VLVisionPatchMerger(
-            config,
-            use_postshuffle_norm=False,
-        )
+        self.blocks = nn.ModuleList((Qwen3VLVisionBlock(config) for _ in range(config.depth)))
+        self.merger = Qwen3VLVisionPatchMerger(config, use_postshuffle_norm=False)
         self.deepstack_visual_indexes = config.deepstack_visual_indexes
         self.deepstack_merger_list = nn.ModuleList(
             Qwen3VLVisionPatchMerger(config, use_postshuffle_norm=True)
@@ -78,10 +69,7 @@ class Qwen3VLTextModel(_TransformersTextModel):
             Qwen3VLTextDecoderLayer(config, layer_idx)
             for layer_idx in range(config.num_hidden_layers)
         )
-        self.norm = Qwen3VLTextRMSNorm(
-            config.hidden_size,
-            eps=config.rms_norm_eps,
-        )
+        self.norm = Qwen3VLTextRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Qwen3VLTextRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
         self.post_init()
@@ -178,11 +166,7 @@ if __name__ == "__main__":
             attention_mask=attention_mask,
             use_cache=False,
         ).logits
-        actual = local(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            use_cache=False,
-        ).logits
+        actual = local(input_ids=input_ids, attention_mask=attention_mask, use_cache=False).logits
     torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
     print(f"Qwen3VLForConditionalGeneration parity passed on {device}.")
 
@@ -209,12 +193,7 @@ if __name__ == "__main__":
             image_grid_thw=image_grid_thw,
             use_cache=False,
         ).logits
-    torch.testing.assert_close(
-        actual_image_logits,
-        expected_image_logits,
-        atol=1e-5,
-        rtol=1e-5,
-    )
+    torch.testing.assert_close(actual_image_logits, expected_image_logits, atol=1e-05, rtol=1e-05)
     print(f"Qwen3VL image-to-text full-model parity passed on {device}.")
 
     # Bench：分别测量纯文本和图文前向，排除权重加载时间。

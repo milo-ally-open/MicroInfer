@@ -158,9 +158,7 @@ class MageVLModelAdapter:
         self, request_id: str, question: str, frames: list[Any], generation_options: dict[str, Any]
     ) -> dict[str, int]:
         started = time.perf_counter()
-        inputs, prompt_tokens, _ = self.encoder.encode_video(
-            question, frames, backend="frames"
-        )
+        inputs, prompt_tokens, _ = self.encoder.encode_video(question, frames, backend="frames")
         self.encoder.check_context(prompt_tokens, generation_options)
         self.model_runner.begin_generation(request_id, inputs, generation_options)
         self._tasks[request_id] = {
