@@ -1,4 +1,5 @@
 """Qwen3-VL 底层模块的延迟导出，避免单层 main 测试预先导入其他层。"""
+
 from importlib import import_module
 
 _EXPORTS = {

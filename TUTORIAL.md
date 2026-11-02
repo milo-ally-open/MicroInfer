@@ -211,6 +211,13 @@ VLM 的重点检查项：视觉预处理和视觉塔开销、视觉 token 数对
 
 每个自研计算层都提供独立的小型 `__main__` 前向入口：在 CUDA 可用时默认用 CUDA，否则 CPU；构造相同配置的官方参考层和本地层，将参考权重复制/映射到本地层，用同一输入做 `eval()` 与 `torch.inference_mode()` 对比，断言输出 shape 和 `torch.testing.assert_close()`。测试随机参数只能验证接口形状；有 checkpoint 时还要做真实权重 key/数值对齐。
 
+**组件入口必须以包模块方式运行**，不要直接执行 `python layers/vision_attention.py`。模型层使用包内相对导入，直接运行文件会丢失包上下文并报 `attempted relative import with no known parent package`。在仓库根目录、激活对应模型依赖环境后运行：
+
+```bash
+python -m inference.models.mage_vl_4b.layers.vision_attention
+python -m inference.models.qwen3_vl_2b.layers.text_attention
+```
+
 按模型结构编写，不是固定清单：模型不需要的文件不要创建。出现权重 key 无法匹配、Processor 字段缺失或官方前向不支持时，先定位架构差异，不用 `strict=False` 掩盖未加载权重。
 
 ## 5. 按仓库规范实现模型包

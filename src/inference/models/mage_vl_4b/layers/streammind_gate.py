@@ -132,19 +132,19 @@ class StreamMindGate(nn.Module):
 if __name__ == "__main__":
     test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.set_default_device(test_device)
+
     from transformers import Qwen3Config
     from transformers.models.qwen3 import Qwen3ForCausalLM
 
     torch.manual_seed(71)
-    pre_net = PreNet(d_code=8, d_model=12).eval()
-    post_net = PostNet(d_model=12, n_class=4).eval()
-    features = torch.randn(2, 3, 8)
-    hidden_states = torch.randn(2, 3, 12)
-
     baseline_pre = nn.Sequential(nn.Linear(8, 12), nn.LeakyReLU()).to(test_device).eval()
-    baseline_pre[0].load_state_dict(pre_net.fc3.state_dict(), strict=True)
+    enhanced_pre = PreNet(d_code=8, d_model=12).to(test_device).eval()
+    enhanced_pre.fc3.load_state_dict(baseline_pre[0].state_dict(), strict=True)
     baseline_post = nn.Sequential(nn.LeakyReLU(), nn.Linear(12, 4)).to(test_device).eval()
-    baseline_post[1].load_state_dict(post_net.fc3.state_dict(), strict=True)
+    enhanced_post = PostNet(d_model=12, n_class=4).to(test_device).eval()
+    enhanced_post.fc3.load_state_dict(baseline_post[1].state_dict(), strict=True)
+    features = torch.randn(2, 3, 8, device=test_device)
+    hidden_states = torch.randn(2, 3, 12, device=test_device)
 
     classifier_config = Qwen3Config(
         vocab_size=2,
@@ -160,23 +160,37 @@ if __name__ == "__main__":
     classifier_config.rope_theta = float(classifier_config.rope_parameters["rope_theta"])
     classifier_config._attn_implementation = "eager"
     baseline_classifier = Qwen3ForCausalLM(classifier_config).to(test_device).eval()
-    engine_classifier = Qwen3ForCausalLMCls(classifier_config).to(test_device).eval()
-    engine_classifier.load_state_dict(baseline_classifier.state_dict(), strict=True)
+    enhanced_classifier = Qwen3ForCausalLMCls(classifier_config).to(test_device).eval()
+    enhanced_classifier.load_state_dict(baseline_classifier.state_dict(), strict=True)
     classifier_inputs = torch.randn(2, 3, classifier_config.hidden_size, device=test_device)
     classifier_mask = torch.ones(2, 3, dtype=torch.long, device=test_device)
-    cls_net = ClsNet(hidden_size=32, num_layers=1).to(test_device).eval()
-    baseline_cls_net = Qwen3ForCausalLM(cls_net.cls_model.config).to(test_device).eval()
-    baseline_cls_net.load_state_dict(cls_net.cls_model.state_dict(), strict=True)
+
+    enhanced_cls_net = ClsNet(hidden_size=32, num_layers=1).to(test_device).eval()
+    baseline_cls_net = Qwen3ForCausalLM(enhanced_cls_net.cls_model.config).to(test_device).eval()
+    baseline_cls_net.load_state_dict(enhanced_cls_net.cls_model.state_dict(), strict=True)
     cls_net_inputs = torch.randn(1, 2, 32, device=test_device)
     cls_net_mask = torch.ones(1, 2, dtype=torch.long, device=test_device)
 
     components = [
-        ("StreamMind PreNet", baseline_pre, pre_net, (features,), (features,), {}, {}, None, None, 1e-6, 1e-6, False),
-        ("StreamMind PostNet", baseline_post, post_net, (hidden_states,), (hidden_states,), {}, {}, None, None, 1e-6, 1e-6, False),
+        ("StreamMind PreNet", baseline_pre, enhanced_pre, (features,), (features,), {}, {}, None, None, 1e-6, 1e-6, False),
         (
-            "Qwen3 classifier",
+            "StreamMind PostNet",
+            baseline_post,
+            enhanced_post,
+            (hidden_states,),
+            (hidden_states,),
+            {},
+            {},
+            None,
+            None,
+            1e-6,
+            1e-6,
+            False,
+        ),
+        (
+            "Transformers Qwen3 classifier",
             baseline_classifier,
-            engine_classifier,
+            enhanced_classifier,
             (),
             (),
             {"inputs_embeds": classifier_inputs, "attention_mask": classifier_mask, "use_cache": False, "return_dict": True},
@@ -188,9 +202,9 @@ if __name__ == "__main__":
             False,
         ),
         (
-            "StreamMind ClsNet",
+            "Transformers Qwen3 ClsNet",
             baseline_cls_net,
-            cls_net,
+            enhanced_cls_net,
             (),
             (cls_net_inputs,),
             {"inputs_embeds": cls_net_inputs, "attention_mask": cls_net_mask, "use_cache": False, "return_dict": True},
@@ -202,6 +216,68 @@ if __name__ == "__main__":
             False,
         ),
     ]
+
+    # Mamba 是 MageVL 的可选外部依赖；存在时加载固定 revision 的官方实现进行对照。
+    try:
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        official_snapshot = Path(__file__).resolve().parents[5] / "checkpoints" / "microsoft-Mage-VL-d88b153"
+        official_name = "_mage_vl_official_streammind_gate"
+        official_spec = importlib.util.spec_from_file_location(official_name, official_snapshot / "streammind_gate.py")
+        if official_spec is None or official_spec.loader is None:
+            raise RuntimeError(f"Unable to load the official Mage-VL StreamMind source: {official_snapshot}")
+        official = importlib.util.module_from_spec(official_spec)
+        sys.modules[official_name] = official
+        official_spec.loader.exec_module(official)
+
+        baseline_video_mamba = official.VideoMamba(official.SSMConfig(d_model=8, n_ssm=1)).to(test_device).eval()
+        enhanced_video_mamba = VideoMamba(SSMConfig(d_model=8, n_ssm=1)).to(test_device).eval()
+        enhanced_video_mamba.load_state_dict(baseline_video_mamba.state_dict(), strict=True)
+        baseline_gate = official.StreamMindGate(hidden_size=32).to(test_device).eval()
+        enhanced_gate = StreamMindGate(hidden_size=32).to(test_device).eval()
+        enhanced_gate.load_state_dict(baseline_gate.state_dict(), strict=True)
+    except ModuleNotFoundError as error:
+        if error.name not in {"mamba_ssm", "selective_scan_cuda"}:
+            raise
+        print(f"VideoMamba and StreamMindGate skipped: optional dependency {error.name!r} is unavailable.")
+    else:
+        mamba_inputs = torch.randn(1, 3, 8, device=test_device)
+        vision_tokens = torch.randn(1, 3, 2, 32, device=test_device)
+        components.extend(
+            [
+                (
+                    "MageVL official VideoMamba",
+                    baseline_video_mamba,
+                    enhanced_video_mamba,
+                    (mamba_inputs,),
+                    (mamba_inputs,),
+                    {},
+                    {},
+                    None,
+                    None,
+                    1e-5,
+                    1e-5,
+                    False,
+                ),
+                (
+                    "MageVL official StreamMindGate",
+                    baseline_gate,
+                    enhanced_gate,
+                    (vision_tokens,),
+                    (vision_tokens,),
+                    {"response_positions": [2]},
+                    {"response_positions": [2]},
+                    None,
+                    None,
+                    1e-5,
+                    1e-5,
+                    False,
+                ),
+            ]
+        )
+
     profile_activities = [torch.profiler.ProfilerActivity.CPU]
     if test_device.type == "cuda":
         profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
@@ -264,6 +340,7 @@ if __name__ == "__main__":
                     )
                     output_tensor = output[0]
                 print(f"       parity=PASS, max_abs_error={max_abs_error:.3e}, shape={tuple(output_tensor.shape)}")
+
             print("   bench:")
             with torch.inference_mode():
                 bench = torch.utils.benchmark.Timer(
@@ -277,101 +354,11 @@ if __name__ == "__main__":
                 print(
                     f"       median_ms={bench.median * 1000:.4f}, iqr_ms={bench.iqr * 1000:.4f}, speedup={baseline_median / bench.median:.3f}x"
                 )
+
             print("   profile:")
             with torch.inference_mode():
-                with torch.profiler.profile(
-                    activities=profile_activities,
-                    record_shapes=True,
-                    profile_memory=True,
-                ) as profile:
+                with torch.profiler.profile(activities=profile_activities, record_shapes=True, profile_memory=True) as profile:
                     module(*args, **kwargs)
             if test_device.type == "cuda":
                 torch.cuda.synchronize(test_device)
             print(profile.key_averages().table(sort_by=profile_sort, row_limit=12))
-
-    # VideoMamba 使用可选 mamba_ssm；没有 Transformers 等价层时以其原始 block 组合为基线。
-    try:
-        video_mamba = VideoMamba(SSMConfig(d_model=8, n_ssm=1)).to(test_device).eval()
-    except ModuleNotFoundError as error:
-        if error.name != "mamba_ssm":
-            raise
-        print("VideoMamba skipped: optional mamba_ssm dependency is unavailable.")
-    else:
-        mamba_inputs = torch.randn(1, 3, 8, device=test_device)
-        print("================= baseline =================")
-        print("   test:")
-        print("       component=VideoMamba raw Mamba blocks")
-        with torch.inference_mode():
-            baseline_hidden = mamba_inputs
-            baseline_residual = None
-            for block in video_mamba.ssms:
-                baseline_hidden, baseline_residual = block(
-                    baseline_hidden,
-                    baseline_residual,
-                    inference_params=None,
-                )
-            baseline_residual = baseline_hidden + baseline_residual if baseline_residual is not None else baseline_hidden
-            baseline_mamba = video_mamba.norm_fn(baseline_residual.to(dtype=video_mamba.norm_fn.weight.dtype))
-        print(f"       PASS, shape={tuple(baseline_mamba.shape)}, device={baseline_mamba.device}")
-        print("   bench:")
-        baseline_mamba_statement = """hidden = mamba_inputs
-residual = None
-for block in video_mamba.ssms:
-    hidden, residual = block(hidden, residual, inference_params=None)
-residual = hidden + residual if residual is not None else hidden
-video_mamba.norm_fn(residual.to(dtype=video_mamba.norm_fn.weight.dtype))"""
-        with torch.inference_mode():
-            baseline_mamba_bench = torch.utils.benchmark.Timer(
-                stmt=baseline_mamba_statement,
-                globals={"video_mamba": video_mamba, "mamba_inputs": mamba_inputs},
-            ).blocked_autorange(min_run_time=0.2)
-        print(f"       median_ms={baseline_mamba_bench.median * 1000:.4f}, " f"iqr_ms={baseline_mamba_bench.iqr * 1000:.4f}")
-        print("   profile:")
-        with torch.inference_mode():
-            with torch.profiler.profile(
-                activities=profile_activities,
-                record_shapes=True,
-                profile_memory=True,
-            ) as baseline_mamba_profile:
-                hidden = mamba_inputs
-                residual = None
-                for block in video_mamba.ssms:
-                    hidden, residual = block(hidden, residual, inference_params=None)
-                residual = hidden + residual if residual is not None else hidden
-                video_mamba.norm_fn(residual.to(dtype=video_mamba.norm_fn.weight.dtype))
-        if test_device.type == "cuda":
-            torch.cuda.synchronize(test_device)
-        print(baseline_mamba_profile.key_averages().table(sort_by=profile_sort, row_limit=12))
-
-        print("================= enhanced =================")
-        print("   test:")
-        print("       component=VideoMamba wrapper")
-        with torch.inference_mode():
-            enhanced_mamba = video_mamba(mamba_inputs)
-        torch.testing.assert_close(enhanced_mamba, baseline_mamba, atol=1e-5, rtol=1e-5)
-        print(
-            f"       parity=PASS, max_abs_error={(enhanced_mamba - baseline_mamba).abs().max().item():.3e}, "
-            f"shape={tuple(enhanced_mamba.shape)}"
-        )
-        print("   bench:")
-        with torch.inference_mode():
-            enhanced_mamba_bench = torch.utils.benchmark.Timer(
-                stmt="video_mamba(mamba_inputs)",
-                globals={"video_mamba": video_mamba, "mamba_inputs": mamba_inputs},
-            ).blocked_autorange(min_run_time=0.2)
-        print(
-            f"       median_ms={enhanced_mamba_bench.median * 1000:.4f}, "
-            f"iqr_ms={enhanced_mamba_bench.iqr * 1000:.4f}, "
-            f"speedup={baseline_mamba_bench.median / enhanced_mamba_bench.median:.3f}x"
-        )
-        print("   profile:")
-        with torch.inference_mode():
-            with torch.profiler.profile(
-                activities=profile_activities,
-                record_shapes=True,
-                profile_memory=True,
-            ) as enhanced_mamba_profile:
-                video_mamba(mamba_inputs)
-        if test_device.type == "cuda":
-            torch.cuda.synchronize(test_device)
-        print(enhanced_mamba_profile.key_averages().table(sort_by=profile_sort, row_limit=12))
