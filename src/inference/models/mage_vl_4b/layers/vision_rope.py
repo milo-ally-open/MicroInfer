@@ -4,8 +4,9 @@
 
 import math
 import torch
+import torch.utils.benchmark
 import torch.nn as nn
-from ..model.configuration_mage_vl import MageVLVisionConfig
+from ..architecture.configuration_mage_vl import MageVLVisionConfig
 
 
 class VisionRotaryEmbedding(nn.Module):
@@ -225,3 +226,29 @@ if __name__ == "__main__":
     print("==========baseline==========")
     print(f"official Mage-VL shape={tuple(baseline_grid.shape)}, sample={baseline_grid[0, :4].tolist()}")
     print(f"Mage-VL vision RoPE grid, explicit-position, and THW paths match the official source on {test_device}.")
+
+    # Bench：量测常规 THW 网格对应的位置频率计算。
+    with torch.inference_mode():
+        rope_bench = torch.utils.benchmark.Timer(
+            stmt="engine(grid_thw)", globals=locals()
+        ).blocked_autorange(min_run_time=0.3)
+    print(f"Bench: Mage-VL vision RoPE {rope_bench}")
+
+    # Profile：查看位置索引、频率乘法和频率表构造成本。
+    profile_activities = [torch.profiler.ProfilerActivity.CPU]
+    if test_device.type == "cuda":
+        profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
+    with torch.inference_mode():
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as rope_profile:
+            engine(grid_thw)
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        profile_sort = "self_cuda_time_total"
+    else:
+        profile_sort = "self_cpu_time_total"
+    print("Profile: Mage-VL vision RoPE operators")
+    print(rope_profile.key_averages().table(sort_by=profile_sort, row_limit=12))

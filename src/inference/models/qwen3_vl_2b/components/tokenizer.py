@@ -31,3 +31,45 @@ class Qwen3VLTokenizer:
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
         ).strip()
+
+
+if __name__ == "__main__":
+    import time
+    from types import SimpleNamespace
+
+    import torch
+
+    class FakeBackend:
+        def decode(self, token_ids, **options):
+            return "hello"
+
+    class FakeProcessor:
+        tokenizer = FakeBackend()
+
+        def apply_chat_template(self, messages, **options):
+            assert options["add_generation_prompt"] is True
+            return {"input_ids": torch.tensor([[1, 2, 3]])}
+
+    tokenizer = Qwen3VLTokenizer(FakeProcessor())
+    messages = [{"role": "user", "content": "hello"}]
+    encoded = tokenizer.tokenize_chat(messages)
+    decoded = tokenizer.decode([1, 2])
+    assert encoded["input_ids"].tolist() == [[1, 2, 3]]
+    assert decoded == "hello"
+    print("Test: Qwen3VLTokenizer chat template and decode passed.")
+
+    started_at = time.perf_counter()
+    for _ in range(1000):
+        tokenizer.tokenize_chat(messages)
+        tokenizer.decode([1, 2])
+    print(f"Bench: tokenizer encode+decode={(time.perf_counter() - started_at) * 1e3 / 1000:.4f} ms/call.")
+
+    with torch.profiler.profile(
+        activities=[torch.profiler.ProfilerActivity.CPU],
+        record_shapes=True,
+        profile_memory=True,
+    ) as profile:
+        tokenizer.tokenize_chat(messages)
+        tokenizer.decode([1, 2])
+    print("Profile: Qwen3VLTokenizer")
+    print(profile.key_averages().table(sort_by="self_cpu_time_total", row_limit=10))

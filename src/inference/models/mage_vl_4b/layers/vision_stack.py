@@ -5,11 +5,12 @@
 from typing import Optional, Union
 
 import torch
+import torch.utils.benchmark
 import torch.nn as nn
 
 
 from transformers.modeling_outputs import BaseModelOutput
-from ..model.configuration_mage_vl import MageVLVisionConfig
+from ..architecture.configuration_mage_vl import MageVLVisionConfig
 from .siglip_mlp import SiglipMLP
 from .vision_attention import MageVLVisionAttention, get_norm_layer
 
@@ -194,3 +195,37 @@ if __name__ == "__main__":
     print("==========baseline==========")
     print(f"official Mage-VL sample={baseline_output.last_hidden_state[0, 0, :4].tolist()}")
     print(f"Mage-VL vision encoder stack and intermediate hidden states match the official source on {test_device}.")
+
+    # Bench：在相同 patch 数、层数和图像分段下测量视觉 Encoder Stack。
+    with torch.inference_mode():
+        stack_bench = torch.utils.benchmark.Timer(
+            stmt="engine(hidden_states, rotary_pos_emb=rotary_pos_emb, output_hidden_states=True, return_dict=True, cu_seqlens=cu_seqlens, max_seqlen=4)",
+            globals=locals(),
+        ).blocked_autorange(min_run_time=0.3)
+    print(f"Bench: Mage-VL vision encoder stack {stack_bench}")
+
+    # Profile：同时记录每层 Attention/MLP 的算子分布及中间激活 shape。
+    profile_activities = [torch.profiler.ProfilerActivity.CPU]
+    if test_device.type == "cuda":
+        profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
+    with torch.inference_mode():
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as stack_profile:
+            engine(
+                hidden_states,
+                rotary_pos_emb=rotary_pos_emb,
+                output_hidden_states=True,
+                return_dict=True,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=4,
+            )
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        profile_sort = "self_cuda_time_total"
+    else:
+        profile_sort = "self_cpu_time_total"
+    print("Profile: Mage-VL vision encoder stack operators")
+    print(stack_profile.key_averages().table(sort_by=profile_sort, row_limit=20))

@@ -34,9 +34,9 @@
 - L5 Qwen3 自有 PyTorch 模型计算图；Transformers 仅提供 config／tokenizer 等生态兼容能力，Safetensors loader 负责权重映射。
 - 新模型只需实现模型 Runner／Adapter 并登记工厂；API app、Engine Core、Executor 和 Worker 创建流程由共用入口负责，不再要求每个模型复制 `app.py`／`engine_core.py`。
 - 模型对外 ID、输入处理器和选用的视频／Live 入口由 Registry 登记；上游 repo ID 保持在模型 YAML，两者分开维护。
-- 每个模型目录透过 `configs/model.yml` 自我登记 alias、Runtime 工厂、API 能力与相对配置路径；Launcher 自动发现模型 manifest，启动时必须明确选择模型，不设全局默认模型文件。
+- 每个模型目录在 `profiles/model.yml` 中自我登记 alias、Runtime 工厂与 API 能力；运行配置 `inference.yml`、`network.yml` 也统一放在 `profiles/`。Launcher 自动发现模型 manifest，启动时必须明确选择模型，不设全局默认模型文件。
 - 每个模型提供 `runtime.py:create_runtime()`，由共用 Worker 取得统一 Runtime facade；Runner／Adapter 等模型组件由该工厂在 Worker 子进程内组装。
-- 模型目录采按需分层：`model/` 放拓扑，`layers/` 放模型层，`components/` 放 Runner／Adapter／批次与 Cache 组件，`utils/loader.py` 集中配置、Transformers 资产及权重加载。简单模型不需创建不使用的目录。
+- 模型目录顶层统一保留 `example.py`、`loader.py`、`modeling.py` 和 `runtime.py`；`requirements/` 放模型依赖，`profiles/` 放模型 manifest 与运行 YAML，`architecture/` 放模型专属能力与架构，`layers/` 放计算层，`components/` 放 Runner／Adapter／Cache 等运行组件。暂时没有独立架构文件的模型仍保留空的 `architecture/__init__.py`；其他不适用的组件目录不强制创建。
 
 ## 范围
 

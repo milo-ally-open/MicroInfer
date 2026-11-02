@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type APIKey struct {
@@ -24,7 +25,11 @@ type identity struct {
 	hash     [32]byte
 }
 
-type KeySet struct{ keys []identity }
+type KeySet struct {
+	byHash     map[[32]byte]identity
+	single     identity
+	singleOnly bool
+}
 
 func LoadAPIKeys(path string) (*KeySet, error) {
 	entries, err := ReadAPIKeys(path)
@@ -55,44 +60,78 @@ func ReadAPIKeys(path string) ([]APIKey, error) {
 }
 
 func NewKeySet(entries []APIKey) (*KeySet, error) {
-	set := &KeySet{}
-	seen := make(map[string]struct{})
-	for _, entry := range entries {
-		if entry.ID == "" || entry.TenantID == "" || len(entry.Secret) < 16 {
-			return nil, fmt.Errorf("each API key entry requires id, tenant_id, and a key of at least 16 characters")
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("at least one API key is required")
+	}
+	if len(entries) == 1 {
+		key, err := makeIdentity(entries[0])
+		if err != nil {
+			return nil, err
 		}
-		hash := sha256.Sum256([]byte(entry.Secret))
-		encoded := base64.RawURLEncoding.EncodeToString(hash[:])
-		if _, exists := seen[encoded]; exists {
+		return &KeySet{single: key, singleOnly: true}, nil
+	}
+	set := &KeySet{byHash: make(map[[32]byte]identity, len(entries))}
+	for _, entry := range entries {
+		key, err := makeIdentity(entry)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := set.byHash[key.hash]; exists {
 			return nil, fmt.Errorf("duplicate API key secret")
 		}
-		seen[encoded] = struct{}{}
-		set.keys = append(set.keys, identity{id: entry.ID, tenantID: entry.TenantID, hash: hash})
-	}
-	if len(set.keys) == 0 {
-		return nil, fmt.Errorf("at least one API key is required")
+		set.byHash[key.hash] = key
 	}
 	return set, nil
 }
 
+func makeIdentity(entry APIKey) (identity, error) {
+	if entry.ID == "" || entry.TenantID == "" || len(entry.Secret) < 16 {
+		return identity{}, fmt.Errorf("each API key entry requires id, tenant_id, and a key of at least 16 characters")
+	}
+	return identity{id: entry.ID, tenantID: entry.TenantID, hash: sha256.Sum256([]byte(entry.Secret))}, nil
+}
+
 func (set *KeySet) Authenticate(header string) (tenantID, keyID string, ok bool) {
-	parts := strings.Fields(header)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+	token, valid := bearerToken(header)
+	if !valid {
 		return "", "", false
 	}
-	got := sha256.Sum256([]byte(parts[1]))
-	selectedIndex := 0
-	found := 0
-	for index, candidate := range set.keys {
-		match := subtle.ConstantTimeCompare(got[:], candidate.hash[:])
-		selectedIndex = subtle.ConstantTimeSelect(match, index, selectedIndex)
-		found |= match
+	got := sha256.Sum256([]byte(token))
+	if set.singleOnly {
+		if subtle.ConstantTimeCompare(got[:], set.single.hash[:]) != 1 {
+			return "", "", false
+		}
+		return set.single.tenantID, set.single.id, true
 	}
-	if found != 1 {
+	selected, found := set.byHash[got]
+	if !found || subtle.ConstantTimeCompare(got[:], selected.hash[:]) != 1 {
 		return "", "", false
 	}
-	selected := set.keys[selectedIndex]
 	return selected.tenantID, selected.id, true
+}
+
+func bearerToken(header string) (string, bool) {
+	if scheme, token, separated := strings.Cut(header, " "); separated && strings.EqualFold(scheme, "Bearer") {
+		token = strings.TrimSpace(token)
+		if token == "" || hasUnicodeSpace(token) {
+			return "", false
+		}
+		return token, true
+	}
+	fields := strings.Fields(header)
+	if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
+		return "", false
+	}
+	return fields[1], true
+}
+
+func hasUnicodeSpace(value string) bool {
+	for _, character := range value {
+		if unicode.IsSpace(character) {
+			return true
+		}
+	}
+	return false
 }
 
 func ParseHMACKeys(value string) ([][]byte, error) {

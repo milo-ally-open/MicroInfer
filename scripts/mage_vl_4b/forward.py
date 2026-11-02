@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import statistics
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -13,9 +14,9 @@ from typing import Any, Iterator
 
 # 一、固定路径：模型专属配置副本与权重都相对于仓库根目录解析。
 ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = ROOT / "scripts/mage_vl_4b/inference.yml"
-NETWORK_CONFIG_PATH = ROOT / "scripts/mage_vl_4b/network.yml"
-MANIFEST_PATH = ROOT / "scripts/mage_vl_4b/model.yml"
+CONFIG_PATH = ROOT / "scripts/mage_vl_4b/profiles/inference.yml"
+NETWORK_CONFIG_PATH = ROOT / "scripts/mage_vl_4b/profiles/network.yml"
+MANIFEST_PATH = ROOT / "scripts/mage_vl_4b/profiles/model.yml"
 MODEL_ALIAS = "mage-vl-4b"
 os.environ["INFERENCE_PROJECT_ROOT"] = str(ROOT)
 os.environ["INFERENCE_MODEL_ALIAS"] = MODEL_ALIAS
@@ -32,7 +33,7 @@ from PIL import Image
 from transformers import AutoModelForCausalLM, AutoProcessor, BitsAndBytesConfig, KernelConfig
 import inference
 from inference.engine.sequence import ExecutionPhase, ScheduledWorkItem
-from inference.models.mage_vl_4b import processor as inference_processor
+from inference.models.mage_vl_4b.architecture.image_encoder import _resize_image
 from inference.models.mage_vl_4b.runtime import create_runtime
 
 
@@ -52,6 +53,8 @@ DTYPE = getattr(torch, str(MODEL_SETTINGS["dtype"]))
 INPUT_IMAGE_PATH = ROOT / "test.jpg"
 QUESTION = "请简要描述图片中的主要内容。"
 MAX_NEW_TOKENS = 2  # Prefill 生成首 token，再执行一次 decode。
+WARMUP_ITERATIONS = 1
+BENCHMARK_ITERATIONS = 3
 MAX_OPERATORS = 20  # 终端表格显示前 20 项；JSON 保存全部算子。
 OUTPUT_PATH = ROOT / ("artifacts/mage-vl-image-forward-external.json" if PROFILE_MODE == "external" else "artifacts/mage-vl-image-forward.json")
 TRACE_DIR = ROOT / "artifacts/mage_vl_4b/traces"
@@ -256,6 +259,48 @@ def forward_transformer():
     print(f"decode_cuda_event_ms: {decode_ms:.3f}")
     print(decode_averages.table(sort_by="self_cuda_time_total", row_limit=MAX_OPERATORS))
 
+    # C. Bench：完整请求生成两个 token；预热后重复执行，报告中位延迟与吞吐。
+    manual_decode_ids = BASELINE_GENERATED_IDS.clone()
+    manual_decode_text = BASELINE_TEXT
+    bench_latencies = []
+    bench_output_tokens = []
+    transformer_generate_ids = None
+    transformer_generate_token_match = False
+    for bench_index in range(WARMUP_ITERATIONS + BENCHMARK_ITERATIONS):
+        if CUDA_AVAILABLE:
+            torch.cuda.synchronize()
+        bench_start = time.perf_counter()
+        with torch.inference_mode():
+            generated = model.generate(**model_inputs, do_sample=False, max_new_tokens=MAX_NEW_TOKENS)
+        if CUDA_AVAILABLE:
+            torch.cuda.synchronize()
+        elapsed = time.perf_counter() - bench_start
+        generated_ids = generated[:, model_inputs["input_ids"].shape[-1]:].detach().cpu()
+        if generated_ids.numel() < 1 or generated_ids.numel() > MAX_NEW_TOKENS:
+            raise AssertionError(f"Transformers.generate 返回了无效 token 数：{generated_ids.numel()}。")
+        if bench_index == 0:
+            vocab_size = int(getattr(getattr(model.config, "text_config", model.config), "vocab_size"))
+            if int(generated_ids.min()) < 0 or int(generated_ids.max()) >= vocab_size:
+                raise AssertionError("Transformers.generate 返回了词表范围外的 token ID。")
+            transformer_generate_ids = generated_ids.reshape(1, -1).clone()
+            transformer_generate_token_match = torch.equal(transformer_generate_ids, manual_decode_ids)
+            # 端到端比较以 Transformers.generate 为基线；手动续算 token 另存供 Decode 诊断。
+            BASELINE_GENERATED_IDS = transformer_generate_ids
+            BASELINE_TEXT = processor.batch_decode(transformer_generate_ids, skip_special_tokens=True)[0].strip()
+        if bench_index >= WARMUP_ITERATIONS:
+            bench_latencies.append(elapsed)
+            bench_output_tokens.append(int(generated_ids.numel()))
+    transformer_benchmark = {
+        "median_latency_seconds": statistics.median(bench_latencies),
+        "median_tokens_per_second": statistics.median(
+            tokens / latency for tokens, latency in zip(bench_output_tokens, bench_latencies)
+        ),
+        "warmup_iterations": WARMUP_ITERATIONS,
+        "measured_iterations": BENCHMARK_ITERATIONS,
+    }
+    print("Test: Transformers.generate returned valid token IDs; parity with manual Prefill/Decode:", transformer_generate_token_match)
+    print("Bench: Transformers", transformer_benchmark)
+
     result = {
         "execution_path": "AutoModelForCausalLM.forward",
         "attention_implementation": str(getattr(model.config, "_attn_implementation", MODEL_SETTINGS["attn_implementation"])),
@@ -269,6 +314,10 @@ def forward_transformer():
         "block_size_tokens": None,
         "generated_text": BASELINE_TEXT,
         "generated_token_ids": [int(token) for token in BASELINE_GENERATED_IDS[0].tolist()],
+        "manual_decode_generated_text": manual_decode_text,
+        "manual_decode_token_ids": [int(token) for token in manual_decode_ids[0].tolist()],
+        "benchmark": transformer_benchmark,
+        "generate_matches_manual_tokens": transformer_generate_token_match,
         "operator_records": prefill_records + decode_records,
     }
     del model, processor, prefill_output, decode_output, decode_inputs
@@ -393,8 +442,50 @@ def forward_inference():
         print(f"decode_cuda_event_ms: {decode_ms:.3f}")
         print(decode_averages.table(sort_by="self_cuda_time_total", row_limit=MAX_OPERATORS))
         generated_ids, finish_reason = runner.finish_generation(request_id)
-        INFERENCE_GENERATED_IDS = generated_ids.detach().cpu()
+        INFERENCE_GENERATED_IDS = generated_ids.detach().cpu().reshape(1, -1)
         INFERENCE_TEXT = runner.decode(generated_ids)
+
+        # C. Bench：每次使用独立请求与 KV reservation，测量完整 Prefill + Decode。
+        inference_latencies = []
+        inference_output_tokens = []
+        inference_benchmark_token_match = False
+        for bench_index in range(WARMUP_ITERATIONS + BENCHMARK_ITERATIONS):
+            bench_request_id = f"mage-vl-benchmark-{bench_index}"
+            runner.begin_generation(bench_request_id, model_inputs, generation_options)
+            runner.bind_generation_cache(bench_request_id, tuple(range(block_count)))
+            if CUDA_AVAILABLE:
+                torch.cuda.synchronize()
+            bench_start = time.perf_counter()
+            with torch.inference_mode():
+                runner.execute_batch((ScheduledWorkItem(bench_request_id, ExecutionPhase.PREFILL, prompt_tokens),))
+                runner.execute_batch((ScheduledWorkItem(bench_request_id, ExecutionPhase.DECODE, 1),))
+            if CUDA_AVAILABLE:
+                torch.cuda.synchronize()
+            elapsed = time.perf_counter() - bench_start
+            bench_ids, _ = runner.finish_generation(bench_request_id)
+            bench_ids = bench_ids.detach().cpu()
+            if bench_ids.numel() < 1 or bench_ids.numel() > MAX_NEW_TOKENS:
+                raise AssertionError(f"Inference Runtime 返回了无效 token 数：{bench_ids.numel()}。")
+            if bench_index == 0:
+                vocab_size = int(getattr(getattr(runner.model.config, "text_config", runner.model.config), "vocab_size"))
+                if int(bench_ids.min()) < 0 or int(bench_ids.max()) >= vocab_size:
+                    raise AssertionError("Inference Runtime 返回了词表范围外的 token ID。")
+                inference_benchmark_token_match = torch.equal(
+                    bench_ids.reshape(-1), BASELINE_GENERATED_IDS.reshape(-1)
+                )
+            if bench_index >= WARMUP_ITERATIONS:
+                inference_latencies.append(elapsed)
+                inference_output_tokens.append(int(bench_ids.numel()))
+        inference_benchmark = {
+            "median_latency_seconds": statistics.median(inference_latencies),
+            "median_tokens_per_second": statistics.median(
+                tokens / latency for tokens, latency in zip(inference_output_tokens, inference_latencies)
+            ),
+            "warmup_iterations": WARMUP_ITERATIONS,
+            "measured_iterations": BENCHMARK_ITERATIONS,
+        }
+        print("Test: Inference Runtime returned valid token IDs; parity with Transformers.generate:", inference_benchmark_token_match)
+        print("Bench: Inference", inference_benchmark)
         result = {
             "execution_path": "create_runtime().model_runner.execute_batch",
             "attention_implementation": str(getattr(runner.model.config, "_attn_implementation", MODEL_SETTINGS["attn_implementation"])),
@@ -408,6 +499,8 @@ def forward_inference():
             "block_size_tokens": block_size,
             "generated_text": INFERENCE_TEXT,
             "generated_token_ids": [int(token) for token in INFERENCE_GENERATED_IDS[0].tolist()],
+            "benchmark": inference_benchmark,
+            "benchmark_tokens_match_transformers_generate": inference_benchmark_token_match,
             "finish_reason": finish_reason,
             "prefill_generated_text": prefill_result.text_delta,
             "decode_generated_text": decode_result.text_delta,
@@ -433,7 +526,7 @@ if __name__ == "__main__":
             if opened.width * opened.height > int(CONFIG["api"]["max_image_pixels"]):
                 raise ValueError("测试图片超过 inference.yml 的 api.max_image_pixels 限制。")
             IMAGE = opened.convert("RGB")
-        IMAGE = inference_processor._resize_image(IMAGE, int(CONFIG["api"]["max_image_side"]))
+        IMAGE = _resize_image(IMAGE, int(CONFIG["api"]["max_image_side"]))
 
     # 六、依次运行两条路径、比较输出，并保存供 analysis.py 生成 XLSX 的原始数据。
     transformers_result = forward_transformer()
@@ -475,8 +568,8 @@ if __name__ == "__main__":
             "batch_size": 1,
             "query_tokens": int(INPUT_IDS_CPU.shape[-1]),
             "kv_tokens": int(INPUT_IDS_CPU.shape[-1]) + 1,
-            "warmup_iterations": 0,
-            "measured_iterations": 1,
+            "warmup_iterations": WARMUP_ITERATIONS,
+            "measured_iterations": BENCHMARK_ITERATIONS,
             "num_hidden_layers": transformers_result["num_hidden_layers"],
             "input_type": "image",
         },

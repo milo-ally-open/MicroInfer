@@ -1,1 +1,1 @@
-"""Qwen3-VL Tokenizer、输入编码、Cache 与 Engine 适配组件。"""
+"""Qwen3-VL 的输入、生成和 Engine 适配模块。"""

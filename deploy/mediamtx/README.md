@@ -22,7 +22,7 @@ MediaMTX 与 Inference 分别启动和停止。停止服务前，应先结束活
 
 ## 配置
 
-服务自身的协议监听、授权回调和运行选项只在 [`mediamtx.yml`](mediamtx.yml) 配置。若 Inference 地址或端口变化，更新 `authHTTPAddress`；若改变 RTSP/RTMP 监听端口，同时更新使用 Live 的模型 `configs/network.yml`。
+服务自身的协议监听、授权回调和运行选项只在 [`mediamtx.yml`](mediamtx.yml) 配置。若 Inference 地址或端口变化，更新 `authHTTPAddress`；若改变 RTSP/RTMP 监听端口，同时更新使用 Live 的模型 `network.yml`。
 
 模型 `network.yml` 记录推理服务连接 MediaMTX 所需的地址和发布端公开主机名，不用于配置 MediaMTX 服务本身。模型 manifest 不登记该 sidecar 配置。
 

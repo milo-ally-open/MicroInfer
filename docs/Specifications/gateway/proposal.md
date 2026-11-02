@@ -1,6 +1,6 @@
 # 提案：Go API 网关与 Qwen 标准工具调用
 
-> 状态：Go Gateway v1 已实现；REQ-13 记录双模型 capability，REQ-14 将 Qwen 工具调用纳入既有 Chat Completions route，REQ-15 约束 Go module path 与代码仓库无关；验收进度见 tasks.md。
+> 状态：Go Gateway v1 已实现；REQ-13 记录双模型 capability，REQ-14 将 Qwen 工具调用纳入既有 Chat Completions route，REQ-15 约束 Go module path 与代码仓库无关，REQ-16/17 增强 API Key 鉴权热路径及 SSE 处理效率；验收进度见 tasks.md。
 > 路径：跨边界高风险<br>
 > 负责人：项目维护者<br>
 > 上游依据：[项目规范](../../../AGENTS.md)、[项目 README](../../../README.md)、[网关目录说明](../../../src/gateway/README.md)、[推理服务说明](../../../src/inference/README.md)
@@ -40,7 +40,7 @@
 ### 代码与文件现况
 
 - src/gateway/README.md 描述已实现的 Go Gateway v1 及各包职责；历史任务记录称 2026-10-22 曾透过真实服务完成 Qwen 文字 JSON／SSE、Mage 图片 JSON／SSE／视频上传，以及 Mage Live／MediaMTX 合成 RTSP 功能 smoke。对应的原始 Live JSON 报告不在当前仓库；正式容量、授权失败与部署演练仍待验收。
-- 推理服务由 `models/*/configs/model.yml` 自我登记 Mage-VL-4B 与 Qwen3-0.6B；Launcher 自动发现模型并要求启动命令明确指定 alias，两者各自位于模型包内。
+- 推理服务由 `models/*/profiles/model.yml` 自我登记各模型；运行配置 `inference.yml`、`network.yml` 与 manifest 一起放在 `profiles/`。Launcher 自动发现模型并要求启动命令明确指定 alias。
 - Mage 推理配置中的模型 ID是 microsoft/Mage-VL；Qwen 的 API model ID 是 qwen3-0.6b。两者皆以项目别名作 Gateway 路由键，标识符不可混淆。
 - 推理服务目前提供 GET /health、GET /v1/models、POST /v1/chat/completions、POST /v1/videos/understand，以及 /v1/live/* 工作会话 API。
 - POST 聊天、视频上传及实时工作会话创建目前要求 Content-Length。当前推理配置的聊天请求正文上限为 15,728,640 bytes、视频请求正文上限为 210,763,776 bytes、单一视频文件上限为 209,715,200 bytes；实时工作会话创建上限目前为 65,536 bytes。
@@ -98,9 +98,15 @@
 
 Qwen3 的工具定义、调用选择和历史 tool messages 通过既有 `/v1/chat/completions` 转给 Inference。Gateway 只按模型 `tool_calling` capability 拒绝或转发请求，并保留标准 `tool_calls`／SSE `delta.tool_calls` 响应。
 
-Gateway 不解析模型原生工具标记，不执行工具，也不新增 Agent 专用 route。客户端／Agent 应用收到完整有效的 tool call 后，依自身工具注册表和权限策略执行，再把 `role: "tool"` 消息回送同一 endpoint。`tests/client.py` 提供最小 OpenAI SDK 端到端示例。
+Gateway 不解析模型原生工具标记，不执行工具，也不新增 Agent 专用 route。客户端／Agent 应用收到完整有效的 tool call 后，依自身工具注册表和权限策略执行，再把 `role: "tool"` 消息回送同一 endpoint。仓库根目录 `client.py` 提供最小 OpenAI SDK 端到端示例。
 
 ## 仓库迁移独立性增补
 
 Gateway 的 Go module 与内部 import 使用稳定、中性的模块命名空间，不包含当前代码托管平台、账号或仓库路径。更换 Git 仓库时，Gateway 的 API、模型 alias 与部署配置保持不变。
+
+## 鉴权与性能增补
+
+Gateway 已有 Bearer API Key 鉴权、租户映射及限流。本次针对认证请求逐个扫描全部密钥和聊天 SSE 事件重复解析两个热点进行增强：多密钥配置按 SHA-256 摘要索引，单密钥配置保留轻量路径；SSE 事件改用原始 JSON 字段并复用解析结果完成模型别名改写与首 token 检测。保持认证响应、租户政策、HTTP/SSE 契约和上游路由不变，不引入外部缓存或服务依赖。
+
+性能验收使用固定的认证密钥数量及 SSE 事件样本对比实现前后 ns/op、B/op 与 allocs/op。该基准用于验证网关内部热路径，不代表真实模型吞吐、并发容量或 SLA；实机性能仍需在 Gateway 与 Inference 服务联机后另行测量。
 

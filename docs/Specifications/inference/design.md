@@ -18,7 +18,7 @@ vLLM V1 官方架构将 API Server、Engine Core 和 GPU Worker 分成不同程�
 | L2 编排与调度 | Engine Core 请求状态、准入、Scheduler、逻辑 Cache reservation、Worker 结果事件化 | `engine/inference_engine.py`、`engine/scheduler.py`、`engine/block_manager.py` | HTTP/SSE schema、实体 GPU tensor、模型拓扑 |
 | L3 执行与 Worker | Worker 管理本地子进程和 RPC；Platform 解析设备与资源观测；模型 Worker 加载 Runner | `engine/worker.py`、`engine/platform.py`、`engine/bootstrap.py` | request policy、模型输入格式、HTTP |
 | L4 模型运行时 | Runner 组装模型输入批次、forward、Cache 访问和 Sampling | 各模型 `components/model_runner.py`、模型批次及 Cache 组件 | OpenAI request／response、模型别名路由 |
-| L5 模型与算子 | 模型拓扑、层、Attention、权重映射和上游兼容 | 各模型 `model/`、`layers/`、`utils/` | 共用 HTTP API、Engine 队列和租户政策 |
+| L5 模型与算子 | 模型拓扑、层、Attention、权重映射和上游兼容 | 各模型 `modeling.py`、`architecture/`、`layers/`、`loader.py` | 共用 HTTP API、Engine 队列和租户政策 |
 
 模型生态兼容是跨层责任：API 端的 Chat Template／Tokenizer 在 L1 依模型创建输入；模型 config、Safetensors 权重映射和计算图在 L5。通用视频读取与 Live session 由 `processors/` 持有；Mage-VL 的视频采样和 Processor 留在 Mage 模型包。五层以代码职责划界，不代表五个新 package 或五个 OS process。
 
@@ -108,7 +108,7 @@ InputBatch 暂时每轮动态分配 GPU tensor。后续若性能样本确认 CPU
 
 ## L5 Qwen 模型与生态兼容
 
-Qwen 模型拓扑及 Attention 等算子留在模型包；模型专属 `utils/` 提供上游 config／tokenizer／固定 revision 权重格式适配等辅助功能。Safetensors loader 在 Worker ready 前验证 metadata、revision、必要 tensor 和 shape。模型 manifest 登记 alias、配置路径、对外 API ID、Runtime 工厂和选用 API 扩充；共用 route 不以模型 alias 分支。
+Qwen 模型拓扑及 Attention 等算子留在模型包；模型根目录的 `loader.py` 集中处理上游 Config／Tokenizer／固定 revision 权重格式适配。`utils/` 只放通用辅助代码。Safetensors loader 在 Worker ready 前验证 metadata、revision、必要 tensor 和 shape。模型 manifest 登记 alias、配置路径、对外 API ID、Runtime 工厂和选用 API 扩充；共用 route 不以模型 alias 分支。
 
 模型配置使用与架构相符的 Transformers config 类别：Qwen3 以 `Qwen3Config.from_pretrained()` 加载固定本地 revision，并将 `Qwen3Config` 传入原生模型计算图；Mage-VL 使用模型专属 `MageVLConfig`，其中固定 revision 的文字骨干由 `Qwen3Config` 表示。Tokenizer 与多模态 Processor 依固定 revision 的 `tokenizer_config.json`／`processor_config.json` 等 metadata，透过 `AutoTokenizer`／`AutoProcessor` 创建；这保留 Hugging Face 对不同模型 tokenizer 类别的解析能力，不代表模型 forward 由 `AutoModel` 执行。Qwen Runner 的 GQA、Mage 视觉 Attention、SigLIP pooling Attention 与 Mage 文字骨干 Attention 均在模型包以矩阵乘法、遮罩及 softmax 明确实现；Mage 文字骨干另有独立 Qwen3 Attention、RMSNorm、MLP 与 Decoder layer，使用分块 Query 计算控制暂存内存。所有加载仍使用本地 snapshot 与固定 revision，不可在服务启动时解析浮动版本或隐式下载。
 
@@ -116,11 +116,11 @@ Qwen 模型拓扑及 Attention 等算子留在模型包；模型专属 `utils/` 
 
 `network/service.py` 读取 Launcher 配置的模型 alias，创建共用 `EngineClient`、API request limits、输入处理器和选用 Live manager。`engine/bootstrap.py` 从 manifest 加载模型 Runner／Adapter 工厂，创建 `InferenceEngine`、`LocalProcessExecutor` 和 `InProcessModelWorker`。Runner／Adapter 工厂使用 `module:attribute` 字符串；工厂仅在相应程序中加载，因此 API process 不会汇入模型 Runner 或 GPU Runtime。
 
-模型包的 `configs/model.yml` 中 `api.model_id` 是推理 API 接受及返回的标识符；上游 model repo ID 留在 `inference.yml` 的 `model.id`。`api.capabilities` 明确列出聊天输入模态、文本流式、`text_delta`／`token_ids` 输出、视频上传及 Live 能力；API app 依此挂载路由并拒绝不支持的输入。`api.input_processor` 与 `api.live_session_manager` 是依能力需要登记的工厂。特殊前处理、Tokenizer、权重加载、模型拓扑和 cache 逻辑仍由模型包负责。
+模型 `profiles/model.yml` 中 `api.model_id` 是推理 API 接受及返回的标识符；上游 model repo ID 留在 `profiles/inference.yml` 的 `model.id`。`api.capabilities` 明确列出聊天输入模态、文本流式、`text_delta`／`token_ids` 输出、视频上传及 Live 能力；API app 依此挂载路由并拒绝不支持的输入。`api.input_processor` 与 `api.live_session_manager` 是依能力需要登记的工厂。特殊前处理、Tokenizer、权重加载、模型拓扑和 cache 逻辑仍由模型包负责。
 
 新模型最少实现 Runner／Adapter 并登记工厂和 YAML；不需写模型专属 `app.py` 或 `engine_core.py`。逐步生成 Adapter 维持 Engine 的 prepare／prefill／decode／finish／cancel 契约，Runner 持有模型 cache state 并依 request ID 返回批次结果。共用 KV Manager 的租约不替模型宣称支持相同的物理 cache 或 batch 语义。各文件职责、Runtime 工厂接口和完整接入步骤见[新模型接入指南](model-integration.md)。
 
-Mage-VL 与 Qwen 均由共用入口装配；Mage 的 `model/mage_vl.py` 明确组合视觉塔、Qwen3 文本骨干与多模态输入，`vision_features.py`、`multimodal_inputs.py`、`streammind.py` 分别负责特征、placeholder 注入与 Gate；视觉层按 RoPE、patch 表示、注意力、Encoder 堆叠分置于 `layers/`。`conditional_generation.py` 维护 Transformers 生成契约，`components/` 仍负责逐步生成／替换注册等 Runtime 组件；`multimodal_model.py` 和 `vision_encoder.py` 只保留兼容导出。Qwen 拓扑与层亦各自分置于 `model/` 和 `layers/`。模型目录不保留未使用的 `app.py`／`engine_core.py` 包装文件。
+Mage-VL 与 Qwen 均由共用入口装配；两个模型的 `example.py`、`loader.py`、`modeling.py` 和 `runtime.py` 位于各自模型目录顶层。`profiles/` 收纳 manifest 与运行 YAML，`requirements/` 收纳模型依赖。Mage-VL 的 `modeling.py` 组合视觉塔、Qwen3 文本骨干与多模态输入；专属 Config、输出类型、视觉特征、placeholder 注入、StreamMind Gate 和 Live 辅助模块放在 `architecture/`，视觉层按 RoPE、patch 表示、注意力、Encoder 堆叠分置于 `layers/`。`components/` 负责逐步生成等 Runtime 组件。Qwen3-VL 在 `modeling.py` 中组合本地层组件。模型组件由 Python 模块显式组装，运行 YAML 不选择模型组件。模型目录不保留未使用的 `app.py`／`engine_core.py` 包装文件。
 
 ### 标准文字模型默认组件
 
@@ -128,7 +128,7 @@ Mage-VL 与 Qwen 均由共用入口装配；Mage 的 `model/mage_vl.py` 明确�
 
 ## 嵌入式 Engine 的 YAML 选择
 
-模型插件的 `create_engine_client()` 可接收可选 `inference_config_path` 和 `network_config_path`。插件 manifest 仍决定模型 alias、Runtime 和 API 能力；传入路径只覆盖两份运行 YAML。未传入时沿用 manifest 相对 `configs/` 目录声明的路径。显式绝对路径直接使用，显式相对路径相对调用进程当前工作目录解析。工厂在返回 Engine client 前读取两份 YAML 并校验顶层 mapping，再把规范化路径和 manifest 写入 Worker 子进程将继承的环境。模型 YAML 中相对 checkpoint 路径仍由 `INFERENCE_PROJECT_ROOT` 解析。配置选择或 YAML 校验失败时，不启动 Engine Core、Worker 或模型加载。
+模型插件的 `create_engine_client()` 可接收可选 `inference_config_path` 和 `network_config_path`。插件 manifest 仍决定模型 alias、Runtime 和 API 能力；传入路径只覆盖两份运行 YAML。未传入时沿用模型根目录 manifest 中声明的配置文件名。显式绝对路径直接使用，显式相对路径相对调用进程当前工作目录解析。工厂在返回 Engine client 前读取两份 YAML 并校验顶层 mapping，再把规范化路径和 manifest 写入 Worker 子进程将继承的环境。模型 YAML 中相对 checkpoint 路径仍由 `INFERENCE_PROJECT_ROOT` 解析。配置选择或 YAML 校验失败时，不启动 Engine Core、Worker 或模型加载。
 
 默认 Runner 以 `AutoModelForCausalLM` 加载固定 revision，仅支持单一计算设备，并优先使用 CUDA；CUDA 不可用时回退 CPU。模型类型仍限 decoder-only causal LM、可重用 `past_key_values`、文字 `chat_template` 和 token ID 输出。API 处理器只接收文字，不接受图片、视频或 Live。Scheduler 提交的 `execute_batch()` 仍按 request 逐项调用 forward，各 request 的 Cache／生成状态分开持有；这是可用的标准接入路径，不代表连续批次 forward、实体 block cache 或 PagedAttention。
 
@@ -140,17 +140,18 @@ Mage-VL 与 Qwen 均由共用入口装配；Mage 的 `model/mage_vl.py` 明确�
 
 ```text
 models/{model_alias}/
-├── runtime.py                 # create_runtime()，组合单一模型 Runtime facade
-├── processor.py               # 可选：Tokenizer／Chat Template／模型输入处理
-├── model/                     # 可选：模型拓扑
+├── example.py                 # 最小调用示例
+├── loader.py                  # 模型配置与资产加载
+├── modeling.py                # 显式组装模型
+├── runtime.py                 # create_runtime() 与 Engine Client 工厂
+├── architecture/              # 模型架构和专属能力，保留 __init__.py
 ├── components/                # 可选：Runner、Adapter、批次与 Cache 支持组件
 ├── layers/                    # 可选：模型专属 Attention、Norm、Linear、RoPE
-├── utils/                     # 模型 Config／Tokenizer／Processor、snapshot 与权重加载
-│   └── loader.py
-├── requirements.txt           # 可选：模型依赖包
-└── configs/
-    ├── model.yml             # alias、能力、Runtime 工厂及配置文件名
-    ├── inference.yml           # 模型与推理参数
+├── requirements/              # 可选：模型依赖包
+│   └── requirements.txt
+└── profiles/                  # 运行配置
+    ├── model.yml              # alias、能力、Runtime 工厂及配置文件名
+    ├── inference.yml          # 模型与推理参数
     └── network.yml            # API 绑定地址
 ```
 
@@ -162,9 +163,9 @@ deploy/mediamtx/
 └── README.md                  # 独立启停与端点同步方式
 ```
 
-每个模型的 `configs/model.yml` 是该模型唯一的登记入口。Launcher 扫描 `models/*/configs/model.yml` 发现模型，并拒绝重复 alias；`list`／`validate` 可处理所有已发现模型，`start` 必须明确指定 `--model`。manifest 的配置路径是相对于 manifest 所在 `configs/` 目录解析；模型包的 Runtime／API 工厂以 `module:attribute` 字符串指定。
+每个模型 `profiles/model.yml` 是该模型唯一的登记入口。Launcher 扫描 `models/*/profiles/model.yml` 发现模型，并拒绝重复 alias；`list`／`validate` 可处理所有已发现模型，`start` 必须明确指定 `--model`。`inference.yml` 和 `network.yml` 等文件名相对于 `profiles/` 解析；模型包的 Runtime／API 工厂以 `module:attribute` 字符串指定。
 
-`runtime.py:create_runtime()` 返回由 `engine.worker.ModelRuntime` 封装的 Runner／Adapter，或提供相同方法契约的单一 facade。模型若使用共用标准文字组件，Runtime 工厂可只组合共用默认组件；模型特有代码依责任放入 `model/`、`layers/`、`components/` 与 `utils/loader.py`，不要求创建所有目录。Mage-VL 的 Transformers 子组件及 Qwen 的 PyTorch 拓扑均继续留在各自模型包。
+`runtime.py:create_runtime()` 返回由 `engine.worker.ModelRuntime` 封装的 Runner／Adapter，或提供相同方法契约的单一 facade。模型若使用共用标准文字组件，Runtime 工厂可只组合共用默认组件；模型特有代码依责任放入根目录 `modeling.py`／`loader.py`、`architecture/`、`layers/` 与 `components/`，不要求创建所有目录。Mage-VL 的 Transformers 子组件及 Qwen 的 PyTorch 拓扑均继续留在各自模型包。
 
 这种组织方式减少新增模型时需要编辑的共用文件数量，但不保证接入免写代码：新架构仍需实现其模型计算、权重加载、前处理与 Cache 适配。共用层只负责稳定的 API、Engine 与 Worker 契约。
 
@@ -176,7 +177,7 @@ deploy/mediamtx/
 
 ## 配置与营运
 
-Qwen `configs/inference.yml` 保存 model repo／revision、dtype/device、`runtime.platform`、本地模型路径、Context、generation、Scheduler、KV block、Worker 和 Engine timeout。模型网络端点仍来自各自的 `configs/network.yml`。MediaMTX sidecar 配置独立放在 `deploy/mediamtx/mediamtx.yml`，不出现在模型 manifest，也不由推理 Launcher 读取或启停；部署者需单独执行 MediaMTX，并在推理 API 端口变更时同步更新授权回调。API／Gateway 边界不变；MediaMTX 只供宣告 Live 能力的模型使用。健康信息如实区分 API、Engine Core、Worker、逻辑 reservation、实体 KV page 和 GPU memory。
+Qwen `profiles/inference.yml` 保存 model repo／revision、dtype/device、`runtime.platform`、本地模型路径、Context、generation、Scheduler、KV block、Worker 和 Engine timeout。模型网络端点来自各自 `profiles/network.yml`。MediaMTX sidecar 配置独立放在 `deploy/mediamtx/mediamtx.yml`，不出现在模型 manifest，也不由推理 Launcher 读取或启停；部署者需单独执行 MediaMTX，并在推理 API 端口变更时同步更新授权回调。API／Gateway 边界不变；MediaMTX 只供宣告 Live 能力的模型使用。健康信息如实区分 API、Engine Core、Worker、逻辑 reservation、实体 KV page 和 GPU memory。
 
 错误按所在边界传递：InputProcessor 的非法模型输入回 4xx；Engine 准入／Cache 容量错误沿既有 `InferenceError` 映射；Executor／Worker 启动和 RPC 超时标为服务错误并走清理。Worker 不得在初始化失败后回退到 Transformers `generate()`。
 
@@ -198,7 +199,7 @@ Qwen `configs/inference.yml` 保存 model repo／revision、dtype/device、`runt
 
 模型 manifest 透过 `api.capabilities.tool_calling` 与 `api.tool_call_adapter` 启用能力。Qwen3 adapter 消费 tokenizer 生成的原生 JSON 工具调用块，并把 ID/name/arguments 转成共用类型；future model 用同一 Protocol 实现自己的输出解析。Qwen processor 将 OpenAI 标准 `tools` 和 tool-history messages传给上游 Chat Template。Launcher 检查能力和 factory 符号，启动时检查 adapter 实例接口。
 
-首版允许 `tool_choice=auto/none` 和单个调用；不做 constrained decoding、并行调用或函数指定型 tool_choice。流式参数 delta 无法在完整生成前判定全体 JSON Schema，故 Inference 在块结束前只提供 SDK 可累积的 partial arguments；块完整后执行 JSON/Schema 验证。客户端／Agent 应用必须等待完整 SSE、`finish_reason=tool_calls` 与有效参数后才执行，并使用自身的工具注册表、权限和资源限制；模型输出本身不构成执行授权。标准工具循环由 `tests/client.py` 示范，不另设项目专用 Agent HTTP API。
+首版允许 `tool_choice=auto/none` 和单个调用；不做 constrained decoding、并行调用或函数指定型 tool_choice。流式参数 delta 无法在完整生成前判定全体 JSON Schema，故 Inference 在块结束前只提供 SDK 可累积的 partial arguments；块完整后执行 JSON/Schema 验证。客户端／Agent 应用必须等待完整 SSE、`finish_reason=tool_calls` 与有效参数后才执行，并使用自身的工具注册表、权限和资源限制；模型输出本身不构成执行授权。标准工具循环由仓库根目录 `client.py` 示范，不另设项目专用 Agent HTTP API。
 
 ## Qwen3 算子分析入口
 

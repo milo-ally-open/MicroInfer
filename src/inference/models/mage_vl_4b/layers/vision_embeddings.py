@@ -5,9 +5,10 @@
 from typing import Optional
 
 import torch
+import torch.utils.benchmark
 import torch.nn as nn
 from torch.nn import LayerNorm
-from ..model.configuration_mage_vl import MageVLVisionConfig
+from ..architecture.configuration_mage_vl import MageVLVisionConfig
 
 
 class MageVLVisionEmbeddings(nn.Module):
@@ -176,3 +177,41 @@ if __name__ == "__main__":
     print("==========baseline==========")
     print(f"official patches={tuple(baseline_embeds.shape)}, merged={tuple(baseline_merged.shape)}")
     print(f"Mage-VL patch embedding and merger match the official source on {test_device}.")
+
+    # Bench：分别测量 Patch Embedding 与 Patch Merger，保留各自的输入 shape。
+    with torch.inference_mode():
+        embedding_bench = torch.utils.benchmark.Timer(
+            stmt="engine_embeddings(patches)", globals=locals()
+        ).blocked_autorange(min_run_time=0.3)
+        merger_bench = torch.utils.benchmark.Timer(
+            stmt="engine_merger(engine_embeds, patch_positions=patch_positions)", globals=locals()
+        ).blocked_autorange(min_run_time=0.3)
+    print(f"Bench: Mage-VL patch embedding {embedding_bench}")
+    print(f"Bench: Mage-VL patch merger {merger_bench}")
+
+    # Profile：Embedding 和 Merger 分开采样，避免看不出各自成本。
+    profile_activities = [torch.profiler.ProfilerActivity.CPU]
+    if test_device.type == "cuda":
+        profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
+    with torch.inference_mode():
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as embedding_profile:
+            engine_embeddings(patches)
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as merger_profile:
+            engine_merger(engine_embeds, patch_positions=patch_positions)
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        profile_sort = "self_cuda_time_total"
+    else:
+        profile_sort = "self_cpu_time_total"
+    print("Profile: Mage-VL patch embedding operators")
+    print(embedding_profile.key_averages().table(sort_by=profile_sort, row_limit=12))
+    print("Profile: Mage-VL patch merger operators")
+    print(merger_profile.key_averages().table(sort_by=profile_sort, row_limit=12))

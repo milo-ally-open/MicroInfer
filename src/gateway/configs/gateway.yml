@@ -29,14 +29,14 @@ models:
       tool_calling: false
       video_upload: true
       live_video: true
-  qwen3-0.6b:
-    upstream_model: qwen3-0.6b
-    base_url: http://127.0.0.1:8011
+  qwen3-vl-2b:
+    upstream_model: qwen3-vl-2b
+    base_url: http://127.0.0.1:8012
     capabilities:
       text_chat: true
-      image_chat: false
+      image_chat: true
       streaming: true
-      tool_calling: true
+      tool_calling: false
       video_upload: false
       live_video: false
 

@@ -580,10 +580,15 @@ def create_engine_client_for_package(
     未指定的 YAML 路径取自模型 manifest。显式提供的相对路径以当前工作目录为基准。
     """
     package_file = getattr(model_package, "__file__", None)
-    if not isinstance(package_file, str):
-        raise TypeError("Model plugin must be an importable package with a __file__ path.")
-    package_dir = Path(package_file).resolve().parent
-    manifest_path = package_dir / "configs" / "model.yml"
+    if isinstance(package_file, str):
+        package_dir = Path(package_file).resolve().parent
+    else:
+        # 模型包根目录只保留运行入口文件，以 PEP 420 namespace package 导入。
+        package_paths = getattr(model_package, "__path__", None)
+        if not package_paths:
+            raise TypeError("Model plugin must expose a package path.")
+        package_dir = Path(next(iter(package_paths))).resolve()
+    manifest_path = package_dir / "profiles" / "model.yml"
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Model plugin manifest not found: {manifest_path}")
 

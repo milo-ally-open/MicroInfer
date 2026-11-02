@@ -1,0 +1,56 @@
+name: Go Gateway CI
+
+# 仅运行 Go Gateway 检查。Python 模型测试/Bench/Profile 需要 GPU 排程，按 tests/README.md 手动执行。
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gateway-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gateway:
+    name: Go checks and image build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 安装 Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: src/gateway/go.mod
+          cache-dependency-path: |
+            src/gateway/go.sum
+            tests/integration/go.sum
+
+      - name: 检查 Go 格式
+        shell: bash
+        run: |
+          cd src/gateway
+          test -z "$(gofmt -l .)"
+          cd ../../tests/integration
+          test -z "$(gofmt -l .)"
+
+      - name: 检查 Gateway 模块
+        working-directory: src/gateway
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
+
+      - name: 检查 Gateway 集成测试
+        working-directory: tests/integration
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
+
+      - name: 构建 Gateway 容器镜像
+        run: docker build --pull --file deploy/docker/Dockerfile --tag microinfer-gateway:ci .

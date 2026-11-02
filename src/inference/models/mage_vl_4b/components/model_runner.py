@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Sequence
+import os
+from pathlib import Path
 from typing import Any
 
 import torch
 
+if __name__ == "__main__":
+    _model_dir = Path(__file__).resolve().parents[1]
+    _repo_root = _model_dir.parents[3]
+    os.environ.setdefault("INFERENCE_PROJECT_ROOT", str(_repo_root))
+    os.environ.setdefault("INFERENCE_MODEL_ALIAS", "mage-vl-4b")
+    os.environ.setdefault("INFERENCE_MODEL_MANIFEST", str(_model_dir / "profiles/model.yml"))
+    os.environ.setdefault("INFERENCE_CONFIG", str(_model_dir / "profiles/inference.yml"))
+    os.environ.setdefault("INFERENCE_NETWORK_CONFIG", str(_model_dir / "profiles/network.yml"))
+
 from inference.engine.sequence import ExecutionPhase, ScheduledWorkItem, WorkerResult
-from ..utils import loader as config
-from .component_registry import MAGE_VL_COMPONENT_REGISTRY
-from ..utils.loader import load_mage_vl
+from .. import loader as config
+from ..loader import load_mage_vl
 from .stepwise_generation import MageVLStepwiseGeneration
 from .decoder import MageVLDecoder
 from .tokenizer import MageVLTokenizer
@@ -29,21 +40,15 @@ class MageVLModelRunner:
         self.tokenizer: MageVLTokenizer | None = None
         self.decoder: MageVLDecoder | None = None
         self.model_path: str | None = None
-        self.component_inventory: dict[str, tuple[Any, ...]] = {}
         self._stepwise = MageVLStepwiseGeneration()
 
     def load(self) -> None:
-        """加载固定 revision，检查模型组件并应用明确登记的本地替换。"""
+        """加载由 model 包本地组件显式组装的固定 Mage-VL 模型。"""
         optimization = config.CONFIG.get("optimization", {})
         try:
-            # 配置错误或未登记的实现必须在下载／加载大型权重前拒绝。
-            MAGE_VL_COMPONENT_REGISTRY.validate_configuration(config.COMPONENT_REPLACEMENTS)
             self.model_path, self.model, self.processor = load_mage_vl()
             self.tokenizer = MageVLTokenizer(self.processor.tokenizer)
             self.decoder = MageVLDecoder(self.tokenizer)
-            self.component_inventory = MAGE_VL_COMPONENT_REGISTRY.inventory(self.model)
-            components = config.COMPONENT_REPLACEMENTS
-            self.model, _ = MAGE_VL_COMPONENT_REGISTRY.apply(self.model, components)
             self._stepwise.bind(self.model, self.processor, self.tokenizer)
             compile_settings = optimization.get("torch_compile", {})
             if compile_settings.get("enabled", False):
@@ -157,7 +162,6 @@ class MageVLModelRunner:
         self.processor = None
         self.tokenizer = None
         self.decoder = None
-        self.component_inventory.clear()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -173,8 +177,8 @@ if __name__ == "__main__":
     )
 
     from inference.engine.sequence import ExecutionPhase, ScheduledWorkItem
-    from ..model.configuration_mage_vl import MageVLConfig, MageVLVisionConfig
-    from ..model.conditional_generation import MageVLForConditionalGeneration
+    from ..architecture.configuration_mage_vl import MageVLConfig, MageVLVisionConfig
+    from ..modeling import MageVLForConditionalGeneration
 
     torch.manual_seed(83)
     text_config = Qwen3Config(
@@ -259,3 +263,88 @@ if __name__ == "__main__":
     finally:
         runner.cancel_generation(request_id)
     print(f"Mage-VL ModelRunner text deltas match Transformers prefill/decode on {test_device}.")
+
+    # Bench：每次创建并清理一个请求，测量 Runner 的 Prefill + Decode 路径。
+    for warmup_index in range(2):
+        warmup_id = f"runner-warmup-{warmup_index}"
+        runner.begin_generation(
+            warmup_id,
+            {"input_ids": prompt, "attention_mask": torch.ones_like(prompt)},
+            options,
+        )
+        runner.execute_batch(
+            (ScheduledWorkItem(warmup_id, ExecutionPhase.PREFILL, prompt.shape[-1]),)
+        )
+        runner.execute_batch((ScheduledWorkItem(warmup_id, ExecutionPhase.DECODE, 1),))
+        runner.cancel_generation(warmup_id)
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
+        for run_index in range(10):
+            benchmark_id = f"runner-bench-{run_index}"
+            runner.begin_generation(
+                benchmark_id,
+                {"input_ids": prompt, "attention_mask": torch.ones_like(prompt)},
+                options,
+            )
+            runner.execute_batch(
+                (ScheduledWorkItem(benchmark_id, ExecutionPhase.PREFILL, prompt.shape[-1]),)
+            )
+            runner.execute_batch(
+                (ScheduledWorkItem(benchmark_id, ExecutionPhase.DECODE, 1),)
+            )
+            runner.cancel_generation(benchmark_id)
+        end_event.record()
+        end_event.synchronize()
+        runner_ms = start_event.elapsed_time(end_event) / 10
+    else:
+        started_at = time.perf_counter()
+        for run_index in range(10):
+            benchmark_id = f"runner-bench-{run_index}"
+            runner.begin_generation(
+                benchmark_id,
+                {"input_ids": prompt, "attention_mask": torch.ones_like(prompt)},
+                options,
+            )
+            runner.execute_batch(
+                (ScheduledWorkItem(benchmark_id, ExecutionPhase.PREFILL, prompt.shape[-1]),)
+            )
+            runner.execute_batch(
+                (ScheduledWorkItem(benchmark_id, ExecutionPhase.DECODE, 1),)
+            )
+            runner.cancel_generation(benchmark_id)
+        runner_ms = (time.perf_counter() - started_at) * 1000 / 10
+    print(f"Bench: ModelRunner Prefill+Decode average={runner_ms:.3f} ms/request on {test_device}.")
+
+    # Profile：从 Runner 执行接口进入，记录完整请求的 Prefill 与 Decode 算子。
+    profile_id = "runner-profile"
+    runner.begin_generation(
+        profile_id,
+        {"input_ids": prompt, "attention_mask": torch.ones_like(prompt)},
+        options,
+    )
+    profile_activities = [torch.profiler.ProfilerActivity.CPU]
+    if test_device.type == "cuda":
+        profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
+    with torch.inference_mode():
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as runner_profile:
+            runner.execute_batch(
+                (ScheduledWorkItem(profile_id, ExecutionPhase.PREFILL, prompt.shape[-1]),)
+            )
+            runner.execute_batch(
+                (ScheduledWorkItem(profile_id, ExecutionPhase.DECODE, 1),)
+            )
+    runner.cancel_generation(profile_id)
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        profile_sort = "self_cuda_time_total"
+    else:
+        profile_sort = "self_cpu_time_total"
+    print("Profile: ModelRunner Prefill + Decode operators")
+    print(runner_profile.key_averages().table(sort_by=profile_sort, row_limit=20))

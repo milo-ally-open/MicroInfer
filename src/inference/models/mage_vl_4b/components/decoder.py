@@ -25,3 +25,27 @@ class MageVLDecoder:
         chunks = [detokenizer.push(int(token_id)) for token_id in token_ids]
         chunks.append(detokenizer.finish())
         return "".join(chunks).strip()
+
+
+if __name__ == "__main__":
+    import time
+
+    import torch
+
+    class FakeBackend:
+        def decode(self, token_ids, **options):
+            return "hello"
+
+    decoder = MageVLDecoder(MageVLTokenizer(FakeBackend()))
+    assert decoder.decode([1, 2]) == "hello"
+    print("Test: MageVLDecoder full sequence decode passed.")
+
+    started_at = time.perf_counter()
+    for _ in range(1000):
+        decoder.decode([1, 2])
+    print(f"Bench: decoder={(time.perf_counter() - started_at) * 1e3 / 1000:.4f} ms/call.")
+
+    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU], record_shapes=True, profile_memory=True) as profile:
+        decoder.decode([1, 2])
+    print("Profile: MageVLDecoder")
+    print(profile.key_averages().table(sort_by="self_cpu_time_total", row_limit=10))

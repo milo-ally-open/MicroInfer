@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import torch
+import torch.utils.benchmark
 from torch import nn
 from torch.nn import functional as F
 
@@ -65,3 +66,41 @@ if __name__ == "__main__":
     torch.testing.assert_close(engine_output[0], baseline_output[0], atol=1e-6, rtol=1e-6)
     torch.testing.assert_close(engine_output[1], baseline_output[1], atol=1e-6, rtol=1e-6)
     print(f"Mage-VL Qwen3 RMSNorm and MLP match the Transformers baseline on {test_device}.")
+
+    # Bench：独立测量 RMSNorm 和 Qwen3 MLP，便于判断逐层瓶颈。
+    with torch.inference_mode():
+        norm_bench = torch.utils.benchmark.Timer(
+            stmt="engine_norm(hidden_states)", globals=locals()
+        ).blocked_autorange(min_run_time=0.3)
+        mlp_bench = torch.utils.benchmark.Timer(
+            stmt="engine_mlp(hidden_states)", globals=locals()
+        ).blocked_autorange(min_run_time=0.3)
+    print(f"Bench: Qwen3RMSNorm {norm_bench}")
+    print(f"Bench: Qwen3MLP {mlp_bench}")
+
+    # Profile：分别记录 Norm 与 MLP 算子，不把两种成本混在一起。
+    profile_activities = [torch.profiler.ProfilerActivity.CPU]
+    if test_device.type == "cuda":
+        profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
+    with torch.inference_mode():
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as norm_profile:
+            engine_norm(hidden_states)
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as mlp_profile:
+            engine_mlp(hidden_states)
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        profile_sort = "self_cuda_time_total"
+    else:
+        profile_sort = "self_cpu_time_total"
+    print("Profile: Qwen3RMSNorm operators")
+    print(norm_profile.key_averages().table(sort_by=profile_sort, row_limit=10))
+    print("Profile: Qwen3MLP operators")
+    print(mlp_profile.key_averages().table(sort_by=profile_sort, row_limit=12))

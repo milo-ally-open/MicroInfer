@@ -67,7 +67,7 @@
 
 ### REQ-09：新模型沿用共用服务装配
 
-- **AC-09.1** 新模型在 `models/{model_alias}/configs/model.yml` 登记配置路径、Runtime 工厂及 API 标识符；Launcher 自动发现模型 manifest，`start` 必须明确指定 `--model`。Launcher 使用同一个 `network/service.py`，Engine 使用同一组 Engine／Worker bootstrap，不要求模型包提供 `app.py` 或 `engine_core.py`。
+- **AC-09.1** 新模型在 `models/{model_alias}/profiles/model.yml` 登记配置路径、Runtime 工厂及 API 标识符；Launcher 自动发现模型 manifest，`start` 必须明确指定 `--model`。Launcher 使用同一个 `network/service.py`，Engine 使用同一组 Engine／Worker bootstrap，不要求模型包提供 `app.py` 或 `engine_core.py`。
 - **AC-09.2** GPU Worker 调用 Runner 的 `load()`、`gpu_status()`、`close()`；Adapter 依既有 Engine 操作契约完成准备、Cache 绑定、批次执行、finish 和 cancel，并按 request ID 返回独立结果。
 - **AC-09.3** Tokenizer／Chat Template、视频与 Live 整合以可选工厂及登记字段加入；未登记的路由不出现在 API。`api.model_id` 与 YAML 中的上游 repo ID 分开配置。
 - **AC-09.4** Mage-VL 与 Qwen3 经共用服务入口启动；Mage-VL 的视频／Live 路由与文字增量、Qwen 的文字 API 与逐 token SSE、finish usage 和 `[DONE]` 行为维持现有契约。
@@ -101,9 +101,9 @@
 **验收条件**
 
 - **AC-12.1** 每个模型包以 `models/{model_alias}/runtime.py` 提供 `create_runtime()` 工厂；该工厂返回单一 Runtime facade，符合 Worker 的 load、health、generation、batch、finish、cancel、GPU status 及 close 契约。
-- **AC-12.2** 每个模型的 `configs/model.yml` 登记 alias、display name、profile、backend、Runtime 工厂、推理／网络配置文件名及 API 能力；MediaMTX 不在模型 manifest 中登记，其独立配置位于 `deploy/mediamtx/mediamtx.yml`。模型相对配置路径以 manifest 所在的 `configs/` 目录解析。
-- **AC-12.3** Launcher 由 `models/*/configs/model.yml` 自动发现模型，拒绝重复 alias、缺失配置及非法工厂宣告；`start` 不依赖全局模型登记文件，且必须指定 `--model`。
-- **AC-12.4** 模型拓扑置于模型包 `model/`；模型层置于 `layers/`；Runtime 支持组件置于 `components/`；模型配置、Transformers Config／Tokenizer／Processor 选择、snapshot 与权重加载集中于 `utils/loader.py`。不再为相同职责拆分多个配置／HF loader 文件；模型专属推理参数仍由 YAML 管理。以上目录依模型实际需要创建，不创建空目录，也不把模型专属逻辑移入共用 `engine/`。
+- **AC-12.2** 每个模型的 `profiles/model.yml` 登记 alias、display name、profile、backend、Runtime 工厂、推理／网络配置文件名及 API 能力；MediaMTX 不在模型 manifest 中登记，其独立配置位于 `deploy/mediamtx/mediamtx.yml`。配置文件名相对于 `profiles/` 解析。
+- **AC-12.3** Launcher 由 `models/*/profiles/model.yml` 自动发现模型，拒绝重复 alias、缺失配置及非法工厂宣告；`start` 不依赖全局模型登记文件，且必须指定 `--model`。
+- **AC-12.4** 模型包顶层只放组装入口 `modeling.py`、示例 `example.py`、加载入口 `loader.py` 和运行时组合入口 `runtime.py`；模型专属依赖放在 `requirements/`，manifest 与运行 YAML 放在 `profiles/`，计算层置于 `layers/`，Runtime 支持组件置于 `components/`，模型专属 Config、输出类型、Live 等能力和辅助前向模块置于 `architecture/`。MageVL 和 Qwen3-VL 都保留 `architecture/__init__.py`，无需为了统一而增加其他空模块。不再为相同职责拆分多个配置／HF loader 文件；模型专属推理参数仍由 YAML 管理，也不把模型专属逻辑移入共用 `engine/`。
 - **AC-12.5** Qwen3 与 Mage-VL 均由自身 manifest 和 Runtime 工厂装配，维持现有 API alias、网络配置、推理行为及文字 SSE 输出；Qwen token ID 仍在 API 边界增量 Detokenize，Mage-VL `text_delta` 路径不变。
 - **AC-12.6** 每个模型的三项测试均只使用该目录的 `test.yml` 和模型 manifest；跨服务 alias／端点一致性由 `test_end2end.py` 的 Gateway 响应验证。
 - **AC-12.7** 新模型接入指南以模型目录为主体，逐项说明必需／按需文件、各文件应承载的内容、接入顺序、standard/custom 边界、Gateway 与 Live 的条件及验证方法；指南不要求提供模型实现代码范例，也不要求维护全局模型登记清单或 Runner／Adapter 组件清单。
@@ -114,12 +114,12 @@
 
 **验收条件**
 
-- **AC-13.1** Mage-VL 的模型拓扑／Config／输出型别位于 `models/mage_vl_4b/model/`，视觉 Encoder 与模型层位于 `layers/`，Runner／Adapter／生成生命周期组件位于 `components/`，加载流程位于 `utils/loader.py`；旧 `components/` 模型拓扑汇入路径不得残留。
+- **AC-13.1** Mage-VL 的模型拓扑在与 `example.py` 同级的 `models/mage_vl_4b/modeling.py` 中显式组合；专属 Config／输出类型及多模态辅助模块位于 `architecture/`，视觉 Encoder 与模型层位于 `layers/`，Runner／Adapter／生成生命周期组件位于 `components/`，加载流程位于模型根目录 `loader.py`；组件替换 registry 不参与模型组装。
 - **AC-13.2** Qwen3 自有 GQA 与 Mage-VL 视觉注意力明确执行 QKᵀ、softmax 与权重乘 V；两个模型包的执行代码不得调用 `F.scaled_dot_product_attention()`，Mage-VL 文字骨干及其 Transformers 基线均固定选用模型包注册的分块 eager attention。
 - **AC-13.3** 逐模型 `test_components.py`、`test_performance.py`、`test_end2end.py` 均以目前固定本地 snapshot／配置实际执行并通过；性能对照须两侧生成相同配置的 token 数，端到端须验证 Gateway SSE 与模型已宣告的多模态路由。
 - **AC-13.4** Mage-VL 视觉 Attention 类别与模块分别使用 `MultiHeadAttention`、`multi_head_attention.py` 命名；模型模块中的前向对照代码直接置于 `if __name__ == "__main__":` 区块，CUDA 可用时默认使用 CUDA，仅在不可用时回退 CPU，不再透过测试函数包装调用。
 - **AC-13.5** 每个含独立数值计算的模型层、视觉组件、KV/采样执行组件及模型前向文件，在文件内的 `if __name__ == "__main__":` 直接写小型基线对照；入口输出 `==========engine===========` 与 `==========baseline==========`，对比 Transformers 或等价 PyTorch 基线并断言数值／输出一致，不通过辅助测试函数包装。纯配置、输出数据结构和无前向计算的适配文件不强制添加入口；需要模型 YAML 环境的 Runner 入口须在开发文档说明启动环境。
-- **AC-13.6** Mage-VL 由 `model/mage_vl.py` 明确组装视觉塔、Qwen3 文本骨干和多模态前向；视觉特征、placeholder 注入及 StreamMind Gate 位于独立模块。视觉 RoPE、Patch、Attention、Encoder stack 分文件维护；旧 `multimodal_model.py`／`vision_encoder.py` 导入路径保持兼容，重构不得改变 checkpoint state-dict key 路径。
+- **AC-13.6** Mage-VL 由与 `example.py` 同级的 `modeling.py` 明确组装视觉塔、Qwen3 文本骨干和多模态前向；视觉特征、placeholder 注入及 StreamMind Gate 位于独立模块。视觉 RoPE、Patch、Attention、Encoder stack 分文件维护于 `layers/`；架构支持模块位于 `architecture/`，重构不得改变 checkpoint state-dict key 路径。
 - **AC-13.7** Mage-VL 新增计算模块的内联入口对照固定 revision 官方 `modeling_mage_vl.py` 的小型前向；Qwen3 模型、层和 Runner 对照 Transformers Qwen3。对照加载随机小型模型参数，不加载大型 checkpoint tensor；前向优先使用 CUDA，仅在 CUDA 不可用时回退 CPU；只验证模块前向与结构兼容，不将其作为真实权重／GPU 服务验收。
 
 ### REQ-14：以标准 Chat Completions 格式支持模型工具调用

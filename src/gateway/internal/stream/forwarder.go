@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -98,11 +97,11 @@ func (forwarder *Forwarder) Chat(w http.ResponseWriter, r *http.Request, ctx con
 				w.WriteHeader(response.StatusCode)
 				committed = true
 			}
-			if !firstTokenRecorded && hasChatToken(item.data) {
+			rewritten, hasToken := rewriteSSEModel(item.data, alias)
+			if !firstTokenRecorded && hasToken {
 				forwarder.metrics.Observe("sse_time_to_first_token_seconds", "/v1/chat/completions", time.Since(requestStarted).Seconds())
 				firstTokenRecorded = true
 			}
-			rewritten := rewriteSSEModel(item.data, alias)
 			if _, err := w.Write(rewritten); err != nil {
 				return
 			}
@@ -239,84 +238,101 @@ func readSSEEvent(reader *bufio.Reader, maxBytes int64) ([]byte, error) {
 	}
 }
 
-func rewriteSSEModel(event []byte, alias string) []byte {
-	lines := bytes.Split(event, []byte("\n"))
-	dataValues := make([]string, 0, 1)
-	for _, rawLine := range lines {
-		trimmed := strings.TrimSuffix(string(rawLine), "\r")
-		if strings.HasPrefix(trimmed, "data:") {
-			value := strings.TrimPrefix(trimmed, "data:")
-			value = strings.TrimPrefix(value, " ")
-			dataValues = append(dataValues, value)
+func rewriteSSEModel(event []byte, alias string) ([]byte, bool) {
+	var data bytes.Buffer
+	dataCount := 0
+	for start := 0; start <= len(event); {
+		end := len(event)
+		next := len(event) + 1
+		if offset := bytes.IndexByte(event[start:], '\n'); offset >= 0 {
+			end = start + offset
+			next = end + 1
 		}
+		line := bytes.TrimSuffix(event[start:end], []byte{'\r'})
+		if bytes.HasPrefix(line, []byte("data:")) {
+			value := bytes.TrimPrefix(line, []byte("data:"))
+			if len(value) > 0 && value[0] == ' ' {
+				value = value[1:]
+			}
+			if dataCount > 0 {
+				data.WriteByte('\n')
+			}
+			_, _ = data.Write(value)
+			dataCount++
+		}
+		start = next
 	}
-	if len(dataValues) == 0 {
-		return event
+	if dataCount == 0 {
+		return event, false
 	}
-	joined := strings.Join(dataValues, "\n")
-	if joined == "[DONE]" {
-		return event
+	joined := data.Bytes()
+	if bytes.Equal(joined, []byte("[DONE]")) {
+		return event, false
 	}
-	var payload map[string]any
+	var payload map[string]json.RawMessage
 	if json.Unmarshal([]byte(joined), &payload) != nil || payload == nil {
-		return event
+		return event, false
 	}
-	payload["model"] = alias
+	model, err := json.Marshal(alias)
+	if err != nil {
+		return event, false
+	}
+	payload["model"] = model
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return event
+		return event, false
 	}
+	hasToken := hasChatToken(payload["choices"])
 	var out bytes.Buffer
 	dataWritten := false
-	for _, rawLine := range lines {
-		line := strings.TrimSuffix(string(rawLine), "\r")
-		if line == "" {
+	for start := 0; start <= len(event); {
+		end := len(event)
+		next := len(event) + 1
+		if offset := bytes.IndexByte(event[start:], '\n'); offset >= 0 {
+			end = start + offset
+			next = end + 1
+		}
+		line := bytes.TrimSuffix(event[start:end], []byte{'\r'})
+		if len(line) == 0 {
+			start = next
 			continue
 		}
-		if strings.HasPrefix(line, "data:") {
+		if bytes.HasPrefix(line, []byte("data:")) {
 			if !dataWritten {
 				out.WriteString("data: ")
 				out.Write(encoded)
 				out.WriteByte('\n')
 				dataWritten = true
 			}
+			start = next
 			continue
 		}
-		out.WriteString(line)
+		out.Write(line)
 		out.WriteByte('\n')
+		start = next
 	}
 	out.WriteByte('\n')
-	return out.Bytes()
+	return out.Bytes(), hasToken
 }
 
-func hasChatToken(event []byte) bool {
-	for _, line := range bytes.Split(event, []byte("\n")) {
-		line = bytes.TrimSuffix(line, []byte("\r"))
-		if !bytes.HasPrefix(line, []byte("data:")) {
-			continue
+func hasChatToken(rawChoices json.RawMessage) bool {
+	var choices []struct {
+		Delta struct {
+			Content   json.RawMessage `json:"content"`
+			ToolCalls json.RawMessage `json:"tool_calls"`
+		} `json:"delta"`
+	}
+	if len(rawChoices) == 0 || json.Unmarshal(rawChoices, &choices) != nil {
+		return false
+	}
+	for _, choice := range choices {
+		var content string
+		if json.Unmarshal(choice.Delta.Content, &content) == nil && content != "" {
+			return true
 		}
-		data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
-			continue
-		}
-		var payload struct {
-			Choices []struct {
-				Delta struct {
-					Content   any               `json:"content"`
-					ToolCalls []json.RawMessage `json:"tool_calls"`
-				} `json:"delta"`
-			} `json:"choices"`
-		}
-		if json.Unmarshal(data, &payload) != nil {
-			continue
-		}
-		for _, choice := range payload.Choices {
-			if content, ok := choice.Delta.Content.(string); ok && content != "" {
-				return true
-			}
-			if len(choice.Delta.ToolCalls) > 0 {
-				return true
-			}
+		var calls []json.RawMessage
+		if json.Unmarshal(choice.Delta.ToolCalls, &calls) == nil && len(calls) > 0 {
+			return true
 		}
 	}
 	return false

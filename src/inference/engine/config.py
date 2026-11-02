@@ -40,9 +40,9 @@ def selected_model() -> tuple[str, dict[str, Any]]:
 
 
 def model_manifest_path(alias: str) -> Path:
-    """依模型别名寻找模型目录内的唯一 `configs/model.yml`。"""
+    """依模型别名寻找模型 profiles/ 下的唯一 `model.yml`。"""
     matches = []
-    for manifest in MODELS_ROOT.glob("*/configs/model.yml"):
+    for manifest in MODELS_ROOT.glob("*/profiles/model.yml"):
         try:
             data = read_yaml(manifest)
         except (OSError, ValueError):
@@ -50,7 +50,7 @@ def model_manifest_path(alias: str) -> Path:
         if data.get("alias") == alias:
             matches.append(manifest.resolve())
     if not matches:
-        raise ValueError(f"Model '{alias}' has no configs/model.yml manifest under {MODELS_ROOT}.")
+        raise ValueError(f"Model '{alias}' has no profiles/model.yml manifest under {MODELS_ROOT}.")
     if len(matches) > 1:
         raise ValueError(f"Model alias '{alias}' is declared by multiple model manifests: {matches}")
     return matches[0]

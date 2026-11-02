@@ -3,7 +3,7 @@
 > 关联规格：[spec.md](spec.md)<br>
 > 关联提案：[proposal.md](proposal.md)<br>
 > 任务追踪：[tasks.md](tasks.md)<br>
-> 状态：Go Gateway v1 已实现；双模型能力路由、Qwen 标准 tool capability 及仓库无关 module path 依 REQ-13 至 REQ-15 增补；验收进度见 tasks.md。
+> 状态：Go Gateway v1 已实现；双模型能力路由、Qwen 标准 tool capability、仓库无关 module path 及鉴权/SSE 热路径性能依 REQ-13 至 REQ-17 增补；验收进度见 tasks.md。
 
 ## 当前实现与目标
 
@@ -80,7 +80,7 @@ Gateway 非敏感配置位于 src/gateway/configs/gateway.yml。配置至少涵�
 
 - Authorization: Bearer 提供 API Key。Gateway 从安全注入的来源加载有效密钥及其 tenant_id 对应。
 - 客户端提交的租户标头不具权限来源；Gateway 不采信其覆盖已验证身份。
-- 比较密钥时采用适当的常数时间比较；日志只记录安全的租户代号或 Key ID，不记录原始 API Key。
+- 单密钥配置直接对 SHA-256 摘要进行常数时间比较；多密钥配置以摘要为 map 索引，命中后仍做常数时间摘要比较。认证结构只保留摘要、Key ID 与 tenant ID，不保留原始密钥；日志不记录原始 API Key。
 - /healthz 与 /readyz 不要求客户端 API Key；所有 /v1/* 客户端 API 都要求有效密钥。
 - 首版只支持单实例；租户限流器位于程序内存，重启后计数重置。多实例共享状态不在首版范围。
 
@@ -91,6 +91,7 @@ Gateway 非敏感配置位于 src/gateway/configs/gateway.yml。配置至少涵�
 - 聊天上游依路由使用 `microsoft/Mage-VL` 或 `qwen3-0.6b`，响应 JSON／SSE 的 model 字段改回该请求的项目 alias。
 - GET /v1/models 仅返回公开别名，不暴露上游 repo_id。
 - SSE parser 以事件为单位处理 data 字段，只改写合法 JSON 的 model 字段；注解、keep-alive、[DONE] 及非 JSON 控制数据保持不变。每个事件实时刷新，不聚合整条流式。
+- 聊天 SSE 的 model alias 改写和首 token 检测共享事件的解析结果。顶层以 `json.RawMessage` 保留不参与判断的字段，仅解码 choices 中的 delta 内容与 tool calls，避免泛型解码整个 chunk 两次。
 
 视频路由使用可选 query `model`，以便不读取或重建 multipart 请求正文也能选择上游；默认模型由 `defaults.video_model` 配置。Live 创建 JSON 使用可选 `model`（默认 `defaults.live_model`）。Gateway 在转发前检查 `video_upload`／`live_video`，不支持时拒绝。Inference route capability 不在 Gateway 内推导；模型端到端测试验证 Gateway 公开 alias 与实际请求路径，部署端点和 capability 需人工维护同步。
 
@@ -145,6 +146,8 @@ Gateway 非敏感配置位于 src/gateway/configs/gateway.yml。配置至少涵�
 | API Key 对应租户并以 HMAC 句柄授权控制 API | SSE／停止操作具租户隔离且不需数据库 | 媒体 URL 本身仍是能力凭证，须由客户端保密 |
 | Gateway 代理 RTSP／RTMP 媒体 | 集中网络入口 | 增加长连接与频宽压力，且违反 MediaMTX sidecar 边界，故不采用 |
 | 透过推理 HTTP API 转发 SSE 与视频 | 保持推理与网关服务分离 | 需正确处理刷新、取消、Content-Length 及流式上限 |
+| 多密钥认证逐项常数时间扫描 | 扫描次数固定，不因命中位置改变 | 查找成本随密钥总数线性增长；改用 SHA-256 摘要索引，保留命中摘要的常数时间比较 |
+| SSE 首 token 判定与 model alias 改写分别解码 | 实现简单、职责分开 | 每个 JSON chunk 重复泛型解码；改为共享事件字段并只解码所需 choices |
 
 ## 未决项
 
@@ -157,4 +160,5 @@ Gateway 非敏感配置位于 src/gateway/configs/gateway.yml。配置至少涵�
 | 2026-10-20 | 创建 Gateway 技术设计草稿 |
 | 2026-10-25 | 增加 Qwen tool capability；按 OpenAI 兼容模式使用现有 Chat route，工具由调用端执行 |
 | 2026-10-25 | 将 Go module 与内部 imports 改为仓库无关的稳定命名空间，避免编译及诊断信息绑定代码托管地址 |
+| 2026-11-02 | 为 API Key 建立摘要索引并合并 SSE 首 token 判定与 alias 改写的解析工作；以固定基准量化，不宣称端到端 SLA |
 

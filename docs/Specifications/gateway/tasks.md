@@ -1,7 +1,7 @@
 # 实施任务：Go API 网关
 
 > 关联规格：[spec.md](spec.md)；关联设计：[design.md](design.md)；提案：[proposal.md](proposal.md)<br>
-> 状态：T-01 至 T-14 记录 Gateway v1 基线；REQ-14/T-15 将 Qwen tool capability 接入既有 Chat route，REQ-15/T-16 已移除 module path 对当前代码托管位置的依赖。新增验收状态见下表。
+> 状态：T-01 至 T-14 记录 Gateway v1 基线；REQ-14/T-15 将 Qwen tool capability 接入既有 Chat route，REQ-15/T-16 已移除 module path 对当前代码托管位置的依赖，REQ-16/17 由 T-17 优化鉴权和 SSE 热路径。新增验收状态见下表。
 > Go Gateway v1 已实现，不代表已部署或已连接真实推理服务。
 
 ## 任务清单
@@ -30,6 +30,7 @@
 - [x] **T-14 将 Gateway 验收入口收敛至逐模型测试** — 交付：`tests/{model_alias}/test_end2end.py` 验证各模型 Gateway SSE／媒体路由，并于 Gateway README／Spec 指明 Inference 性能比较与 Gateway 端到端测试的区别；清理原有多目录测试树并将历史 JSON 按模型归文件；覆盖：REQ-12 / AC-12.2；REQ-13 / AC-13.6；状态：两个模型脚本已创建；未启动 Gateway／Inference 实机服务。
 - [x] **T-15 将标准 tool capability 接入既有 Chat route** — 交付：模型 route `tool_calling` capability、工具请求拒绝／转发，保留标准 JSON/SSE tool_calls 与现有认证／限制／readiness；不新增 Agent endpoint；覆盖：REQ-14 / AC-14.1、AC-14.2、AC-14.3、AC-14.4、AC-14.5、AC-14.6；依赖：T-13；状态：实现与 `go build ./...` 通过；Qwen 直接 Inference 的客户端工具循环及 SSE 已验收。Windows Application Control 阻止启动本次 Gateway 可执行文件，完整 Gateway 端到端待可运行的受信任环境验收。
 - [x] **T-16 移除 Gateway 对当前代码托管路径的耦合** — 交付：Go module 与内部 imports 改用稳定中性命名空间；不改变 HTTP API、模型 alias 或部署配置；覆盖：REQ-15 / AC-15.1、AC-15.2；状态：`go list -m` 显示中性 module path，`go build ./...` 通过，Gateway 源码不再包含旧托管地址；HTTP API 与 YAML 未修改。
+- [x] **T-17 优化 Bearer 鉴权及聊天 SSE 热路径** — 交付：API Key SHA-256 摘要索引、单密钥快速路径、减少 Bearer 头解析分配；SSE 使用 `json.RawMessage` 保留其他字段，并复用 choices 解析完成 alias 改写与首 token 判定；覆盖：REQ-16 / AC-16.1、AC-16.2、AC-16.3；REQ-17 / AC-17.1、AC-17.2、AC-17.3；状态：认证与 SSE 单测通过，`go build ./...` 通过；Linux/amd64 固定样本 benchmark 显示认证在 1/16/1024 密钥下中位数分别约 221/229/231 ns（基线 229/436/13,305 ns），SSE 事件约 5,235 ns、1,574 B、29 allocs（基线 8,780 ns、2,900 B、58 allocs）。完整记录见问题报告。
 
 ## 验收记录
 
@@ -54,6 +55,10 @@
 | REQ-13 规格追踪 | `validate_spec_group.py docs/Specifications/gateway` | 13 REQ、44 AC、13 T 的需求／验收／任务映射完整 | 通过 |
 | REQ-14 Qwen tool calling／既有 Chat route | `go build ./...`、本地 Qwen JSON/SSE smoke、Gateway HTTP 端到端 | `go build ./...` 通过；Qwen Inference 非流式工具调用往返和 SSE `delta.tool_calls`／`finish_reason=tool_calls` 通过；Gateway 两种运行目录下启动均被 Windows Application Control 拦截，未向 Gateway 发出端到端请求 | Inference 通过；Gateway 整合未验收 |
 | AC-15.1、AC-15.2 Gateway 仓库无关 module path | Gateway 源码搜索、`go list -m`、`go build ./...`、差异查看 | 搜索未找到旧托管地址；module path 为 `example.com/videostreamapi/gateway`；编译通过；变更只涉及 Go module/import 和规格文档 | 本地检查通过；未实际迁移 Git remote |
+| AC-16.1、AC-16.2 | `go test`（Gateway handler 与 `internal/auth`） | 所有公开 `/v1/*` 路由对缺失／无效 Bearer 返回 401；healthz 保持免认证；单／多密钥均正确映射租户；拒绝额外字段和重复密钥，兼容大小写与空白；摘要比较使用常数时间操作 | 通过；未执行 Gateway/Inference 联机鉴权 smoke |
+| AC-16.3 | `BenchmarkAuthenticate`，Linux/amd64，Go 1.27.2，Intel Core i7-14650HX，前后各 5 次、每次 300ms | 1 个密钥：229→221 ns/op；16 个：436→229 ns/op；1024 个：13,305→231 ns/op。1024 密钥约快 57.7 倍；内存分配由 80 B/2 次降至 48 B/1 次。该微基准仅覆盖鉴权函数 | 通过；不作为并发或端到端容量指标 |
+| AC-17.1、AC-17.2 | `go test`（`internal/stream`） | 覆盖公开 alias 改写、SSE id/event 保留、文本及 tool call 首 token 判定、role-only、多行 data、CRLF、`[DONE]`、非 JSON 与控制事件 | 通过；未启动真实 Inference SSE |
+| AC-17.3 | `BenchmarkRewriteAndDetectChatToken`，Linux/amd64，Go 1.27.2，Intel Core i7-14650HX，前后各 5 次、每次 300ms | 基线 8,780 ns/op、2,900 B/op、58 allocs/op；改后 5,235 ns/op、1,574 B/op、29 allocs/op。固定样本约快 40.4%，分配数减半 | 通过；不外推为模型首 token 延迟或网络吞吐 |
 
 ## 实施偏差与决定
 
@@ -70,6 +75,7 @@
 - 已执行：Go Gateway 包编译与单元测试；`tests/inference/` 静态来源检查；`tests/end2end/` mock client、性能统计与 YAML 兼容性检查。具体结果在本次交付摘要记录。
 - 已执行：Qwen3-0.6B 真实 CUDA API 经 Gateway 的非流式／SSE smoke 与 3 个串行 text-sse 性能样本；报告见 `tests/qwen3_0_6b/results/qwen3-0.6b-gateway-smoke-2026-10-22.json`。
 - 已执行：Qwen3-0.6B Gateway JSON／SSE；Mage-VL Gateway 图片 JSON／SSE／视频上传；Mage Live／MediaMTX 合成 RTSP 功能 smoke。Mage 图片／视频配置与量测见 [`analysis/mage_vl_4b/analysis.md`](../../../analysis/mage_vl_4b/analysis.md)，JSON 与 Live 报告分别归文件于 `tests/mage_vl_4b/results/`、`tests/qwen3_0_6b/results/`。仍未执行：未授权媒体访问／过期句柄测试、正式容量／高并发性能与部署回复演练；本次未下载模型权重。
-- 当时 Gateway 任务未新增或修改算子报告；目前各模型报告位于根目录 `analysis/<model_alias>/`。
+- 当时 Gateway 任务未新增或修改算子报告；目前各模型报告位于根目录 `analysis/` 下对应的模型目录。
 - 不代表：已选定第二个模型，或 SGLang／vLLM 已实现。
 - REQ-14/T-15 仅在既有 Chat route 增加 Qwen tool-call capability；不提供专用 Agent HTTP endpoint。真实 Qwen Inference JSON／SSE 与客户端执行循环通过；Gateway 运行验收受 Application Control 阻挡，需在允许执行本地 Gateway 的环境补测。
+- REQ-16/17/T-17 已完成单元与微基准验收；Windows Application Control 阻止直接启动临时 Go 测试程序，因此交叉编译 Linux/amd64 测试二进制并在 WSL 运行。未连接真实 Inference 服务；性能数据只表示网关局部函数的本地样本对比。

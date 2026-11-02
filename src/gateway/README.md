@@ -7,8 +7,8 @@ Gateway 是独立的 Go HTTP 服务，负责客户端认证、租户限流、模
 - API Key Bearer 认证和基于租户的进程内 token bucket 限流。
 - `/v1/models`、`/v1/chat/completions`、视频上传理解及 Live session 控制 API。
 - 按模型能力拒绝不支持的输入和路由；当前模型与映射见 [`configs/gateway.yml`](configs/gateway.yml)。
-- 有界转发聊天 SSE 和视频 multipart 请求；聊天响应中的模型字段改为公开别名。
-- Qwen3 标准 function tool 请求和响应透传。Gateway 不解析模型标记，也不执行工具。
+- 有界转发聊天 SSE 和视频 multipart 请求；聊天响应中的模型字段改为公开别名。SSE 首 token 判定与别名改写共享解析结果，减少每个事件的重复解码。
+- Bearer API Key 认证按 SHA-256 摘要索引密钥，保留常数时间摘要比较；单密钥配置走快速路径，认证数据不保留原始密钥。
 - `/healthz` 检查 Gateway 存活；`/readyz` 检查配置中的全部 Inference 上游；`/metrics` 提供 Prometheus 格式指标。
 - Live session handle 使用 HMAC 签名并绑定租户和模型路由。发布端 RTSP/RTMP 地址仍由客户端直连 MediaMTX。
 
@@ -17,20 +17,22 @@ Gateway 是独立的 Go HTTP 服务，负责客户端认证、租户限流、模
 | 对外别名 | 上游 Inference | 能力 |
 | --- | --- | --- |
 | `mage-vl-4b` | `http://127.0.0.1:8001` | 图片聊天、文本 SSE、视频上传、Live |
-| `qwen3-0.6b` | `http://127.0.0.1:8011` | 文本聊天、文本 SSE、function tool calling |
+| `qwen3-vl-2b` | `http://127.0.0.1:8012` | 文字／图片聊天、文本 SSE |
 
 模型上游地址、公开 URL、请求限制、超时、连接池、限流、指标和 listener 配置位于 `configs/gateway.yml`。部署前应核对这些值与对应 Inference 模型的 YAML 限制兼容。
 
 ## 启动
 
-需要可用的 Go 工具链。从仓库根目录进入 Gateway 模块：
+本地开发可使用 Go 工具链，从仓库根目录进入 Gateway 模块直接运行：
 
 ```bash
 cd src/gateway
 go run ./cmd/gateway --config configs/gateway.yml
 ```
 
-Gateway 默认监听 `127.0.0.1:8000`。配置包含 Mage-VL 和 Qwen3 两个上游；若要让 `/readyz` 报告就绪，所有已配置的 Inference 上游都必须运行并通过 `GET /health` 检查。Inference 的安装和启动方式见 [Inference README](../inference/README.md)。
+Gateway 默认监听 `127.0.0.1:8000`。配置包含当前已登记模型的上游；若要让 `/readyz` 报告就绪，所有已配置的 Inference 上游都必须运行并通过 `GET /health` 检查。Inference 的安装和启动方式见 [Inference README](../inference/README.md)。
+
+容器部署只打包 Gateway；Inference Engine 和模型权重留在宿主机。Dockerfile、Compose、容器专用 Gateway 配置及部署步骤见 [deploy/docker README](../../deploy/docker/README.md)。
 
 检查存活和就绪状态：
 
@@ -78,6 +80,6 @@ $env:GATEWAY_SESSION_HMAC_KEYS = '<base64url-key>[,<previous-base64url-key>]'
 
 ## 测试与验收
 
-逐模型端到端测试见 [Tests README](../../tests/README.md)，测试脚本位于 `tests/<model_alias>/test_end2end.py`。运行前需启动所需 Gateway 与 Inference 服务、配置 `VIDEO_API_KEY`，并准备测试 YAML 指定的素材。测试结果输出到终端；需留文件时，保存到对应模型的 `results/` 目录。
+Gateway smoke 调用示例见 Tests README，统一使用仓库根目录的 `client.py`。运行前需启动 Gateway 与 Inference 服务，并配置 VIDEO_API_KEY；设置 VIDEO_FILE 时会额外调用现有视频路由。Go Gateway 集成测试位于仓库根目录 `tests/integration/`，使用独立 Go module，执行 `cd tests/integration && go test -race -count=1 ./...`。模型层组件对齐测试位于各自 layers 模块的 main 入口。
 
 功能 smoke 不代表高并发容量测试或 SLA。Live 的正式容量、长期媒体稳定性和多实例部署尚未作为本 README 所述的既有验收结论。

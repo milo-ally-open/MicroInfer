@@ -28,18 +28,17 @@ package-dir = {"" = ".."}
 [tool.setuptools.packages.find]
 where = [".."]
 include = ["inference*"]
-namespaces = false
+namespaces = true
 
 [tool.setuptools.package-data]
 inference = [
-    "models/*/configs/*.yml",
-    "models/*/requirements.txt",
+    "models/*/profiles/*.yml",
+    "models/*/requirements/*.txt",
 ]
 
 [tool.setuptools.dynamic]
 version = { attr = "inference.__version__" }
 
 [tool.setuptools.dynamic.optional-dependencies]
-mage-vl = { file = ["models/mage_vl_4b/requirements.txt"] }
-qwen3 = { file = ["models/qwen3_0_6b/requirements.txt"] }
-qwen3-vl-2b = { file = ["models/qwen3_vl_2b/requirements.txt"] }
+mage-vl = { file = ["models/mage_vl_4b/requirements/requirements.txt"] }
+qwen3-vl-2b = { file = ["models/qwen3_vl_2b/requirements/requirements.txt"] }

@@ -7,10 +7,12 @@
 | 需求 | 首选文档 | 内容 |
 | --- | --- | --- |
 | 了解项目并启动服务 | [根 README](../README.md) | 项目边界、已登记模型、安装、启动和文档入口 |
-| 从 Hugging Face 接入一个新模型 | [模型接入实操教程](../TUTORIAL.md) | 固定 revision、下载快照、模型包目录、依赖、配置、Runtime 及分层验收 |
+| 从 Hugging Face 接入一个新模型 | [新模型接入流程](../TUTORIAL.md) | 固定 revision、下载快照、模型包目录、依赖、配置、Runtime 及分层验收 |
 | 贡献代码或修改文档 | [贡献指南](../CONTRIBUTING.md) | 架构边界、注释和文档写法、验证证据与安全要求 |
 | 运行 Python 推理服务 | [Inference README](../src/inference/README.md) | Engine、模型插件、配置、API、安装和服务端用法 |
 | 运行 Go API 网关 | [Gateway README](../src/gateway/README.md) | 路由、认证、限制、启动、API 行为和验收边界 |
+| 配置 GitHub Actions 并发布 Gateway | [GitHub + Go Gateway CI/CD SOP](Operations/GitHub_GoGateway_CICD_SOP.md) | 仓库规则、Pull Request 检查、GHCR 版本发布、手动部署和回滚 |
+| 规划组内共享 CI/CD Runner | [Runner 架构与落地计划](Operations/CI_CD_Runner_Architecture_Plan.md) | GitHub/GitLab 边界、4090 隔离、安全门槛与部署阶段 |
 | 运行模型组件、性能或端到端验收 | [Tests README](../tests/README.md) | 各层测试前置条件、命令和证据范围 |
 | 下载权重或分析算子 | [Scripts README](../scripts/README.md) | 固定 revision 下载、逐模型前向分析和 Profiler 工作流 |
 | 部署实时媒体 sidecar | [MediaMTX README](../deploy/mediamtx/README.md) | 独立部署、回调配置和模型网络端点的对应关系 |
@@ -30,7 +32,7 @@
 
 | 模型 | 报告 | 证据表 |
 | --- | --- | --- |
-| Qwen3-0.6B | [analysis.md](../analysis/qwen3_0_6b/analysis.md) | [analysis.xlsx](../analysis/qwen3_0_6b/analysis.xlsx) |
+| Qwen3-VL-2B | [analysis.md](../analysis/qwen3_vl_2b/analysis.md) | [analysis.xlsx](../analysis/qwen3_vl_2b/analysis.xlsx) |
 | Mage-VL-4B | [analysis.md](../analysis/mage_vl_4b/analysis.md) | [analysis.xlsx](../analysis/mage_vl_4b/analysis.xlsx) |
 
 Markdown 报告说明问题、解决方案和效果；XLSX 保存由脚本产生的原始数值证据。报告中的历史实验、被撤销的实现和当前可用能力应明确区分。

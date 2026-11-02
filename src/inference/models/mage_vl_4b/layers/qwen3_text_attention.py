@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import torch
+import torch.utils.benchmark
 from torch import nn
 from torch.nn import functional as F
 
@@ -202,3 +203,37 @@ if __name__ == "__main__":
     print(f"shape={tuple(baseline_output.shape)}, sample={baseline_output[0, 0, :4].tolist()}")
     torch.testing.assert_close(engine_output, baseline_output, atol=1e-5, rtol=1e-5)
     print(f"Qwen3 attention matches the Transformers eager baseline on {test_device}.")
+
+    # Bench：保持 Prefill 长度、attention mask 和 RoPE 输入一致。
+    with torch.inference_mode():
+        attention_bench = torch.utils.benchmark.Timer(
+            stmt="engine(hidden_states, position_ids=position_ids, attention_mask=causal_mask, past_key_values=None, cache_position=cache_position, use_cache=False)",
+            globals=locals(),
+        ).blocked_autorange(min_run_time=0.3)
+    print(f"Bench: Qwen3 text attention {attention_bench}")
+
+    # Profile：采集 QKV、QK-Norm、RoPE、分块 Attention 和输出投影。
+    profile_activities = [torch.profiler.ProfilerActivity.CPU]
+    if test_device.type == "cuda":
+        profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
+    with torch.inference_mode():
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as attention_profile:
+            engine(
+                hidden_states,
+                position_ids=position_ids,
+                attention_mask=causal_mask,
+                past_key_values=None,
+                cache_position=cache_position,
+                use_cache=False,
+            )
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        profile_sort = "self_cuda_time_total"
+    else:
+        profile_sort = "self_cpu_time_total"
+    print("Profile: Qwen3 text attention operators")
+    print(attention_profile.key_averages().table(sort_by=profile_sort, row_limit=15))

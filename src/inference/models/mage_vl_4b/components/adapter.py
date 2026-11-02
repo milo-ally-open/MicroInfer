@@ -7,14 +7,25 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+if __name__ == "__main__":
+    import os
+
+    _model_dir = Path(__file__).resolve().parents[1]
+    _repo_root = _model_dir.parents[3]
+    os.environ.setdefault("INFERENCE_PROJECT_ROOT", str(_repo_root))
+    os.environ.setdefault("INFERENCE_MODEL_ALIAS", "mage-vl-4b")
+    os.environ.setdefault("INFERENCE_MODEL_MANIFEST", str(_model_dir / "profiles/model.yml"))
+    os.environ.setdefault("INFERENCE_CONFIG", str(_model_dir / "profiles/inference.yml"))
+    os.environ.setdefault("INFERENCE_NETWORK_CONFIG", str(_model_dir / "profiles/network.yml"))
+
 from inference.engine.sequence import ExecutionPhase, ScheduledWorkItem, WorkerResult
 from inference.engine.sequence import InferenceResult
 from inference.engine.sequence import InferenceError
 from inference.processors.video import probe_video_metadata, sample_video_frames
 
-from ..utils import loader as config
+from .. import loader as config
 from .encoder import MageVLEncoder
-from ..utils.loader import (
+from ..loader import (
     CODEC_ENGINE,
     CODEC_MAX_PIXELS,
     CODEC_TARGET_CANVAS,
@@ -276,3 +287,32 @@ class MageVLModelAdapter:
             return self._tasks[request_id]
         except KeyError as exc:
             raise RuntimeError(f"Unknown Mage-VL generation request: {request_id}") from exc
+
+
+if __name__ == "__main__":
+    import time
+    from types import SimpleNamespace
+
+    import torch
+
+    runner = SimpleNamespace(
+        model=None,
+        kv_cache_profile=lambda: {"bytes_per_token": 0},
+        kv_cache_snapshot=lambda: {"active_requests": 0, "cached_tokens": 0},
+    )
+    adapter = MageVLModelAdapter(runner)
+    options = adapter.generation_options({"max_tokens": 2, "temperature": 0})
+    assert options["max_new_tokens"] == 2
+    assert adapter.health_info()["backend"] == "transformers"
+    print("Test: MageVLModelAdapter generation options and health contract passed.")
+
+    started_at = time.perf_counter()
+    for _ in range(1000):
+        adapter.generation_options({"max_tokens": 2, "temperature": 0})
+    print(f"Bench: adapter option validation={(time.perf_counter() - started_at) * 1e3 / 1000:.4f} ms/request.")
+
+    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU], record_shapes=True, profile_memory=True) as profile:
+        adapter.generation_options({"max_tokens": 2, "temperature": 0})
+        adapter.health_info()
+    print("Profile: MageVLModelAdapter")
+    print(profile.key_averages().table(sort_by="self_cpu_time_total", row_limit=12))

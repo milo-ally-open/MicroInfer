@@ -4,6 +4,7 @@
 from dataclasses import dataclass
 
 import torch
+import torch.utils.benchmark
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import Qwen3Config
@@ -196,6 +197,60 @@ if __name__ == "__main__":
     print(f"Transformers Qwen3ForCausalLM={baseline_logits[0, -1].tolist()}")
     torch.testing.assert_close(engine_logits, baseline_logits, atol=1e-5, rtol=1e-5)
 
+    # Bench：PreNet、PostNet 和分类头是独立成本项，分别统计延迟。
+    with torch.inference_mode():
+        prenet_bench = torch.utils.benchmark.Timer(
+            stmt="pre_net(features)", globals=locals()
+        ).blocked_autorange(min_run_time=0.2)
+        postnet_bench = torch.utils.benchmark.Timer(
+            stmt="post_net(hidden_states)", globals=locals()
+        ).blocked_autorange(min_run_time=0.2)
+        classifier_bench = torch.utils.benchmark.Timer(
+            stmt="engine_classifier(inputs_embeds=classifier_inputs, attention_mask=torch.ones(2, 3, dtype=torch.long))",
+            globals=locals(),
+        ).blocked_autorange(min_run_time=0.2)
+    print(f"Bench: StreamMind PreNet {prenet_bench}")
+    print(f"Bench: StreamMind PostNet {postnet_bench}")
+    print(f"Bench: StreamMind Qwen3 classifier {classifier_bench}")
+
+    # Profile：三个门控投影模块分开记录，不混淆算子耗时。
+    profile_activities = [torch.profiler.ProfilerActivity.CPU]
+    if test_device.type == "cuda":
+        profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
+    with torch.inference_mode():
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as prenet_profile:
+            pre_net(features)
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as postnet_profile:
+            post_net(hidden_states)
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as classifier_profile:
+            engine_classifier(
+                inputs_embeds=classifier_inputs,
+                attention_mask=torch.ones(2, 3, dtype=torch.long),
+            )
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        profile_sort = "self_cuda_time_total"
+    else:
+        profile_sort = "self_cpu_time_total"
+    print("Profile: StreamMind PreNet operators")
+    print(prenet_profile.key_averages().table(sort_by=profile_sort, row_limit=10))
+    print("Profile: StreamMind PostNet operators")
+    print(postnet_profile.key_averages().table(sort_by=profile_sort, row_limit=10))
+    print("Profile: StreamMind Qwen3 classifier operators")
+    print(classifier_profile.key_averages().table(sort_by=profile_sort, row_limit=15))
+
     try:
         video_mamba = VideoMamba(SSMConfig(d_model=8, n_ssm=1)).eval()
     except ModuleNotFoundError as error:
@@ -227,3 +282,21 @@ if __name__ == "__main__":
         print("==========baseline==========")
         print(f"Mamba blocks + residual norm={baseline_mamba[0, 0, :4].tolist()}")
         torch.testing.assert_close(engine_mamba, baseline_mamba, atol=1e-5, rtol=1e-5)
+
+        # 可选依赖可用时，也直接测量并分析 VideoMamba 计算路径。
+        with torch.inference_mode():
+            mamba_bench = torch.utils.benchmark.Timer(
+                stmt="video_mamba(mamba_inputs)", globals=locals()
+            ).blocked_autorange(min_run_time=0.2)
+        print(f"Bench: VideoMamba {mamba_bench}")
+        with torch.inference_mode():
+            with torch.profiler.profile(
+                activities=profile_activities,
+                record_shapes=True,
+                profile_memory=True,
+            ) as mamba_profile:
+                video_mamba(mamba_inputs)
+        if test_device.type == "cuda":
+            torch.cuda.synchronize(test_device)
+        print("Profile: VideoMamba operators")
+        print(mamba_profile.key_averages().table(sort_by=profile_sort, row_limit=15))

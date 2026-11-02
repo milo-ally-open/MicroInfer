@@ -3,9 +3,9 @@
 import base64
 from pathlib import Path
 
-from inference.models.qwen3_vl_2b import create_engine_client
+from inference.models.qwen3_vl_2b.runtime import create_engine_client
 
-INFERENCE_CONFIG = Path(__file__).resolve().parent / "configs" / "inference.yml"
+INFERENCE_CONFIG = Path(__file__).resolve().parent / "profiles" / "inference.yml"
 IMAGE_PATH = Path(__file__).resolve().parents[4] / "test.jpg"
 IMAGE_DATA_URL = "data:image/jpeg;base64," + base64.b64encode(IMAGE_PATH.read_bytes()).decode("ascii")
 if __name__ == "__main__":

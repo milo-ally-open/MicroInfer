@@ -1,112 +1,80 @@
-# 模型测试与验收
+# 测试与验收
 
-每个模型目录包含三项直接执行的测试：组件检查、服务性能比较和 Gateway 端到端调用。测试配置位于同目录的 `test.yml`；运行时必须显式传入 `--config`。所有相对路径以该 YAML 所在目录为基准。
+自动化测试只保留 Go Gateway 集成测试。Python 模型代码不使用 pytest：新增或拆解模型组件时，在组件文件的 `if __name__ == "__main__"` 入口中写该组件自己的前向测试、必要的对齐检查和小规模基准。
 
-## 环境要求
+## 目录约定
 
-在对应模型的 Python 环境安装依赖：
+| 位置 | 内容 | 运行条件 |
+| --- | --- | --- |
+| `tests/integration/` | Go Gateway 对外 Handler 集成测试；通过公开 API 验证路由鉴权与健康检查 | Go；本地构造 Handler，不需要启动模型服务 |
+| `src/inference/models/<model>/layers/` | 算子及计算层的模块级前向验证入口 | 对应模型依赖；由工程师在已分配的 GPU 时段手动运行，不进入任何 CI Runner |
+| `src/inference/models/<model>/components/` | Tokenize、Encode、Runner 等运行组件的模块级验证入口 | 由工程师按组件前置条件手动运行；不进入任何 CI Runner |
+| 根目录 `client.py` | 手动调用真实 Gateway 的 OpenAI SDK 冒烟示例，可选视频请求 | Gateway、Inference、API Key；模型请求需本地权重 |
 
-```bash
-python -m pip install -e "src/inference[qwen3]"
-# 或
-python -m pip install -e "src/inference[mage-vl]"
-```
+组件入口应直接测试当前文件负责的行为，并对照 Transformers 官方组件或实现检查输入输出形状、dtype、数值误差和边界条件。完整模型的 Test、Bench、Profile 脚本仍放在 `scripts/<model_alias>/`；它们不替代模块级测试或真实服务验收。
 
-PyTorch/CUDA wheel 需按目标设备单独安装。各模型的 `test.yml` 应指向固定 revision 的本地 snapshot；测试不会替用户下载大型模型。
+## 手动运行 Python 模型测试
 
-## Qwen3-0.6B
+Python 组件测试以及模型级 Test、Bench、Profile **均由工程师手动运行，不加入 GitHub Actions、GitLab CI 或其他 Runner**。这些工作需要本地模型权重和 CUDA，且会占用 GPU/显存；让 Runner 自动并发调度会与推理服务及其他实验争抢资源。Gateway 的 Go CI 不负责这些模型测试。
 
-### 组件检查
+### 运行前确认
 
-该脚本不加载完整模型权重或启动 Inference 服务。它在 meta device 对照模型结构，并运行 Qwen3 的 8 个模块数值入口，包括模型、Attention、RMSNorm/MLP、RoPE、Runner、Paged KV Cache、Sampler 和 InputBatch。
+1. 确认自己已获得 GPU 测试时段，并与正在使用该 GPU 的推理服务或实验协调；不要在已有负载上直接启动 Profile 或 Benchmark。
+2. 激活目标模型对应的 Python 环境，确认 PyTorch、CUDA 和模型依赖已安装。
+3. 在仓库根目录运行 `nvidia-smi`，记录 GPU 型号、显存占用和正在运行的进程；确认 checkpoint 和脚本所需图片已在配置路径中。
+4. Profile 会增加执行开销并产生 `artifacts/` 输出；保证有足够磁盘空间。不要把权重、Profiler trace 或运行时产物提交到 Git。
 
-```bash
-python tests/qwen3_0_6b/test_components.py \
-  --config tests/qwen3_0_6b/test.yml
-```
+### 组件级 Test、Bench、Profile
 
-### Attention 算子分析
-
-`--profile-attention` 从本地固定 snapshot 读取第 0 层 Attention 权重，以合成 hidden states 比较 prefill 和单 token decode，并记录 Profiler 可见的算子、shape 和内存信息：
-
-```bash
-python tests/qwen3_0_6b/test_components.py \
-  --config tests/qwen3_0_6b/test.yml \
-  --profile-attention
-```
-
-该结果只代表指定层和合成输入，不代表真实 activation 分布、整模型吞吐或 API 延迟。Profiler 有采集开销；CPU 结果不能作为 GPU 性能数据。
-
-### 服务性能
-
-启动 Qwen3 Inference API，并确认 GPU 显存足以同时运行服务模型和 Transformers 基线。脚本比较生成耗时、token 数和 token/s：
+每个组件文件的 `__main__` 入口针对最小输入完成该模块的测试、基准或 PyTorch Profiler。根据本次要检查的组件选择对应入口，例如：
 
 ```bash
-python tests/qwen3_0_6b/test_performance.py \
-  --config tests/qwen3_0_6b/test.yml
+python src/inference/models/qwen3_vl_2b/layers/text_attention.py
+python src/inference/models/mage_vl_4b/layers/vision_attention.py
 ```
 
-### Gateway 端到端
+如果目标组件的入口需要 checkpoint、额外素材或不同 Python 环境，先按该文件注释准备；不要通过 Runner 代跑。
 
-先启动 Qwen3 Inference 和 Go Gateway，并通过 `VIDEO_API_KEY` 提供 Gateway API Key：
+### 模型级前向与算子分析
+
+从仓库根目录按模型单独运行。`forward.py` 会加载本地模型配置/权重并产生对照、Bench 和 Profile 结果；随后运行 `analysis.py` 汇总脚本产物：
 
 ```bash
-export VIDEO_API_KEY='<Gateway API Key>'
-python tests/qwen3_0_6b/test_end2end.py \
-  --config tests/qwen3_0_6b/test.yml
+# Qwen3-VL-2B：生成 Transformers / Inference 前向与分析产物
+python scripts/qwen3_vl_2b/forward.py
+python scripts/qwen3_vl_2b/analysis.py
+
+# Mage-VL-4B：生成前向与分析产物
+python scripts/mage_vl_4b/forward.py
+python scripts/mage_vl_4b/analysis.py --input artifacts/mage-vl-image-forward.json
 ```
 
-该测试验证现有 `/v1/chat/completions` SSE 路径。
+每次记录 commit、模型 revision、GPU/驱动、CUDA、PyTorch、dtype、输入形状、执行时段和 GPU 并发情况。将分析结论写入 `analysis/<model_alias>/analysis.md`，表格数据由对应脚本生成；权重与临时 trace 只保留在本机。
 
-## Mage-VL-4B
+模型服务端到端测试同样由工程师在已分配资源后手动执行，例如启动本地 Inference/Gateway 后运行根目录 `client.py`。不要将 Python 服务、权重下载或 GPU 模型测试追加进 Gateway Runner 工作流。
 
-### 组件检查
+## 运行 Go Gateway 集成测试
 
-在 meta device 对照模型结构和 checkpoint key，并运行 Attention、文本 prefill/decode 数值对照；不加载完整权重：
+在仓库根目录执行：
 
 ```bash
-python tests/mage_vl_4b/test_components.py \
-  --config tests/mage_vl_4b/test.yml
+cd tests/integration
+go test -race -count=1 ./...
+go vet ./...
 ```
 
-### 服务性能
+`tests/integration/go.mod` 将 Gateway 作为本地模块依赖，不把 Go 测试文件放回源码目录。测试构造 Gateway Handler 并经公开 HTTP 接口验证行为，不会启动 Inference 或加载模型。
 
-启动 Mage-VL Inference API，并确认 GPU 显存可同时容纳服务模型和 Transformers 基线：
+## 运行组件入口
+
+在仓库根目录用对应模型环境执行需要检查的组件文件，例如：
 
 ```bash
-python tests/mage_vl_4b/test_performance.py \
-  --config tests/mage_vl_4b/test.yml
+python src/inference/models/qwen3_vl_2b/layers/text_attention.py
 ```
 
-### Gateway 端到端
+每个模块的 main 入口负责构造最小输入并验证输出；按其注释准备模型依赖或 checkpoint。实际文件名和所需资源以目标组件为准。
 
-启动 Mage-VL Inference 和 Go Gateway，配置 API Key，并准备 `test.yml` 指定的图片和视频素材：
+## 运行真实服务冒烟
 
-```bash
-export VIDEO_API_KEY='<Gateway API Key>'
-python tests/mage_vl_4b/test_end2end.py \
-  --config tests/mage_vl_4b/test.yml
-```
-
-该测试覆盖模型已声明的图片聊天和视频上传路径。Live 会话需要另行部署 MediaMTX；其配置见 [MediaMTX README](../deploy/mediamtx/README.md)。
-
-## 结果和限制
-
-测试摘要输出到标准输出，不会自动创建历史结果文件。需要归文件时，将结果保存到 `tests/<model_alias>/results/`，并记录模型 revision、GPU、驱动、CUDA、PyTorch、dtype 和配置。
-
-性能测试结果是特定机器和配置下的比较，不构成 SLA。组件检查不评估数据集精度；服务或 Gateway 未实际运行时，不应将静态或组件检查描述为端到端验收。
-
-## 客户端协议示例
-
-[`client.py`](client.py) 演示 OpenAI SDK 聊天、Qwen3 工具调用循环，以及可选的视频理解请求。运行工具循环前应启动相应服务并配置 API Key：
-
-```bash
-export VIDEO_API_KEY='<Gateway API Key>'
-python tests/client.py
-
-# 可选：通过 /v1/videos/understand 发送视频
-export VIDEO_FILE='/path/to/video.mp4'
-python tests/client.py
-```
-
-示例中的工具由客户端执行。真实应用必须使用自身的工具注册表，并实施参数校验、权限、超时、结果大小和最大循环次数限制。
+启动目标 Inference 与 Gateway，设置 `VIDEO_API_KEY` 和可选的 `GATEWAY_URL`，然后在仓库根目录运行 `python client.py`。需要验证视频上传时再设置 `VIDEO_FILE`。该调用涉及真实模型和服务，结果不属于 Go Gateway 单元／集成测试的替代品。

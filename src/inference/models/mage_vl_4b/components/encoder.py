@@ -5,11 +5,22 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+if __name__ == "__main__":
+    import os
+
+    _model_dir = Path(__file__).resolve().parents[1]
+    _repo_root = _model_dir.parents[3]
+    os.environ.setdefault("INFERENCE_PROJECT_ROOT", str(_repo_root))
+    os.environ.setdefault("INFERENCE_MODEL_ALIAS", "mage-vl-4b")
+    os.environ.setdefault("INFERENCE_MODEL_MANIFEST", str(_model_dir / "profiles/model.yml"))
+    os.environ.setdefault("INFERENCE_CONFIG", str(_model_dir / "profiles/inference.yml"))
+    os.environ.setdefault("INFERENCE_NETWORK_CONFIG", str(_model_dir / "profiles/network.yml"))
+
 from PIL import Image
 
 from inference.engine.sequence import InferenceError
-from ..utils.loader import GENERATION_CONFIG, MAX_CONTEXT_TOKENS, MAX_NEW_TOKENS
-from .image_encoder import (
+from ..loader import GENERATION_CONFIG, MAX_CONTEXT_TOKENS, MAX_NEW_TOKENS
+from ..architecture.image_encoder import (
     MageVLImageEncoder,
     _apply_chat_template,
     _load_image,
@@ -18,7 +29,7 @@ from .image_encoder import (
     _prepare_inputs,
     _resize_image,
 )
-from .video_encoder import (
+from ..architecture.video_encoder import (
     MageVLVideoEncoder,
     _codec_processor_config,
     _require_codec_runtime,
@@ -150,3 +161,32 @@ class MageVLEncoder:
         self, engine: str | None, target_canvas: int, cache_root: Path | None
     ) -> dict[str, Any]:
         return self.video_encoder.processor_config(engine, target_canvas, cache_root)
+
+
+if __name__ == "__main__":
+    import time
+
+    import torch
+
+    encoder = MageVLEncoder(model_runner=object())
+    options = encoder.generation_args({"max_tokens": 2, "temperature": 0})
+    assert options["max_new_tokens"] == 2
+    assert options["do_sample"] is False
+    try:
+        encoder.generation_args({"max_tokens": 0})
+    except InferenceError:
+        pass
+    else:
+        raise AssertionError("Encoder must reject max_tokens=0.")
+    print("Test: MageVLEncoder generation validation passed.")
+
+    request = {"max_tokens": 2, "temperature": 0}
+    started_at = time.perf_counter()
+    for _ in range(1000):
+        encoder.generation_args(request)
+    print(f"Bench: encoder generation options={(time.perf_counter() - started_at) * 1e3 / 1000:.4f} ms/request.")
+
+    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU], record_shapes=True, profile_memory=True) as profile:
+        encoder.generation_args(request)
+    print("Profile: MageVLEncoder")
+    print(profile.key_averages().table(sort_by="self_cpu_time_total", row_limit=12))

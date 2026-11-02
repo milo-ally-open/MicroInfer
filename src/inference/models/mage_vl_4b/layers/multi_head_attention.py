@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import torch
+import torch.utils.benchmark
 from torch import nn
 from torch.nn import functional as F
 
@@ -123,3 +124,30 @@ if __name__ == "__main__":
     print("==========baseline==========")
     print(f"shape={tuple(expected.shape)}, sample={expected[0, 0, :4].tolist()}")
     print(f"MultiHeadAttention matches torch.nn.MultiheadAttention on {test_device}.")
+
+    # Bench：固定 batch、query/key 长度和 mask，测量本地多头注意力。
+    with torch.inference_mode():
+        attention_bench = torch.utils.benchmark.Timer(
+            stmt="implementation(query, key, value, key_padding_mask=padding_mask, need_weights=False)",
+            globals=locals(),
+        ).blocked_autorange(min_run_time=0.3)
+    print(f"Bench: MultiHeadAttention {attention_bench}")
+
+    # Profile：查看投影、softmax、权重乘 V 的算子和张量 shape。
+    profile_activities = [torch.profiler.ProfilerActivity.CPU]
+    if test_device.type == "cuda":
+        profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
+    with torch.inference_mode():
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as attention_profile:
+            implementation(query, key, value, key_padding_mask=padding_mask, need_weights=False)
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        profile_sort = "self_cuda_time_total"
+    else:
+        profile_sort = "self_cpu_time_total"
+    print("Profile: MultiHeadAttention operators")
+    print(attention_profile.key_averages().table(sort_by=profile_sort, row_limit=15))

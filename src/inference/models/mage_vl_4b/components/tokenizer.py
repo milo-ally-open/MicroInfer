@@ -37,3 +37,44 @@ class MageVLTokenizer:
 
     def convert_tokens_to_ids(self, token: str) -> int:
         return int(self.backend.convert_tokens_to_ids(token))
+
+
+if __name__ == "__main__":
+    import time
+
+    import torch
+
+    class FakeBackend:
+        eos_token_id = 2
+
+        def apply_chat_template(self, messages, **options):
+            return "<user>hello</user>"
+
+        def encode(self, text, **options):
+            return [1, 2]
+
+        def decode(self, token_ids, **options):
+            return "hello"
+
+        def convert_tokens_to_ids(self, token):
+            return 2
+
+    tokenizer = MageVLTokenizer(FakeBackend())
+    assert tokenizer.eos_token_id == 2
+    assert tokenizer.apply_chat_template([{"role": "user", "content": "hello"}]) == "<user>hello</user>"
+    assert tokenizer.encode("hello") == [1, 2]
+    assert tokenizer.decode([1, 2]) == "hello"
+    assert tokenizer.convert_tokens_to_ids("</s>") == 2
+    print("Test: MageVLTokenizer template, encode, decode and token lookup passed.")
+
+    started_at = time.perf_counter()
+    for _ in range(1000):
+        tokenizer.encode("hello")
+        tokenizer.decode([1, 2])
+    print(f"Bench: tokenizer encode+decode={(time.perf_counter() - started_at) * 1e3 / 1000:.4f} ms/call.")
+
+    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU], record_shapes=True, profile_memory=True) as profile:
+        tokenizer.encode("hello")
+        tokenizer.decode([1, 2])
+    print("Profile: MageVLTokenizer")
+    print(profile.key_averages().table(sort_by="self_cpu_time_total", row_limit=10))

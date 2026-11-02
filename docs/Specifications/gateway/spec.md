@@ -3,7 +3,7 @@
 > 关联提案：[proposal.md](proposal.md)<br>
 > 技术设计：[design.md](design.md)<br>
 > 实施追踪：[tasks.md](tasks.md)<br>
-> 状态：Go Gateway v1 已实现；REQ-13 记录双模型能力路由，REQ-14 将 Qwen tool capability 纳入既有 Chat Completions route，REQ-15 约束 Gateway module path 与代码仓库无关；验收状态见 tasks.md。
+> 状态：Go Gateway v1 已实现；REQ-13 记录双模型能力路由，REQ-14 将 Qwen tool capability 纳入既有 Chat Completions route，REQ-15 约束 Gateway module path 与代码仓库无关，REQ-16/17 约束鉴权热路径及 SSE 事件处理；验收状态见 tasks.md。
 > 来源：使用者确认的 Go 网关目标、根目录 AGENTS.md、README.md、src/gateway/README.md 与 src/inference/README.md。
 
 ## 范围和术语
@@ -203,6 +203,30 @@
 
 **验证方式**：搜索 Gateway 源码与 module metadata 中的旧仓库地址，并执行 `go build ./...` 检查内部 package imports。
 
+### REQ-16：API Key 鉴权查找效率与密钥保护
+
+**需求**：所有客户端 `/v1/*` 路由继续执行 Bearer API Key 鉴权与服务端租户映射。认证时不随配置密钥数逐条线性扫描；内存只保留密钥摘要及身份映射，摘要比较使用常数时间操作。
+
+**验收条件**
+
+- **AC-16.1** Given API Key 配置包含一个或多个有效密钥，When 请求通过 Bearer 鉴权，Then 返回配置所对应的 key ID 与 tenant ID，且客户端租户标头不能覆盖它们。
+- **AC-16.2** Given Bearer 缺失、格式无效或密钥不匹配，When 执行认证，Then 鉴权失败；单密钥路径使用常数时间摘要比较，多密钥路径使用摘要索引并对命中的摘要执行常数时间比较。
+- **AC-16.3** Given 认证密钥数为 1、16、1024，When 执行 `BenchmarkAuthenticate`，Then 请求期查找不执行逐密钥循环；记录 ns/op、B/op、allocs/op，不将本地基准解释为网关容量 SLA。
+
+**验证方式**：认证单元测试覆盖有效、无效、格式错误及重复密钥；固定密钥数量运行 Go benchmark，并记录测试环境。
+
+### REQ-17：聊天 SSE 热路径
+
+**需求**：聊天 SSE 事件完成对外 model alias 改写与首 token 指标判定时，共用该事件的解析结果，避免对同一完整 JSON 事件进行两次泛型解码；保留有效事件字段、工具调用 token 判定、`[DONE]` 与无效事件的既有处理语义。
+
+**验收条件**
+
+- **AC-17.1** Given SSE 事件含文本 delta 或 tool call delta，When Gateway 转发事件，Then 输出的 `model` 为公开 alias，首 token 只记录一次，其他事件字段和顺序保持兼容。
+- **AC-17.2** Given SSE 事件只有 assistant role、为 `[DONE]`、无 data 字段或含非 JSON data，When Gateway 处理事件，Then 不误报首 token；`[DONE]` 与非 JSON 控制事件保持原样。
+- **AC-17.3** Given 固定聊天 SSE 基准事件，When 对比实现前后 `BenchmarkRewriteAndDetectChatToken`，Then 记录 ns/op、B/op 和 allocs/op；此结果仅描述网关内部处理成本，不外推为端到端延迟或吞吐承诺。
+
+**验证方式**：SSE 单元测试覆盖 alias、文本 delta、tool call delta、role-only、`[DONE]`、无效 JSON 和控制事件；执行固定事件基准。
+
 **验证方式**：逐模型端到端脚本覆盖可执行的文字／图片 SSE 与视频上传流程；Live capability、授权拒绝矩阵及静态双配置文件一致性不属于目前三项模型测试入口的实机覆盖范围。
 
 ## 不变项与兼容要求
@@ -247,6 +271,8 @@
 | 模型能力政策、双模型路由与配置一致性 | REQ-13 | internal/config/、gateway.go、模型目录端到端测试 | T-13 | AC-13.1、AC-13.2、AC-13.3、AC-13.4、AC-13.5、AC-13.6 | 历史 Gateway mock／跨配置测试已移出目前精简测试入口；真实 Gateway smoke 报告按模型保留，路由负向矩阵待另行安排 |
 | Qwen tool capability 与 Chat route 转发边界 | REQ-14 | internal/config/、internal/route/、internal/upstream/、gateway.go、gateway.yml | T-15 | AC-14.1–AC-14.6 | 标准工具请求走既有 route；端到端证据记录于 tasks.md |
 | Go module 与仓库迁移独立性 | REQ-15 | go.mod、Gateway Go imports | T-16 | AC-15.1、AC-15.2 | 中性 module path；源码旧仓库地址搜索及 Go build 状态见 tasks.md |
+| Bearer API Key 鉴权与密钥查找效率 | REQ-16 | internal/auth/、gateway.go | T-17 | AC-16.1、AC-16.2、AC-16.3 | 单/多密钥认证测试及固定密钥数 benchmark 见 tasks.md |
+| 聊天 SSE 事件热路径 | REQ-17 | internal/stream/ | T-17 | AC-17.1、AC-17.2、AC-17.3 | SSE 契约用例与事件 benchmark 见 tasks.md |
 
 ## 假设与未决问题
 
@@ -260,4 +286,5 @@
 |---|---|
 | 2026-10-20 | 创建可追踪的 Gateway 行为规格与验收条件 |
 | 2026-10-25 | 新增 Gateway Go module 与代码仓库无关的 REQ-15 |
+| 2026-11-02 | 新增认证查找及 SSE 热路径性能 REQ-16/17；不改变客户端 API 和部署依赖 |
 

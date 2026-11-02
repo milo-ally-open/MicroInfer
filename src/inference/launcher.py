@@ -46,7 +46,7 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 def _discover_models() -> dict[str, dict[str, Any]]:
     """从各模型目录的 manifest 发现模型，不依赖全局登记文件。"""
     models: dict[str, dict[str, Any]] = {}
-    for manifest_path in sorted(MODELS_ROOT.glob("*/configs/model.yml")):
+    for manifest_path in sorted(MODELS_ROOT.glob("*/profiles/model.yml")):
         model = _read_yaml(manifest_path)
         alias = model.get("alias")
         if not isinstance(alias, str) or not alias.strip():
@@ -56,7 +56,7 @@ def _discover_models() -> dict[str, dict[str, Any]]:
         model["_manifest_path"] = str(manifest_path.resolve())
         models[alias] = model
     if not models:
-        raise ValueError(f"No models/*/configs/model.yml manifests found under {MODELS_ROOT}")
+        raise ValueError(f"No models/*/profiles/model.yml manifests found under {MODELS_ROOT}")
     return models
 
 
@@ -67,7 +67,7 @@ def _validate_model_manifest(alias: str, model: dict[str, Any]) -> dict[str, Any
         raise ValueError("integration_profile must be standard or custom.")
     backend = str(model.get("backend", "")).strip()
     if not backend:
-        raise ValueError("Every model manifest must define backend in configs/model.yml.")
+        raise ValueError("Every model manifest must define backend in model.yml.")
     manifest_path = Path(str(model.get("_manifest_path", ""))).resolve()
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Model manifest not found: {manifest_path}")
@@ -83,7 +83,7 @@ def _validate_model_manifest(alias: str, model: dict[str, Any]) -> dict[str, Any
         raise ValueError("network configuration must contain an api mapping.")
     runtime_factory = model.get("runtime_factory")
     if not isinstance(runtime_factory, str) or not runtime_factory.strip():
-        raise ValueError("Every model manifest must define runtime_factory in configs/model.yml.")
+        raise ValueError("Every model manifest must define runtime_factory in model.yml.")
     runtime_source = _resolve_factory_source(runtime_factory, "runtime")
     _, _, runtime_symbol = runtime_factory.partition(":")
     if runtime_symbol not in _factory_symbols(runtime_source):
@@ -141,7 +141,7 @@ def _validate_model_manifest(alias: str, model: dict[str, Any]) -> dict[str, Any
     tool_adapter_factory = api_settings.get("tool_call_adapter")
     if capabilities["tool_calling"]:
         if not isinstance(tool_adapter_factory, str) or not tool_adapter_factory.strip():
-            raise ValueError("tool_calling requires api.tool_call_adapter in configs/model.yml.")
+            raise ValueError("tool_calling requires api.tool_call_adapter in model.yml.")
         tool_adapter_source = _resolve_factory_source(tool_adapter_factory, "tool_call_adapter")
         _, _, tool_adapter_class = tool_adapter_factory.partition(":")
         if tool_adapter_class not in _factory_symbols(tool_adapter_source):

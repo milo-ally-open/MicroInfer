@@ -3,6 +3,7 @@
 # 组件实现拆分自 microsoft/Mage-VL revision d88b153285f1633a61b2f693c59c8576693af185（Apache-2.0）。
 
 import torch
+import torch.utils.benchmark
 
 from .vision_rope import VisionRotaryEmbedding, apply_rotary_pos_emb, rotate_half
 from .vision_embeddings import MageVLVisionEmbeddings, MageVLVisionPatchMerger
@@ -17,7 +18,7 @@ if __name__ == "__main__":
     from transformers.models.siglip2.configuration_siglip2 import Siglip2VisionConfig
     from transformers.models.siglip2.modeling_siglip2 import Siglip2EncoderLayer
 
-    from ..model.configuration_mage_vl import MageVLConfig, MageVLVisionConfig
+    from ..architecture.configuration_mage_vl import MageVLConfig, MageVLVisionConfig
 
     torch.manual_seed(61)
     config = MageVLVisionConfig(
@@ -156,3 +157,77 @@ if __name__ == "__main__":
     print("==========baseline==========")
     print(f"explicit patch merge={baseline_merged[0, :4].tolist()}")
     print(f"Mage-VL vision encoder modules match their Transformers/PyTorch baselines on {test_device}.")
+
+    # Bench：分别量测 RoPE、patch embedding、Attention、Encoder Layer 和 Merger。
+    with torch.inference_mode():
+        rope_bench = torch.utils.benchmark.Timer(
+            stmt="rope(grid_thw)", globals=locals()
+        ).blocked_autorange(min_run_time=0.2)
+        patch_bench = torch.utils.benchmark.Timer(
+            stmt="embeddings(pixel_patches)", globals=locals()
+        ).blocked_autorange(min_run_time=0.2)
+        attention_bench = torch.utils.benchmark.Timer(
+            stmt="engine_layer.self_attn(normalized)", globals=locals()
+        ).blocked_autorange(min_run_time=0.2)
+        encoder_layer_bench = torch.utils.benchmark.Timer(
+            stmt="engine_layer(hidden_states)", globals=locals()
+        ).blocked_autorange(min_run_time=0.2)
+        merger_bench = torch.utils.benchmark.Timer(
+            stmt="merger(patch_group)", globals=locals()
+        ).blocked_autorange(min_run_time=0.2)
+    print(f"Bench: VisionRotaryEmbedding {rope_bench}")
+    print(f"Bench: MageVLVisionEmbeddings {patch_bench}")
+    print(f"Bench: MageVLVisionAttention {attention_bench}")
+    print(f"Bench: MageVLVisionEncoderLayer {encoder_layer_bench}")
+    print(f"Bench: MageVLVisionPatchMerger {merger_bench}")
+
+    # Profile：每个视觉子组件单独开一个 profiler，便于直接比较热点。
+    profile_activities = [torch.profiler.ProfilerActivity.CPU]
+    if test_device.type == "cuda":
+        profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
+    with torch.inference_mode():
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as rope_profile:
+            rope(grid_thw)
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as patch_profile:
+            embeddings(pixel_patches)
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as attention_profile:
+            engine_layer.self_attn(normalized)
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as encoder_layer_profile:
+            engine_layer(hidden_states)
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as merger_profile:
+            merger(patch_group)
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        profile_sort = "self_cuda_time_total"
+    else:
+        profile_sort = "self_cpu_time_total"
+    print("Profile: VisionRotaryEmbedding operators")
+    print(rope_profile.key_averages().table(sort_by=profile_sort, row_limit=10))
+    print("Profile: MageVLVisionEmbeddings operators")
+    print(patch_profile.key_averages().table(sort_by=profile_sort, row_limit=10))
+    print("Profile: MageVLVisionAttention operators")
+    print(attention_profile.key_averages().table(sort_by=profile_sort, row_limit=12))
+    print("Profile: MageVLVisionEncoderLayer operators")
+    print(encoder_layer_profile.key_averages().table(sort_by=profile_sort, row_limit=15))
+    print("Profile: MageVLVisionPatchMerger operators")
+    print(merger_profile.key_averages().table(sort_by=profile_sort, row_limit=12))

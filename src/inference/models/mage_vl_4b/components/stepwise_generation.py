@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -646,8 +647,8 @@ if __name__ == "__main__":
     )
 
     from inference.engine.sequence import ExecutionPhase, ScheduledWorkItem
-    from ..model.configuration_mage_vl import MageVLConfig, MageVLVisionConfig
-    from ..model.conditional_generation import MageVLForConditionalGeneration
+    from ..architecture.configuration_mage_vl import MageVLConfig, MageVLVisionConfig
+    from ..modeling import MageVLForConditionalGeneration
 
     torch.manual_seed(79)
     text_config = Qwen3Config(
@@ -731,3 +732,88 @@ if __name__ == "__main__":
         if request_id in engine._states:
             engine.cancel(request_id)
     print(f"Mage-VL stepwise text streaming matches the Transformers prefill/decode baseline on {test_device}.")
+
+    # Bench：每轮都创建独立请求并完整执行 Prefill + 单 token Decode，避免复用 Cache。
+    for warmup_index in range(2):
+        warmup_id = f"stepwise-warmup-{warmup_index}"
+        engine.begin(
+            warmup_id,
+            {"input_ids": input_ids, "attention_mask": attention_mask},
+            options,
+        )
+        engine.execute_work_batch(
+            (ScheduledWorkItem(warmup_id, ExecutionPhase.PREFILL, input_ids.shape[-1]),)
+        )
+        engine.execute_work_batch((ScheduledWorkItem(warmup_id, ExecutionPhase.DECODE, 1),))
+        engine.cancel(warmup_id)
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
+        for run_index in range(10):
+            benchmark_id = f"stepwise-bench-{run_index}"
+            engine.begin(
+                benchmark_id,
+                {"input_ids": input_ids, "attention_mask": attention_mask},
+                options,
+            )
+            engine.execute_work_batch(
+                (ScheduledWorkItem(benchmark_id, ExecutionPhase.PREFILL, input_ids.shape[-1]),)
+            )
+            engine.execute_work_batch(
+                (ScheduledWorkItem(benchmark_id, ExecutionPhase.DECODE, 1),)
+            )
+            engine.cancel(benchmark_id)
+        end_event.record()
+        end_event.synchronize()
+        stepwise_ms = start_event.elapsed_time(end_event) / 10
+    else:
+        started_at = time.perf_counter()
+        for run_index in range(10):
+            benchmark_id = f"stepwise-bench-{run_index}"
+            engine.begin(
+                benchmark_id,
+                {"input_ids": input_ids, "attention_mask": attention_mask},
+                options,
+            )
+            engine.execute_work_batch(
+                (ScheduledWorkItem(benchmark_id, ExecutionPhase.PREFILL, input_ids.shape[-1]),)
+            )
+            engine.execute_work_batch(
+                (ScheduledWorkItem(benchmark_id, ExecutionPhase.DECODE, 1),)
+            )
+            engine.cancel(benchmark_id)
+        stepwise_ms = (time.perf_counter() - started_at) * 1000 / 10
+    print(f"Bench: Stepwise Prefill+Decode average={stepwise_ms:.3f} ms/request on {test_device}.")
+
+    # Profile：分别采集调度层调用的 Prefill 和 Decode 两个模型前向。
+    profile_id = "stepwise-profile"
+    engine.begin(
+        profile_id,
+        {"input_ids": input_ids, "attention_mask": attention_mask},
+        options,
+    )
+    profile_activities = [torch.profiler.ProfilerActivity.CPU]
+    if test_device.type == "cuda":
+        profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
+    with torch.inference_mode():
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as stepwise_profile:
+            engine.execute_work_batch(
+                (ScheduledWorkItem(profile_id, ExecutionPhase.PREFILL, input_ids.shape[-1]),)
+            )
+            engine.execute_work_batch(
+                (ScheduledWorkItem(profile_id, ExecutionPhase.DECODE, 1),)
+            )
+    engine.cancel(profile_id)
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        profile_sort = "self_cuda_time_total"
+    else:
+        profile_sort = "self_cpu_time_total"
+    print("Profile: Stepwise Prefill + Decode operators")
+    print(stepwise_profile.key_averages().table(sort_by=profile_sort, row_limit=20))

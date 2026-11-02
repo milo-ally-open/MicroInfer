@@ -4,7 +4,7 @@ import base64
 import mimetypes
 from pathlib import Path
 
-from inference.models.mage_vl_4b import create_engine_client
+from inference.models.mage_vl_4b.runtime import create_engine_client
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 IMAGE_PATH = REPOSITORY_ROOT / "test.jpg"

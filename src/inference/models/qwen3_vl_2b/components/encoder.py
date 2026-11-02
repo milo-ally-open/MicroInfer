@@ -6,10 +6,22 @@ from typing import Any
 
 import torch
 
+if __name__ == "__main__":
+    import os
+    from pathlib import Path
+
+    _model_dir = Path(__file__).resolve().parents[1]
+    _repo_root = _model_dir.parents[3]
+    os.environ.setdefault("INFERENCE_PROJECT_ROOT", str(_repo_root))
+    os.environ.setdefault("INFERENCE_MODEL_ALIAS", "qwen3-vl-2b")
+    os.environ.setdefault("INFERENCE_MODEL_MANIFEST", str(_model_dir / "profiles/model.yml"))
+    os.environ.setdefault("INFERENCE_CONFIG", str(_model_dir / "profiles/inference.yml"))
+    os.environ.setdefault("INFERENCE_NETWORK_CONFIG", str(_model_dir / "profiles/network.yml"))
+
 from inference.engine.sequence import InferenceError
-from .image_encoder import load_image
+from ..architecture.image_encoder import load_image
 from .tokenizer import Qwen3VLTokenizer
-from ..utils import loader as config
+from .. import loader as config
 
 
 class Qwen3VLEncoder:
@@ -110,3 +122,43 @@ class Qwen3VLEncoder:
                     raise InferenceError(400, "Only text and image_url content parts are supported.")
             messages.append({"role": message["role"], "content": parts})
         return messages, image_count
+
+
+if __name__ == "__main__":
+    import time
+    from types import SimpleNamespace
+
+    class FakeTokenizer:
+        def tokenize_chat(self, messages):
+            return {
+                "input_ids": torch.tensor([[1, 2, 3]]),
+                "attention_mask": torch.ones((1, 3), dtype=torch.long),
+            }
+
+    fake_model = SimpleNamespace(
+        dtype=torch.float32,
+        get_input_embeddings=lambda: SimpleNamespace(weight=torch.empty(1, device="cpu")),
+    )
+    encoder = Qwen3VLEncoder(SimpleNamespace(model=fake_model, tokenizer=FakeTokenizer()))
+    request = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 2}
+    encoded, token_count, options = encoder.encode_chat(request)
+    assert token_count == 3
+    assert encoded["input_ids"].shape == (1, 3)
+    assert options["max_new_tokens"] == 2
+    try:
+        encoder.encode_chat({"messages": [], "max_tokens": 2})
+    except InferenceError:
+        pass
+    else:
+        raise AssertionError("Encoder must reject an empty messages array.")
+    print("Test: Qwen3VLEncoder text encoding and invalid-message validation passed.")
+
+    started_at = time.perf_counter()
+    for _ in range(100):
+        encoder.encode_chat(request)
+    print(f"Bench: text request encoding={(time.perf_counter() - started_at) * 1e3 / 100:.4f} ms/request.")
+
+    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU], record_shapes=True, profile_memory=True) as profile:
+        encoder.encode_chat(request)
+    print("Profile: Qwen3VLEncoder")
+    print(profile.key_averages().table(sort_by="self_cpu_time_total", row_limit=12))

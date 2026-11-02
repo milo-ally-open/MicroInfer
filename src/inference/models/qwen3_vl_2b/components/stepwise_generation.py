@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import torch
@@ -37,7 +38,11 @@ class Qwen3VLStepwiseGeneration:
         eos_token_id = getattr(self.model.generation_config, "eos_token_id", None)
         if eos_token_id is None:
             eos_token_id = getattr(self.model.config.text_config, "eos_token_id", None)
-        eos_token_ids = set(eos_token_id if isinstance(eos_token_id, (tuple, list, set)) else ([] if eos_token_id is None else [eos_token_id]))
+        eos_token_ids = set(
+            eos_token_id
+            if isinstance(eos_token_id, (tuple, list, set))
+            else ([] if eos_token_id is None else [eos_token_id])
+        )
         im_end_id = self.tokenizer.convert_tokens_to_ids("<|im_end|>")
         if isinstance(im_end_id, int) and im_end_id >= 0:
             eos_token_ids.add(im_end_id)
@@ -69,7 +74,13 @@ class Qwen3VLStepwiseGeneration:
     def prefill_min_chunk_tokens(self, request_id: str) -> int:
         return int(self._state(request_id)["prompt_tokens"])
 
-    def execute(self, request_id: str, phase: str, token_budget: int, prompt_offset: int = 0) -> dict[str, Any]:
+    def execute(
+        self,
+        request_id: str,
+        phase: str,
+        token_budget: int,
+        prompt_offset: int = 0,
+    ) -> dict[str, Any]:
         state = self._state(request_id)
         if phase == "prefill":
             if prompt_offset != 0 or token_budget != state["prompt_tokens"]:
@@ -115,7 +126,8 @@ class Qwen3VLStepwiseGeneration:
         cache_length = self._cache_length(cache)
         if cache_length != state["prompt_tokens"]:
             raise RuntimeError(
-                f"Qwen3-VL Prefill Cache length mismatch: prompt={state['prompt_tokens']}, cache={cache_length}."
+                "Qwen3-VL Prefill Cache length mismatch: "
+                f"prompt={state['prompt_tokens']}, cache={cache_length}."
             )
         state["past_key_values"] = cache
         state["prefill_processed_tokens"] = state["prompt_tokens"]
@@ -230,3 +242,196 @@ class Qwen3VLStepwiseGeneration:
             return self._states[request_id]
         except KeyError as exc:
             raise RuntimeError(f"Unknown Qwen3-VL request: {request_id}") from exc
+
+
+if __name__ == "__main__":
+    # 用单层小模型覆盖 Prefill、单 token Decode、Cache 追加和采样路径。
+    test_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    torch.manual_seed(101)
+    from types import SimpleNamespace
+
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import (
+        Qwen3VLConfig,
+        Qwen3VLTextConfig,
+        Qwen3VLVisionConfig,
+    )
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import (
+        Qwen3VLForConditionalGeneration as TransformersQwen3VLForConditionalGeneration,
+    )
+
+    from inference.engine.sequence import ExecutionPhase, ScheduledWorkItem
+    from ..modeling import Qwen3VLForConditionalGeneration
+
+    text_config = Qwen3VLTextConfig(
+        vocab_size=128,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=8,
+        max_position_embeddings=64,
+        rope_parameters={
+            "rope_theta": 500000.0,
+            "rope_type": "default",
+            "mrope_section": [1, 1, 2],
+        },
+        eos_token_id=None,
+    )
+    vision_config = Qwen3VLVisionConfig(
+        hidden_size=32,
+        intermediate_size=64,
+        num_heads=4,
+        depth=1,
+        in_channels=3,
+        patch_size=2,
+        temporal_patch_size=2,
+        spatial_merge_size=2,
+        out_hidden_size=32,
+        rope_parameters={"rope_theta": 10000.0, "rope_type": "axial"},
+    )
+    text_config._attn_implementation = "sdpa"
+    vision_config._attn_implementation = "sdpa"
+    model_config = Qwen3VLConfig(
+        text_config=text_config,
+        vision_config=vision_config,
+        image_token_id=126,
+        video_token_id=127,
+    )
+    reference_model = TransformersQwen3VLForConditionalGeneration(model_config).eval().to(test_device)
+    engine_model = Qwen3VLForConditionalGeneration(model_config).eval().to(test_device)
+    engine_model.load_state_dict(reference_model.state_dict(), strict=True)
+    reference_model.generation_config.eos_token_id = None
+    engine_model.generation_config.eos_token_id = None
+
+    # 最小假 tokenizer 只负责结束标记查询与增量文字输出，不引入本地权重依赖。
+    tokenizer = SimpleNamespace(
+        convert_tokens_to_ids=lambda token: -1,
+        decode=lambda token_ids, **kwargs: "".join(f"token-{token_id}" for token_id in token_ids),
+    )
+    stepwise = Qwen3VLStepwiseGeneration(block_size_tokens=8)
+    stepwise.bind(engine_model, tokenizer)
+    input_ids = torch.tensor([[3, 7, 11, 19]], device=test_device)
+    attention_mask = torch.ones_like(input_ids)
+    options = {
+        "max_new_tokens": 2,
+        "repetition_penalty": 1.0,
+        "no_repeat_ngram_size": 0,
+        "do_sample": False,
+        "temperature": 1.0,
+        "top_k": 0,
+        "top_p": 1.0,
+        "use_cache": True,
+    }
+    request_id = "qwen3-vl-stepwise-forward-check"
+    stepwise.begin(
+        request_id,
+        {"input_ids": input_ids, "attention_mask": attention_mask},
+        options,
+    )
+    stepwise.bind_cache(request_id, (0,))
+
+    # Test：用 Transformers 独立模型检查 Prefill logits、Decode token 与 Cache 长度。
+    with torch.inference_mode():
+        reference_prefill = reference_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            use_cache=True,
+            return_dict=True,
+        )
+        engine_prefill = stepwise.execute(request_id, "prefill", input_ids.shape[-1])
+        expected_first = int(torch.argmax(reference_prefill.logits[0, -1]).item())
+        assert engine_prefill["token_id"] == expected_first
+        assert stepwise.cache_snapshot()["cached_tokens"] == input_ids.shape[-1]
+
+        full_input_ids = torch.cat((input_ids, input_ids.new_tensor([[expected_first]])), dim=-1)
+        decode_mask = torch.ones_like(full_input_ids)
+        generation_kwargs = {
+            "input_ids": full_input_ids,
+            "attention_mask": decode_mask,
+            "past_key_values": reference_prefill.past_key_values,
+        }
+        position_ids = reference_model._prepare_position_ids_for_generation(
+            full_input_ids,
+            generation_kwargs,
+        )
+        prepared = reference_model.prepare_inputs_for_generation(
+            input_ids=full_input_ids,
+            next_sequence_length=1,
+            past_key_values=reference_prefill.past_key_values,
+            attention_mask=decode_mask,
+            position_ids=position_ids,
+            use_cache=True,
+            is_first_iteration=False,
+        )
+        assert prepared["input_ids"].shape[-1] == 1
+        reference_decode = reference_model(**prepared, return_dict=True)
+        expected_second = int(torch.argmax(reference_decode.logits[0, -1]).item())
+        engine_decode = stepwise.execute(request_id, "decode", 1)
+        assert engine_decode["token_id"] == expected_second
+        generated_ids, finish_reason = stepwise.finish(request_id)
+    torch.testing.assert_close(
+        generated_ids,
+        torch.tensor([expected_first, expected_second], device="cpu"),
+    )
+    assert finish_reason == "length"
+    print(f"Qwen3VLStepwiseGeneration Prefill/Decode parity passed on {test_device}.")
+
+    # Bench：每轮创建新 Cache，计量完整 Prefill + 单 token Decode 请求。
+    for warmup_index in range(2):
+        warmup_id = f"stepwise-warmup-{warmup_index}"
+        stepwise.begin(warmup_id, {"input_ids": input_ids, "attention_mask": attention_mask}, options)
+        stepwise.bind_cache(warmup_id, (0,))
+        stepwise.execute(warmup_id, "prefill", input_ids.shape[-1])
+        stepwise.execute(warmup_id, "decode", 1)
+        stepwise.finish(warmup_id)
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
+        for run_index in range(10):
+            benchmark_id = f"stepwise-bench-{run_index}"
+            stepwise.begin(benchmark_id, {"input_ids": input_ids, "attention_mask": attention_mask}, options)
+            stepwise.bind_cache(benchmark_id, (0,))
+            stepwise.execute(benchmark_id, "prefill", input_ids.shape[-1])
+            stepwise.execute(benchmark_id, "decode", 1)
+            stepwise.finish(benchmark_id)
+        end_event.record()
+        end_event.synchronize()
+        elapsed_ms = start_event.elapsed_time(end_event) / 10
+    else:
+        started_at = time.perf_counter()
+        for run_index in range(10):
+            benchmark_id = f"stepwise-bench-{run_index}"
+            stepwise.begin(benchmark_id, {"input_ids": input_ids, "attention_mask": attention_mask}, options)
+            stepwise.bind_cache(benchmark_id, (0,))
+            stepwise.execute(benchmark_id, "prefill", input_ids.shape[-1])
+            stepwise.execute(benchmark_id, "decode", 1)
+            stepwise.finish(benchmark_id)
+        elapsed_ms = (time.perf_counter() - started_at) * 1000 / 10
+    print(f"Bench: Qwen3VLStepwiseGeneration Prefill+Decode={elapsed_ms:.3f} ms/request on {test_device}.")
+
+    # Profile：从组件入口采集实际 Prefill/Decode 算子、输入形状和显存分配。
+    profile_id = "qwen3-vl-stepwise-profile"
+    stepwise.begin(profile_id, {"input_ids": input_ids, "attention_mask": attention_mask}, options)
+    stepwise.bind_cache(profile_id, (0,))
+    profile_activities = [torch.profiler.ProfilerActivity.CPU]
+    if test_device.type == "cuda":
+        profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
+    with torch.inference_mode():
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as stepwise_profile:
+            stepwise.execute(profile_id, "prefill", input_ids.shape[-1])
+            stepwise.execute(profile_id, "decode", 1)
+    stepwise.finish(profile_id)
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        profile_sort = "self_cuda_time_total"
+    else:
+        profile_sort = "self_cpu_time_total"
+    print("Profile: Qwen3VLStepwiseGeneration Prefill + Decode operators")
+    print(stepwise_profile.key_averages().table(sort_by=profile_sort, row_limit=20))

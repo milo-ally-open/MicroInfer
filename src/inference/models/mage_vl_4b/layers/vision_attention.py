@@ -5,9 +5,10 @@
 from typing import Optional
 
 import torch
+import torch.utils.benchmark
 import torch.nn as nn
 
-from ..model.configuration_mage_vl import MageVLVisionConfig
+from ..architecture.configuration_mage_vl import MageVLVisionConfig
 from .siglip_mlp import SiglipMLP
 from .vision_rope import apply_rotary_pos_emb
 
@@ -191,3 +192,35 @@ if __name__ == "__main__":
     print("==========baseline==========")
     print(f"official Mage-VL sample={baseline_output[0, 0, :4].tolist()}")
     print(f"Mage-VL vision attention with per-frame sequence boundaries matches the official source on {test_device}.")
+
+    # Bench：固定每帧 patch 边界，测量视觉 Attention 的单次前向。
+    with torch.inference_mode():
+        vision_attention_bench = torch.utils.benchmark.Timer(
+            stmt="engine(hidden_states, rotary_pos_emb=rotary_pos_emb, cu_seqlens=cu_seqlens, max_seqlen=4)",
+            globals=locals(),
+        ).blocked_autorange(min_run_time=0.3)
+    print(f"Bench: Mage-VL vision attention {vision_attention_bench}")
+
+    # Profile：查看分组 QKV、分帧注意力及输出映射的耗时和 shape。
+    profile_activities = [torch.profiler.ProfilerActivity.CPU]
+    if test_device.type == "cuda":
+        profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
+    with torch.inference_mode():
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as vision_attention_profile:
+            engine(
+                hidden_states,
+                rotary_pos_emb=rotary_pos_emb,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=4,
+            )
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        profile_sort = "self_cuda_time_total"
+    else:
+        profile_sort = "self_cpu_time_total"
+    print("Profile: Mage-VL vision attention operators")
+    print(vision_attention_profile.key_averages().table(sort_by=profile_sort, row_limit=15))

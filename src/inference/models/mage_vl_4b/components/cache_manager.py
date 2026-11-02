@@ -6,6 +6,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
+import torch
+
 
 @dataclass(frozen=True)
 class RequestCacheEntry:
@@ -113,3 +115,45 @@ class RequestCacheManager:
             return int(cache[0][0].shape[-2])
         except (IndexError, KeyError, TypeError) as exc:
             raise ValueError("The model Cache does not expose its sequence length.") from exc
+
+
+if __name__ == "__main__":
+    import time
+    from types import SimpleNamespace
+
+    manager = RequestCacheManager()
+    manager.register("component-test")
+    manager.bind_blocks("component-test", (0, 1))
+    cache = SimpleNamespace(get_seq_length=lambda: 3)
+    assert manager.update("component-test", cache, expected_length=3) == 3
+    assert manager.get("component-test") is cache
+    assert manager.snapshot() == {
+        "active_requests": 1,
+        "populated_caches": 1,
+        "cached_tokens": 3,
+        "logical_blocks": 2,
+    }
+    manager.release("component-test")
+    assert manager.snapshot()["active_requests"] == 0
+    print("Test: RequestCacheManager register/update/snapshot/release passed.")
+
+    started_at = time.perf_counter()
+    for index in range(1000):
+        request_id = f"cache-bench-{index}"
+        manager.register(request_id)
+        manager.bind_blocks(request_id, (0, 1))
+        manager.update(request_id, cache)
+        manager.release(request_id)
+    print(f"Bench: cache lifecycle={(time.perf_counter() - started_at) * 1e3 / 1000:.4f} ms/request.")
+
+    with torch.profiler.profile(
+        activities=[torch.profiler.ProfilerActivity.CPU],
+        record_shapes=True,
+        profile_memory=True,
+    ) as profile:
+        manager.register("cache-profile")
+        manager.update("cache-profile", cache)
+        manager.snapshot()
+        manager.release("cache-profile")
+    print("Profile: RequestCacheManager lifecycle")
+    print(profile.key_averages().table(sort_by="self_cpu_time_total", row_limit=12))

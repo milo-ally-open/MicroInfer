@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import torch
+import torch.utils.benchmark
 from torch import nn
 from transformers.activations import ACT2FN
 
@@ -41,3 +42,29 @@ if __name__ == "__main__":
     print(f"shape={tuple(baseline_output.shape)}, sample={baseline_output[0, 0, :4].tolist()}")
     torch.testing.assert_close(engine_output, baseline_output, atol=1e-6, rtol=1e-6)
     print(f"Mage-VL SigLIP MLP matches the Transformers baseline on {test_device}.")
+
+    # Bench：固定视觉 token 数与 hidden 宽度，测量 SigLIP MLP。
+    with torch.inference_mode():
+        mlp_bench = torch.utils.benchmark.Timer(
+            stmt="engine(hidden_states)", globals=locals()
+        ).blocked_autorange(min_run_time=0.3)
+    print(f"Bench: SigLIP MLP {mlp_bench}")
+
+    # Profile：定位两层 Linear、GELU 与中间激活的开销。
+    profile_activities = [torch.profiler.ProfilerActivity.CPU]
+    if test_device.type == "cuda":
+        profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
+    with torch.inference_mode():
+        with torch.profiler.profile(
+            activities=profile_activities,
+            record_shapes=True,
+            profile_memory=True,
+        ) as mlp_profile:
+            engine(hidden_states)
+    if test_device.type == "cuda":
+        torch.cuda.synchronize(test_device)
+        profile_sort = "self_cuda_time_total"
+    else:
+        profile_sort = "self_cpu_time_total"
+    print("Profile: SigLIP MLP operators")
+    print(mlp_profile.key_averages().table(sort_by=profile_sort, row_limit=12))
