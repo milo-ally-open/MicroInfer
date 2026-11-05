@@ -1,7 +1,0 @@
-[
-  {
-    "id": "control-plane",
-    "tenant_id": "control-plane",
-    "key": "replace-with-at-least-32-random-characters"
-  }
-]

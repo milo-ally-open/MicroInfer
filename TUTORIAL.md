@@ -689,7 +689,7 @@ src/inference/models/<model_name>/
 ├── profiles/
 │   ├── model.yml              # alias、能力、runtime_factory、配置文件名
 │   ├── inference.yml          # 模型版本/路径及 Engine 运行参数
-│   └── network.yml            # API 地址、鉴权/限流和媒体端点
+│   └── network.yml            # API 地址和媒体端点
 └── requirements/
     └── requirements.txt       # 本模型专属 Python 依赖
 ```
@@ -757,19 +757,15 @@ api:
     live_video: false
 ```
 
-`profiles/inference.yml` 保存运行参数；至少固定 Hub repo ID、完整 revision、dtype、attention backend、本地权重路径和 `local_files_only: true`。图片最大尺寸、图片数、上下文、生成长度和 KV reservation 按实际 GPU 与 API 限制制定。`profiles/network.yml` 配置监听地址、密钥文件环境变量与 tenant 限流。API Key 值只放在仓库外文件：
+`profiles/inference.yml` 保存运行参数；至少固定 Hub repo ID、完整 revision、dtype、attention backend、本地权重路径和 `local_files_only: true`。图片最大尺寸、图片数、上下文、生成长度和 KV reservation 按实际 GPU 与 API 限制制定。`profiles/network.yml` 配置 API 监听地址及可选的媒体端点：
 
 ```yaml
 api:
   host: 127.0.0.1
   port: 8012
-  auth:
-    api_keys_file_env: INFERENCE_API_KEYS_FILE
-    requests_per_second: 5
-    burst: 10
 ```
 
-启用 Live 的模型还需在 `api.auth` 中设置 `session_hmac_keys_env: INFERENCE_SESSION_HMAC_KEYS` 和正整数 `session_handle_ttl_seconds`。测试的 baseline 与 enhanced 目录各自保存一份 `profiles/inference.yml` 参数副本；增强实现从模型源码目录读取 manifest 与 network 注册配置。
+服务不要求 API Key，也不按 tenant 限流；部署时应通过网络配置限制 API 的访问范围。测试的 baseline 与 enhanced 目录各自保存一份 `profiles/inference.yml` 参数副本；增强实现从模型源码目录读取 manifest 与 network 注册配置。
 
 模型专属 Python 依赖文件和 extra 的声明/安装在步骤 2 完成；本步骤只配置模型发现、运行参数和网络服务参数。
 
@@ -791,33 +787,16 @@ inference list
 inference validate --model <model-alias>
 ```
 
-创建仓库外 API Key 文件，将模板中的占位 key 换成 `openssl rand -hex 32` 生成的随机值，再启动服务：
-
 ```bash
-mkdir -p "$HOME/.config/microinfer"
-cp deploy/api-keys.example.json "$HOME/.config/microinfer/api-keys.json"
-chmod 0600 "$HOME/.config/microinfer/api-keys.json"
-export INFERENCE_API_KEYS_FILE="$HOME/.config/microinfer/api-keys.json"
-# Mage-VL 启用 Live 时，还需生成并设置至少 32 bytes 的 Base64URL HMAC key。
-# export INFERENCE_SESSION_HMAC_KEYS="$(python -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("="))')"
 inference serve --model <model-alias>
 ```
 
-端到端验收从另一个终端直接调用模型 FastAPI 的 OpenAI 兼容 `POST /v1/chat/completions`。`<API_KEY>` 使用 JSON 文件中登记的同一个 key：
+端到端验收从另一个终端直接调用模型 FastAPI 的 OpenAI 兼容 `POST /v1/chat/completions`，不需要 API Key：
 
-```python
-from openai import OpenAI
-
-client = OpenAI(api_key="<API_KEY>", base_url="http://127.0.0.1:8012/v1")
-stream = client.chat.completions.create(
-    model="<model-alias>",
-    messages=[{"role": "user", "content": "请介绍一下这个模型。"}],
-    stream=True,
-)
-for chunk in stream:
-    if chunk.choices and chunk.choices[0].delta.content:
-        print(chunk.choices[0].delta.content, end="", flush=True)
-print()
+```bash
+curl http://127.0.0.1:8012/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"<model-alias>","messages":[{"role":"user","content":"请介绍一下这个模型。"}],"stream":true}'
 ```
 
 使用模型 manifest 中登记的 API model ID，例如 `mage-vl-4b`、`qwen3-vl-2b`。`scripts/client.py` 可验证当前两个模型的请求；新模型需将上例 URL 和 model alias 替换为自己的配置。图像、视频和工具调用能力分别准备真实请求验收，没有测过的能力必须标为 `false`。控制面负责用户认证与业务授权，并在服务端调用 FastAPI；控制面不属于本仓库。

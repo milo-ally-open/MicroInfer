@@ -52,20 +52,20 @@
 
 ### REQ-07：配置、健康状态和失败回报反映实际能力
 
-- **AC-07.1** 模型、Runner、Scheduler、KV pool、Worker timeout、API 网络和模型使用的媒体端点保存在对应模型 YAML；MediaMTX sidecar 自身配置独立保存在 `deploy/mediamtx/mediamtx.yml`，不由模型 manifest 登记或推理 Launcher 管理；密钥不写入 YAML 或 Git。
+- **AC-07.1** 模型、Runner、Scheduler、KV pool、Worker timeout、API 网络和模型使用的媒体端点保存在对应模型 YAML；MediaMTX sidecar 自身配置独立保存在 `deploy/mediamtx/mediamtx.yml`，不由模型 manifest 登记或推理 Launcher 管理。
 - **AC-07.2** Qwen `/health` 可回报 backend、platform、API／Engine／Worker PID、Scheduler、Engine lease、Worker page 使用和 CUDA memory；GPU 字段只在 Worker ready 后提供。
 - **AC-07.3** Worker 启动、Executor timeout、Tokenizer 加载、平台不支持、Cache 容量不足和模型输入不合法均回报明确错误；不得静默切换到未调度的 `generate()`。
-- **AC-07.4** FastAPI Network 层集中执行 API Key 验证、tenant 识别与限流；Engine 和 Model Runner 不读取密钥，也不处理认证策略。
-- **AC-07.5** 有效 Bearer API Key 才能访问 `/v1/*` 模型接口；缺失或无效凭据返回 401；`/health` 保持可供健康探测使用，MediaMTX 授权回调是显式例外，部署必须由网络防火墙将其限制到媒体服务可访问范围。
-- **AC-07.6** API Key 由仓库外 JSON 文件提供，tenant 限流在 FastAPI 进程内执行；启用 Live 的模型使用 HMAC 句柄绑定 tenant 和到期时间。密钥不得进入模型 YAML、Git 或 Engine Core/Worker 子进程环境。
-- **AC-07.7** 模型 API 由 `inference serve --model <model-alias>` 直接对外提供；FastAPI Network 是 API Key 验证与 tenant 限流的唯一执行点。
+- **AC-07.4** FastAPI 直接提供模型 API，不要求 Bearer API Key，也不执行 tenant 识别或 tenant 级请求限流。
+- **AC-07.5** `/health` 和 `/v1/*` 接口可在不提供 API Key 的情况下访问；部署通过受控网络限制 API 的访问范围。MediaMTX 回调只允许有效的活动推流路径。
+- **AC-07.6** Live 会话使用随机生成的会话 ID；服务启动不依赖 API Key 或 Live HMAC 密钥文件。
+- **AC-07.7** 模型 API 由 `inference serve --model <model-alias>` 直接启动，Network 层保留请求格式、输入大小和模型能力校验。
 
 ### REQ-08：以精简的逐模型测试验证模型接入
 
 - **AC-08.1** 每个已登记模型目录 `tests/{model_alias}/` 恰有三个测试入口：`test_components.py`、`test_performance.py`、`test_end2end.py`，及一份 `test.yml`；不再维护独立的 `tests/inference/`、`tests/gateway/`、`tests/end2end/` 测试树。
 - **AC-08.2** `test_components.py` 以指定的本地固定 snapshot 和 `meta` device 比较模型包计算图与 Transformers 原生基线，依序输出 `==========engine===========` 和 `==========baseline==========`，不得加载权重或创建 CUDA context。
 - **AC-08.3** `test_performance.py` 使用相同本地 snapshot、输入与生成上限，比较已启动的 Inference API 和 Transformers 原生直接生成；输出样本数、平均延迟、生成 token 数及平均 token/s。该测试需模型、GPU 与可用 Inference API，不宣称固定 SLA。
-- **AC-08.4** `test_end2end.py` 以模型 manifest alias 直接向 FastAPI 发送请求，验证 HTTP 成功、文字 SSE 内容及响应 model ID；Mage-VL 同时验证图片 SSE 和视频上传，Qwen 验证纯文字 SSE。测试需相应 Inference API、API Key 和本地素材。
+- **AC-08.4** `test_end2end.py` 以模型 manifest alias 直接向 FastAPI 发送请求，验证 HTTP 成功、文字 SSE 内容及响应 model ID；Mage-VL 同时验证图片 SSE 和视频上传，Qwen 验证纯文字 SSE。测试需相应 Inference API 和本地素材。
 - **AC-08.5** 测试配置以 `--config` 明确传入；相对素材／snapshot 路径以该 YAML 所在目录解析。历史实测 JSON 保存在各模型目录的 `results/`；不新增数据集精度或 Video-MME 评测。
 
 ### REQ-09：新模型沿用共用服务装配
@@ -109,7 +109,7 @@
 - **AC-12.4** 模型包顶层只放组装入口 `modeling.py`、示例 `example.py`、加载入口 `loader.py` 和运行时组合入口 `runtime.py`；模型专属依赖放在 `requirements/`，manifest 与运行 YAML 放在 `profiles/`，计算层置于 `layers/`，Runtime 支持组件置于 `components/`，模型专属 Config、输出类型、Live 等能力和辅助前向模块置于 `architecture/`。MageVL 和 Qwen3-VL 都保留 `architecture/__init__.py`，无需为了统一而增加其他空模块。不再为相同职责拆分多个配置／HF loader 文件；模型专属推理参数仍由 YAML 管理，也不把模型专属逻辑移入共用 `engine/`。
 - **AC-12.5** Qwen3 与 Mage-VL 均由自身 manifest 和 Runtime 工厂装配，维持现有 API alias、网络配置、推理行为及文字 SSE 输出；Qwen token ID 仍在 API 边界增量 Detokenize，Mage-VL `text_delta` 路径不变。
 - **AC-12.6** 每个模型的三项测试均只使用该目录的 `test.yml` 和模型 manifest；`test_end2end.py` 直连 FastAPI 验证 manifest model ID、端点及能力。
-- **AC-12.7** 新模型接入指南以模型目录为主体，逐项说明必需／按需文件、各文件应承载的内容、接入顺序、standard/custom 边界、API Key 与 Live 的条件及验证方法。指南不要求提供模型实现代码范例，也不要求维护全局模型登记清单或 Runner／Adapter 组件清单。
+- **AC-12.7** 新模型接入指南以模型目录为主体，逐项说明必需／按需文件、各文件应承载的内容、接入顺序、standard/custom 边界、Live 的条件及验证方法。指南不要求提供模型实现代码范例，也不要求维护全局模型登记清单或 Runner／Adapter 组件清单。
 
 ### REQ-13：模型包按计算责任分层并使用明确注意力路径
 
@@ -267,19 +267,19 @@
 
 **验证方式**：检查当前源码、配置、组件入口及产品文档中不再存在 Qwen3 手写 CUDA 接入；历史实验数据保留并明确标注为已撤除实现的测量。
 
-### REQ-23：模型 FastAPI 直接提供统一鉴权的对外 API
+### REQ-23：模型 FastAPI 直接提供推理 API
 
-**需求**：每个模型服务由共用 Python FastAPI 直接对外提供 OpenAI 兼容模型 API；API Key、tenant 识别和进程内限流统一由 Network 层执行。
+**需求**：每个模型服务由共用 Python FastAPI 直接提供 OpenAI 兼容模型 API。服务不内置 API Key 鉴权或 tenant 级限流；部署时通过受控网络管理访问范围。
 
 **验收条件**
 
 - **AC-23.1** `inference serve --model <model-alias>` 依据模型 manifest 与 `profiles/network.yml` 启动模型 FastAPI；`/health` 保持健康探测，模型 API 使用标准 `/v1/*` 路径。
-- **AC-23.2** 所有 `/v1/*` 模型 API 在处理前验证唯一 Bearer API Key，缺失、格式错误或无效密钥返回 401；`/health` 与 MediaMTX 专用授权回调为显式例外，后者由部署网络策略隔离并检查活动会话路径。
-- **AC-23.3** API Key 文件使用 `{id, tenant_id, key}` JSON 条目；Network 只在内存中保留密钥摘要，并将已验证的 key ID／tenant ID 放入请求状态。租户限流在单一 API Server 进程内执行；Engine Core 与 Worker 不读取 API Key 或 Live HMAC 环境变量。
+- **AC-23.2** `/v1/*` 推理接口不要求 Bearer API Key；请求仍经过模型、格式和输入限制校验。MediaMTX 回调检查活动会话推流路径。
+- **AC-23.3** 服务启动不需要 API Key 文件、tenant 配置或 HMAC 密钥；Live 会话使用随机会话 ID。
 - **AC-23.4** API model ID 来自模型 manifest（当前 Mage-VL 为 `mage-vl-4b`，Qwen3-VL 为 `qwen3-vl-2b`）。
-- **AC-23.5** `python -m inference.network.auth` 无需 checkpoint 或 GPU，覆盖 Bearer 拒绝／通过、tenant 注入、限流与 Live 句柄签名／租户隔离／过期检查；完整模型端到端调用由 `scripts/client.py` 直连 FastAPI。
+- **AC-23.5** `scripts/client.py` 可直接调用 FastAPI，无需设置 API Key；完整模型端到端验收需在已准备本地权重的环境中执行。
 
-**验证方式**：运行认证模块内联自检、双模型 `launcher.py list/validate` 和 Python 编译检查；真实模型请求需在已分配 GPU 和本地权重后手动运行，不能以源码或 mock 检查声称通过。
+**验证方式**：双模型 `launcher.py list/validate`；真实模型请求需在已准备本地权重的环境中手动运行。
 
 ## Qwen3 Engine 组件重构追踪
 

@@ -19,7 +19,7 @@ Python 模型组件和模型级 Test、Bench、Profile 仍由工程师手动排�
 | CD（持续交付） | 推送 v* tag 且 CI 通过 | 检查 tag 与包版本一致；构建 wheel、sdist 和 SHA256SUMS | 创建 GitHub Release 并附上制品 |
 | 生产部署 | 当前不自动触发 | 运维人员将已审查版本部署到指定推理主机 | 手动维护窗口、GPU/权重预检和服务健康验收 |
 
-CI 的 `inference validate` 只读模型 manifest 与配置，不加载权重、不初始化 CUDA。API Key 自检、模块级测试及模型级 Test/Bench/Profile 按各模型的 `tests/<model_name>/README.md` 手动执行。
+CI 的 `inference validate` 只读模型 manifest 与配置，不加载权重、不初始化 CUDA。模块级测试及模型级 Test/Bench/Profile 按各模型的 `tests/<model_name>/README.md` 手动执行。
 
 CD 目前是持续交付而非持续部署：没有已确认的生产主机、制品仓库、部署凭证、服务管理方式或健康回滚接口，因此工作流不会登录服务器、重启推理服务或覆盖模型权重。确认目标环境后，再单独设计带审批、最小权限和回滚的部署 job。
 
@@ -49,7 +49,7 @@ CD 目前是持续交付而非持续部署：没有已确认的生产主机、�
 2. 合并到 main，等待两个 Python 版本的 CI 检查通过。
 3. 维护者在该提交创建匹配 tag，例如包版本为 0.1.0 时使用 `v0.1.0`。
 4. 检查 Actions 的 CI 与 Release Job 均成功；在 GitHub Release 下载 wheel、sdist 和 SHA256SUMS 并核对校验值。
-5. 在目标推理主机手动准备匹配的 Python/CUDA 环境、按模型安装依赖，并使用仓库外权重和 API Key 配置完成启动与健康验收。
+5. 在目标推理主机手动准备匹配的 Python/CUDA 环境、按模型安装依赖，并准备模型权重后启动服务、进行健康验收；通过网络策略限制 API 访问。
 
 失败的 tag 发布不覆盖已有 Release。修复后应使用新版本号和新 tag 发布，避免移动已发布版本标记。
 

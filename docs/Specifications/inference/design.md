@@ -173,7 +173,7 @@ deploy/mediamtx/
 
 `integration_profile` 分成 `standard` 与 `custom`。`standard` 使用共用的受限文字 Runner，适用于符合本设计中 decoder-only、单设备、文字 Chat Template 与可延续 `past_key_values` 契约的模型；它不代表任意 `AutoModel` 都兼容。`custom` 代表模型包需拥有专属计算图、权重转换、影音前处理、Tokenizer 或 Cache 行为。Profile 是接入方式标记，不代表包或模型名称保证兼容。目前 Mage-VL 和 Qwen3-0.6B 都是 `custom`；项目已有标准文字默认 Runner，但尚无任意模型通用兼容层。
 
-`launcher.py validate` 为无权重预检：加载登记与 YAML，检查 profile、API capability、Runner／Adapter／选用工厂模块、`token_ids` 解码依赖、Network API Key/限流字段及 Live manager；它不汇入工厂、不下载或加载 snapshot、不创建 CUDA context。MediaMTX 配置由部署文档独立维护，不属于模型预检。精简前曾以 AST 契约与跨服务 YAML 比对验证接入；该组测试已移除，现在由逐模型三项测试提供计算图、性能和直接 FastAPI 请求验收，不宣称覆盖逐字段静态配置一致性。
+`launcher.py validate` 为无权重预检：加载登记与 YAML，检查 profile、API capability、Runner／Adapter／选用工厂模块、`token_ids` 解码依赖及 Live manager；它不汇入工厂、不下载或加载 snapshot、不创建 CUDA context。MediaMTX 配置由部署文档独立维护，不属于模型预检。精简前曾以 AST 契约与跨服务 YAML 比对验证接入；该组测试已移除，现在由逐模型三项测试提供计算图、性能和直接 FastAPI 请求验收，不宣称覆盖逐字段静态配置一致性。
 
 ## 配置与营运
 

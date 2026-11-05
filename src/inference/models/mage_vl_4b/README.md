@@ -37,7 +37,7 @@ Mage-VL 将图像/视频视觉特征与文字主干结合，再由条件生成�
 
 - `profiles/model.yml`：注册 alias、Runtime 工厂和已验收能力。
 - `profiles/inference.yml`：上游 repo/revision、本地权重目录、dtype、量化和推理参数。
-- `profiles/network.yml`：FastAPI 监听、鉴权/限流及视频媒体端点。
+- `profiles/network.yml`：FastAPI 监听地址及视频媒体端点。
 - `requirements/requirements.txt`：Mage-VL 专属 Python 依赖；安装 extra 为 `mage-vl`。PyTorch/CUDA 按目标机器单独安装。
 - 权重只从固定 revision 的本地快照加载。不要将权重、缓存、私密密钥或大体积 Profile 产物加入 Git。
 

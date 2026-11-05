@@ -2,12 +2,6 @@
 api:
   host: 127.0.0.1
   port: 8001
-  auth:
-    api_keys_file_env: INFERENCE_API_KEYS_FILE
-    requests_per_second: 5
-    burst: 10
-    session_hmac_keys_env: INFERENCE_SESSION_HMAC_KEYS
-    session_handle_ttl_seconds: 3660
 
 live_stream:
   # MediaMTX 供服务端读取流式的内部地址，以及返回给推流客户端的公开主机名称。

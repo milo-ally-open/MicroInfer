@@ -4,7 +4,7 @@
 
 | 服务 | 部署位置 | 说明 |
 | --- | --- | --- |
-| Inference API | 宿主机 | FastAPI 直接提供 `/v1/*` 模型 API、API Key 认证、租户限流和 GPU 推理 |
+| Inference API | 宿主机 | FastAPI 直接提供 `/v1/*` 模型 API 和 GPU 推理；通过受控网络限制访问 |
 | MediaMTX | [`mediamtx/`](mediamtx/)（可选） | Mage-VL Live 视频需要的媒体 sidecar，单独安装与启动 |
 
-Inference 安装、密钥配置和直接服务步骤见 [`../src/inference/README.md`](../src/inference/README.md)。
+Inference 安装和启动步骤见 [`../src/inference/README.md`](../src/inference/README.md)。

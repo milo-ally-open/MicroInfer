@@ -36,7 +36,7 @@
 
 - `profiles/model.yml`：服务发现所用 alias、Runtime 工厂和 API 能力。
 - `profiles/inference.yml`：上游 repo/revision、本地 `checkpoints/` 路径、dtype、Attention backend 和请求/Engine 参数。
-- `profiles/network.yml`：API 监听和鉴权/限流参数。
+- `profiles/network.yml`：API 监听地址。
 - `requirements/requirements.txt`：Qwen3-VL 专属 Python 依赖；安装 extra 为 `qwen3-vl-2b`。PyTorch/CUDA 按目标机器单独安装。
 - 权重只从固定 revision 的本地快照加载，不提交模型权重、缓存、密钥或 Profile 大文件。
 

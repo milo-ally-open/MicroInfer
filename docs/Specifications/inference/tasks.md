@@ -55,7 +55,7 @@
 
 - [x] **T-37 撤除 Qwen3 单模型手写 CUDA Attention 接入** — 范围：Qwen3 CUDA extension 目录、KV Cache/Attention/Runner 接口、YAML 与 health 字段、组件 profile 入口、Inference/测试文档和规格；交付：移除自定义 CUDA 源码与构建脚本及 `attention_backend` 选择/回报接口，Qwen3 保留 PyTorch Attention 与实体 KV page pool，历史测量继续留文件；覆盖：REQ-22 / AC-22.1、AC-22.2、AC-22.3；依赖：T-32；状态：静态检查确认源码、配置、运行时接口、打包清单和文档已更新，原 kernel 目录及编译产物不存在；未运行模型/GPU功能测试。
 
-- [x] **T-38 将模型 API 鉴权收敛至 Python FastAPI** — 范围：Network API Key／tenant 限流／Live 句柄、Launcher 预检、双模型 `profiles/network.yml`、根目录直连客户端、部署及模型接入文档；交付：`inference serve --model <alias>` 直接提供 Bearer 保护的 `/v1/*` 模型 API；仓库外 JSON 密钥文件映射 key ID 与 tenant，FastAPI 统一执行鉴权和进程内限流；Live 句柄由 FastAPI 签名；覆盖：REQ-23 / AC-23.1–AC-23.5；依赖：T-34、T-35；状态：代码及文档已完成；旧 Go Gateway 的移除由 T-39 处理。
+- [x] **T-38 将模型 API 鉴权收敛至 Python FastAPI（已撤除）** — 历史交付为 Bearer API Key、tenant 限流及 Live HMAC 句柄；后续按精简服务范围移除此能力，当前行为见 REQ-23。
 - [x] **T-39 从仓库移除 Go Gateway** — 范围：Go 服务及独立集成测试、Gateway Docker 部署、专属 GitHub Actions、Gateway 规格与操作文档、架构说明；交付：FastAPI 是仓库唯一模型 API 服务入口，控制面由独立项目实现；不再保留 Gateway 的可执行代码、部署或发布路径；状态：完成；源码、测试、容器与工作流文件已删除，活跃 README／教程／测试说明已同步。
 
 ## 本次验收纪录
@@ -68,7 +68,7 @@
 | REQ-21 Engine client 显式 YAML 配置 | 通过 | Qwen3 插件工厂默认 manifest 配置、显式 inference/network YAML、实际 timeout 覆盖、环境路径传递、缺失文件与非法 YAML 边界均通过；未启动 Engine 或加载权重。Python 编译、双模型 Launcher validate、Spec validator（21 REQ、105 AC、36 T）和 `git diff --check` 通过。 |
 | REQ-22 撤除 Qwen3 单模型 CUDA 接入 | 静态检查通过；未运行模型测试 | 当前 Qwen3 包无 `kernels/` 目录或 `.so/.pyd`；源码、配置、health schema 与 profile 入口未发现 `attention_backend`、`kernels/cuda` 或 `paged_decode`；打包清单已清除旧路径，历史测量仍保留。 |
 | REQ-20 Processors 跨模型组件 | 通过 | `src/inference/media/` 已移除，源码、Network、Engine 与 Mage-VL 的共用处理器 imports 均使用 `inference.processors`；`compileall`、双模型 Launcher 预检、Processor/Network 导入 smoke、Spec validator（20 REQ、101 AC、35 T）及 `git diff --check` 通过。未启动服务或加载 checkpoint。 |
-| REQ-23 FastAPI 直接服务与 API Key 鉴权 | 完成 | `python -m inference.network.auth` 自检通过；FastAPI `/v1/models` 在无 key 时返回 401、有效 key 时返回 `qwen3-vl-2b`；双模型 `launcher list/validate`、`compileall` 与 `git diff --check` 通过。未加载 checkpoint、启动模型服务或执行 GPU 推理。Gateway 已由 T-39 从仓库移除。 |
+| REQ-23 FastAPI 直接服务与 API Key 鉴权 | 历史验收（能力已移除） | 认证模块自检及 API Key 401 行为仅记录 T-38 当时的实现；当前服务不再加载认证模块或要求密钥，行为见 `spec.md` 的 REQ-23。 |
 | REQ-19 Network 平面模块 | 通过 | `compileall`、两个模型 Launcher `list/validate`、Launcher `_load_service_app()` 实际导入 `inference.network.service`（未启动 Engine）、Network OpenAPI path/schema smoke、双模型组件入口、Spec validator（19 REQ、97 AC、34 T）及 `git diff --check` 通过；没有加载模型权重或启动 API/Gateway 服务。 |
 | REQ-18 Engine 根目录模块 | 通过 | `compileall` 与 AST 解析、双模型 `inference launcher list/validate`、扁平 Engine／Qwen 插件 factory imports 和无权重 Sequence/BlockManager/Scheduler smoke 通过；Qwen3 9 个组件入口、Mage-VL 组件回归通过。执行时约 3.3–3.5 GiB RAM 可用；未并行运行或启动服务。 |
 | Qwen3 CUDA extension 与数值 | 通过 | 使用 `MAX_JOBS=1` 编译，RTX 4060 Laptop；float16/bfloat16 batch=3、context=[1,4,9]、非连续 page table、跨 block boundary 与非法 layer/page size 检查通过；profile 证据 `analysis/qwen3_0_6b/analysis.xlsx` QW-13/QW-14 及 `tests/qwen3_0_6b/results/qwen3_cuda_attention_profile.json`、`qwen3_pytorch_attention_profile.json`；同条件完整 Attention decode event 中位数 CUDA 10.813 ms、PyTorch 1.877 ms。 |

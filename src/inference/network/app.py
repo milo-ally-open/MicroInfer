@@ -9,7 +9,6 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from inference.network import chat_completions, live_sessions, video_understanding
-from inference.network.auth import APIKeyAuthMiddleware, APIKeySet, TenantRateLimiter
 from inference.network.schemas import HealthResponse, ModelListResponse
 from inference.engine.sequence import InferenceError
 
@@ -77,11 +76,6 @@ def create_app(
     engine: Any,
     model_id: str,
     request_limits: dict[str, tuple[str, int]],
-    api_keys: APIKeySet,
-    rate_limit_requests_per_second: float,
-    rate_limit_burst: int,
-    session_hmac_keys: tuple[bytes, ...] = (),
-    live_session_handle_ttl_seconds: int = 3660,
     input_processor: Any | None = None,
     tool_call_adapter: Any | None = None,
     tool_calling_enabled: bool = False,
@@ -114,8 +108,6 @@ def create_app(
     app.state.engine = engine
     app.state.model_id = model_id
     app.state.request_limits = request_limits
-    app.state.session_hmac_keys = session_hmac_keys
-    app.state.live_session_handle_ttl_seconds = live_session_handle_ttl_seconds
     app.state.input_processor = input_processor
     app.state.tool_call_adapter = tool_call_adapter
     app.state.tool_calling_enabled = tool_calling_enabled
@@ -134,11 +126,6 @@ def create_app(
         }
 
     app.add_middleware(ContentLengthLimitMiddleware, request_limits=request_limits)
-    app.add_middleware(
-        APIKeyAuthMiddleware,
-        api_keys=api_keys,
-        limiter=TenantRateLimiter(rate_limit_requests_per_second, rate_limit_burst),
-    )
 
     @app.exception_handler(InferenceError)
     async def inference_error_handler(_: Request, exc: InferenceError) -> JSONResponse:

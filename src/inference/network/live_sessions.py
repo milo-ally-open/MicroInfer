@@ -14,7 +14,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
-from inference.network.auth import sign_live_session_handle, verify_live_session_handle
 from inference.network.schemas import LiveSessionCreateRequest, LiveSessionResponse, LiveSessionStopResponse
 from inference.processors.live_sessions import LiveSessionLimitError, LiveSessionNotFoundError
 
@@ -80,23 +79,17 @@ async def create_session(request: Request, payload: dict[str, Any] = Body(...)) 
     except LiveSessionLimitError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
 
-    public_handle = sign_live_session_handle(
-        request.state.tenant_id,
-        session_id,
-        int(time.time()) + request.app.state.live_session_handle_ttl_seconds,
-        request.app.state.session_hmac_keys,
-    )
     public_host = settings.public_host or request.url.hostname or "127.0.0.1"
     return {
-        "id": public_handle,
+        "id": session_id,
         "status": session.status,
         "model": request.app.state.model_id,
         "publish": {
             "rtsp": f"rtsp://{public_host}:{settings.rtsp_port}/{session_id}",
             "rtmp": f"rtmp://{public_host}:{settings.rtmp_port}/{session_id}",
         },
-        "events_url": f"{str(request.base_url).rstrip('/')}/v1/live/sessions/{public_handle}/events",
-        "stop_url": f"{str(request.base_url).rstrip('/')}/v1/live/sessions/{public_handle}",
+        "events_url": f"{str(request.base_url).rstrip('/')}/v1/live/sessions/{session_id}/events",
+        "stop_url": f"{str(request.base_url).rstrip('/')}/v1/live/sessions/{session_id}",
         "settings": {
             "video_backend": video_backend,
             "codec_engine": codec_engine,
@@ -112,13 +105,8 @@ async def create_session(request: Request, payload: dict[str, Any] = Body(...)) 
 
 @router.get("/v1/live/sessions/{session_id}/events")
 async def session_events(session_id: str, request: Request) -> StreamingResponse:
-    internal_session_id = verify_live_session_handle(
-        session_id, request.state.tenant_id, request.app.state.session_hmac_keys
-    )
-    if internal_session_id is None:
-        raise HTTPException(status_code=404, detail="Live session was not found or has expired.")
     try:
-        session = request.app.state.engine.get_live_session(internal_session_id)
+        session = request.app.state.engine.get_live_session(session_id)
     except LiveSessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Live session was not found or has expired.") from exc
     try:
@@ -152,16 +140,11 @@ async def session_events(session_id: str, request: Request) -> StreamingResponse
 
 @router.delete("/v1/live/sessions/{session_id}", response_model=LiveSessionStopResponse)
 def stop_session(session_id: str, request: Request) -> dict[str, str]:
-    internal_session_id = verify_live_session_handle(
-        session_id, request.state.tenant_id, request.app.state.session_hmac_keys
-    )
-    if internal_session_id is None:
-        raise HTTPException(status_code=404, detail="Live session was not found or has expired.")
     try:
-        session = request.app.state.engine.get_live_session(internal_session_id)
+        session = request.app.state.engine.get_live_session(session_id)
     except LiveSessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Live session was not found or has expired.") from exc
-    request.app.state.engine.stop_live_session(internal_session_id)
+    request.app.state.engine.stop_live_session(session_id)
     return {"id": session_id, "status": "stopping"}
 
 

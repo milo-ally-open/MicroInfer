@@ -1,29 +1,29 @@
 #!/usr/bin/env python3
-"""使用 OpenAI Python SDK 直接调用本地 Inference FastAPI 服务。"""
+"""直接调用本地 Inference FastAPI 服务。"""
 
 import os
 from pathlib import Path
 
 import httpx
-from openai import OpenAI
 
 INFERENCE_URL = os.environ.get("INFERENCE_URL", "http://127.0.0.1:8012").rstrip("/")
 MAGE_VL_URL = os.environ.get("MAGE_VL_URL", "http://127.0.0.1:8001").rstrip("/")
-API_KEY = os.environ["INFERENCE_API_KEY"]
 
 # 普通对话
-client = OpenAI(api_key=API_KEY, base_url=INFERENCE_URL + "/v1")
-
-response = client.chat.completions.create(
-    model="qwen3-vl-2b",
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Hello!"},
-    ],
-    stream=False,
+response = httpx.post(
+    INFERENCE_URL + "/v1/chat/completions",
+    json={
+        "model": "qwen3-vl-2b",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello!"},
+        ],
+        "stream": False,
+    },
+    timeout=300,
 )
-
-print(response.choices[0].message.content)
+response.raise_for_status()
+print(response.json()["choices"][0]["message"]["content"])
 
 
 # 视频理解
@@ -36,7 +36,6 @@ if video_file:
         video_response = httpx.post(
             MAGE_VL_URL + "/v1/videos/understand",
             params={"model": os.environ.get("VIDEO_MODEL", "mage-vl-4b")},
-            headers={"Authorization": f"Bearer {API_KEY}"},
             data={"question": os.environ.get("VIDEO_QUESTION", "请简要描述视频内容。")},
             files={"video": (video_path.name, video, "video/mp4")},
             timeout=float(os.environ.get("VIDEO_TIMEOUT_SECONDS", "900")),

@@ -1,7 +1,3 @@
 api:
   host: 127.0.0.1
   port: 8012
-  auth:
-    api_keys_file_env: INFERENCE_API_KEYS_FILE
-    requests_per_second: 5
-    burst: 10

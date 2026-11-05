@@ -87,7 +87,7 @@ KV block 所有权仍分成 Engine 的逻辑 reservation 和 Qwen Worker 的 GPU
 
 ## 新模型接入文档澄清
 
-本次只细化模型接入说明，不改变模型实现、API 契约、运行配置或启动方式。接入指南逐项描述需要新增或修改的文件及其内容，并说明 profile、FastAPI 认证、MediaMTX 和三项测试的使用条件；不附模型实现代码示例。验收以文件清单完整、内容职责与当前代码一致、README 链接有效及 Inference Spec validator 通过为准。
+本次只细化模型接入说明，不改变模型实现、API 契约、运行配置或启动方式。接入指南逐项描述需要新增或修改的文件及其内容，并说明 profile、受控网络部署、MediaMTX 和三项测试的使用条件；不附模型实现代码示例。验收以文件清单完整、内容职责与当前代码一致、README 链接有效及 Inference Spec validator 通过为准。
 
 ## Qwen 标准工具调用补强
 
