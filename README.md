@@ -35,34 +35,35 @@ API model ID 使用仓库模型名，如 `mage-vl-4b`；Python 包目录和 Hugg
 
 ## 快速开始
 
-### 环境准备
-
-- Python 3.10 或更新版本。
-- 与目标设备匹配的 PyTorch/CUDA 环境。PyTorch wheel 需单独安装；项目不会替用户选择 CUDA wheel。
-- 当前模型配置使用本地固定 revision 快照并启用离线加载；启动服务前按[模型接入流程](TUTORIAL.md#2-配置环境并下载固定版本)准备 `checkpoints/` 中的权重。
-
-### 安装并检查 Inference
-
-在所选模型的 Python 环境中，从仓库根目录安装对应 extra：
+以下命令适用于 Linux/WSL Bash，以 Qwen3-VL-2B 为例。需要 Python 3.10+ 和支持 BF16 的 NVIDIA GPU；先按 [PyTorch 安装说明](https://pytorch.org/get-started/locally/)安装匹配的 CUDA 版本。
 
 ```bash
-# Mage-VL
-python -m pip install -e "src/inference[mage-vl]"
-
-# 或 Qwen3-VL
+git clone https://github.com/milo-ally-open/MicroInfer.git
+cd MicroInfer
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install -e "src/inference[qwen3-vl-2b]"
+
+python scripts/download.py \
+  --repo-id Qwen/Qwen3-VL-2B-Instruct \
+  --revision 89644892e4d85e24eaac8bacfd4f463576704203 \
+  --local-dir checkpoints/Qwen3-VL-2B-Instruct-8964489
+
+cp deploy/api-keys.example.json deploy/api-keys.json
+export INFERENCE_API_KEYS_FILE=deploy/api-keys.json
+inference serve --model qwen3-vl-2b
 ```
 
-检查模型并启动 Inference：
+服务启动后，在另一个终端发送请求：
 
 ```bash
-inference list
-inference validate --model qwen3-vl-2b
-export INFERENCE_API_KEYS_FILE="$HOME/.config/microinfer/api-keys.json"
-inference serve --model qwen3-vl-2b --host 0.0.0.0
+curl http://127.0.0.1:8012/v1/chat/completions \
+  -H 'Authorization: Bearer replace-with-at-least-32-random-characters' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3-vl-2b","messages":[{"role":"user","content":"你好！"}]}'
 ```
 
-Inference 默认监听地址由模型 `profiles/network.yml` 决定：Mage-VL 为 `127.0.0.1:8001`，Qwen3-VL 为 `127.0.0.1:8012`。`validate` 不加载权重或初始化 GPU。推理优先使用 CUDA；仅在 CUDA 不可用时回退 CPU。对远程客户端开放时应设置 `--host 0.0.0.0` 并配置防火墙。API Key 文件示例和认证行为见 [Inference README](src/inference/README.md)。
+示例 API key 仅用于本机试跑；对外提供服务前请替换。模型权重下载到 `checkpoints/`，首次启动需要等待模型加载完成。
 
 ## 配置
 
