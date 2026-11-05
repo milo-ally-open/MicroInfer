@@ -1,7 +1,0 @@
-**
-!src/
-!src/gateway/
-!src/gateway/**
-!deploy/
-!deploy/docker/
-!deploy/docker/gateway.yml

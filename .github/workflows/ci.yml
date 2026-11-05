@@ -1,56 +1,92 @@
-name: Go Gateway CI
-
-# 仅运行 Go Gateway 检查。Python 模型测试/Bench/Profile 需要 GPU 排程，按 tests/README.md 手动执行。
+name: Python CI and release
 
 on:
-  push:
   pull_request:
-  workflow_call:
+    branches: [main]
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: gateway-ci-${{ github.workflow }}-${{ github.ref }}
+  group: microinfer-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  gateway:
-    name: Go checks and image build
-    runs-on: ubuntu-latest
+  validate:
+    name: Static and package validation (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.12']
     steps:
-      - name: 检出仓库
-        uses: actions/checkout@v7
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: 安装 Go
-        uses: actions/setup-go@v7
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          go-version-file: src/gateway/go.mod
-          cache-dependency-path: |
-            src/gateway/go.sum
-            tests/integration/go.sum
-
-      - name: 检查 Go 格式
-        shell: bash
+          python-version: ${{ matrix.python-version }}
+      - name: Install build tools and package core dependencies
         run: |
-          cd src/gateway
-          test -z "$(gofmt -l .)"
-          cd ../../tests/integration
-          test -z "$(gofmt -l .)"
+          python -m pip install --upgrade pip build
+          python -m pip install --editable src/inference
+      - name: Check Python syntax
+        run: python -m compileall -q src/inference scripts
+      - name: Validate model manifests and runtime profiles
+        run: inference validate --model mage-vl-4b --model qwen3-vl-2b
+      - name: Build package distributions
+        run: python -m build --sdist --wheel --outdir dist src/inference
 
-      - name: 检查 Gateway 模块
-        working-directory: src/gateway
+  release:
+    name: Publish GitHub Release assets
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Verify tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          go vet ./...
-          go test -race -count=1 ./...
+          python - <<'PY'
+          import ast
+          import os
+          from pathlib import Path
 
-      - name: 检查 Gateway 集成测试
-        working-directory: tests/integration
+          module = ast.parse(Path('src/inference/__init__.py').read_text(encoding='utf-8'))
+          version = next(
+              ast.literal_eval(node.value)
+              for node in module.body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == '__version__' for target in node.targets)
+          )
+          if os.environ['RELEASE_TAG'] != f'v{version}':
+              raise SystemExit(f"tag {os.environ['RELEASE_TAG']} must match package version v{version}")
+          PY
+      - name: Build release distributions and checksums
         run: |
-          go vet ./...
-          go test -race -count=1 ./...
-
-      - name: 构建 Gateway 容器镜像
-        run: docker build --pull --file deploy/docker/Dockerfile --tag microinfer-gateway:ci .
+          python -m pip install --upgrade pip build
+          python -m build --sdist --wheel --outdir dist src/inference
+          sha256sum dist/* > dist/SHA256SUMS
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import math
+import os
+import re
 from typing import Any
 
 from inference.network.app import create_app
+from inference.network.auth import APIKeySet, parse_hmac_keys
 from inference.engine.engine_client import EngineClient
 from inference.engine.config import (
     load_factory,
@@ -16,11 +20,13 @@ from inference.engine.config import (
 
 model_alias, model_spec = selected_model()
 inference_config = selected_config("INFERENCE_CONFIG")
+network_config = selected_config("INFERENCE_NETWORK_CONFIG")
 api_config: dict[str, Any] = inference_config.get("api", {})
 runtime_config: dict[str, Any] = inference_config.get("runtime", {})
+network_api_config: dict[str, Any] = network_config.get("api", {})
 api_settings = model_api_settings(model_spec)
-if not isinstance(api_config, dict) or not isinstance(runtime_config, dict):
-    raise ValueError("inference.yml api and runtime settings must be mappings.")
+if not isinstance(api_config, dict) or not isinstance(runtime_config, dict) or not isinstance(network_api_config, dict):
+    raise ValueError("inference.yml api/runtime and network.yml api settings must be mappings.")
 
 engine = EngineClient(
     "inference.engine.bootstrap:create_engine_core",
@@ -49,6 +55,54 @@ if any(not isinstance(value, bool) for value in (streaming_enabled, tool_calling
     raise ValueError("model.yml streaming, tool_calling, video_upload, and live_video capabilities must be booleans.")
 if output_mode not in {"text_delta", "token_ids"}:
     raise ValueError("model.yml api.capabilities.output_mode must be text_delta or token_ids.")
+
+auth_config = network_api_config.get("auth")
+if not isinstance(auth_config, dict):
+    raise ValueError("network.yml api.auth must configure API key authentication.")
+api_keys_file_env = auth_config.get("api_keys_file_env")
+if not isinstance(api_keys_file_env, str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", api_keys_file_env):
+    raise ValueError("network.yml api.auth.api_keys_file_env must name an environment variable.")
+api_keys_file = os.environ.get(api_keys_file_env, "").strip()
+if not api_keys_file:
+    raise RuntimeError(f"Set {api_keys_file_env} to a protected JSON API key file before starting the model API.")
+api_keys = APIKeySet.from_file(api_keys_file)
+# API Key 路径只需在 API Server 启动时读取，不让 Engine Core/Worker 子进程继承。
+os.environ.pop(api_keys_file_env, None)
+if api_keys_file_env != "INFERENCE_API_KEYS_FILE":
+    os.environ.pop("INFERENCE_API_KEYS_FILE", None)
+
+requests_per_second = auth_config.get("requests_per_second", 5)
+rate_limit_burst = auth_config.get("burst", 10)
+if (
+    isinstance(requests_per_second, bool)
+    or not isinstance(requests_per_second, (int, float))
+    or not math.isfinite(requests_per_second)
+    or requests_per_second <= 0
+    or type(rate_limit_burst) is not int
+    or rate_limit_burst < 1
+):
+    raise ValueError("network.yml api.auth requires a positive requests_per_second and burst.")
+
+session_hmac_keys: tuple[bytes, ...] = ()
+session_handle_ttl_seconds = auth_config.get("session_handle_ttl_seconds", 3660)
+if type(session_handle_ttl_seconds) is not int or session_handle_ttl_seconds < 1:
+    raise ValueError("network.yml api.auth.session_handle_ttl_seconds must be a positive integer.")
+session_hmac_keys_env = auth_config.get("session_hmac_keys_env")
+if session_hmac_keys_env is not None and (
+    not isinstance(session_hmac_keys_env, str)
+    or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", session_hmac_keys_env)
+    or session_hmac_keys_env == api_keys_file_env
+):
+    raise ValueError("network.yml api.auth.session_hmac_keys_env must name a distinct environment variable.")
+session_hmac_value = os.environ.pop(session_hmac_keys_env, "").strip() if session_hmac_keys_env else ""
+if session_hmac_keys_env != "INFERENCE_SESSION_HMAC_KEYS":
+    os.environ.pop("INFERENCE_SESSION_HMAC_KEYS", None)
+if live_enabled:
+    if not isinstance(session_hmac_keys_env, str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", session_hmac_keys_env):
+        raise ValueError("Live video requires network.yml api.auth.session_hmac_keys_env.")
+    if not session_hmac_value:
+        raise RuntimeError(f"Set {session_hmac_keys_env} before starting a model with Live video enabled.")
+    session_hmac_keys = parse_hmac_keys(session_hmac_value)
 
 input_processor_factory = api_settings.get("input_processor")
 if input_processor_factory is not None and not isinstance(input_processor_factory, str):
@@ -116,6 +170,11 @@ app = create_app(
     model_id=str(api_settings.get("model_id") or model_alias),
     title=f"{model_spec.get('display_name', model_alias)} API",
     request_limits=request_limits,
+    api_keys=api_keys,
+    rate_limit_requests_per_second=float(requests_per_second),
+    rate_limit_burst=rate_limit_burst,
+    session_hmac_keys=session_hmac_keys,
+    live_session_handle_ttl_seconds=session_handle_ttl_seconds,
     input_processor=input_processor,
     tool_call_adapter=tool_call_adapter,
     tool_calling_enabled=tool_calling_enabled,

@@ -53,6 +53,7 @@
 .env.*
 !.env.example
 !.env.*.example
+/deploy/api-keys.json
 *.pem
 *.key
 *.p12
@@ -88,7 +89,7 @@ ehthumbs.db
 *~
 ~$*
 
-# Compiled native and Go test outputs
+# Compiled native code and test outputs
 *.o
 *.a
 *.so

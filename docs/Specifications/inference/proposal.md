@@ -25,7 +25,7 @@
 
 本次决策：
 
-- 保持 Mage-VL 与 Qwen3 的模型包、加载方式及能力差异；不把任何一个模型的前处理或计算图移入 Go Gateway 或共用 Engine。
+- 保持 Mage-VL 与 Qwen3 的模型包、加载方式及能力差异；不把任何一个模型的前处理或计算图移入共用 Engine。
 - Qwen3 API 程序使用模型专属 `InputProcessor` 加载本地 Tokenizer，产生可序列化的 `PreparedChatInput`；不在 API 程序加载模型权重或创建 GPU Runtime。
 - Qwen3 Worker 返回 token ID；API 输出处理器按 tokenizer 规则逐步形成文字 chunk。Mage-VL 现有文字增量事件维持原路径。
 - L2 `EngineOutputProcessor` 只把 Worker token／文字结果转成 Engine 事件，不负责 HTTP、JSON 或 SSE。
@@ -51,7 +51,7 @@
 
 ## 非目标
 
-- 不改 Go Gateway、Mage-VL 模型组件或既有模型服务 API；不把 API Server 与 Engine Core 改成远端服务。
+- 不改 Mage-VL 模型组件或既有模型服务 API；不把 API Server 与 Engine Core 改成远端服务。
 - 不引入 vLLM 或 nano-vLLM runtime 依赖，不复制其专用代码，也不宣称 vLLM 兼容或达到其效能。
 - 本次 REQ-17 增补原生 CUDA 单 token decode Attention prototype；不在本次实现 Triton、prefill CUDA kernel、prefix cache、KV offload、量化、CUDA Graph、静态 GPU InputBatch、Ray／多 GPU 或 Tensor Parallel。prototype 未完成目标 GPU 验收前不作为默认后端。
 - 不选定第二个模型；Qwen3-0.6B 是目前实验模型，Mage-VL 只作为既有共用 API／Engine 兼容路径。
@@ -75,7 +75,7 @@ KV block 所有权仍分成 Engine 的逻辑 reservation 和 Qwen Worker 的 GPU
 
 ## 新模型接入工作流补强
 
-为缩短后续模型接入并避免能力描述漂移，Registry 增加 `standard`／`custom` 整合 profile 和明确 API capability；共用 API 启动时验证其可提供的路由，Launcher 提供不加载权重或 GPU 的 `validate` 预检。逐模型测试统一放在 `tests/{model_alias}/`，仅保留计算图基线、实际推理性能比较和 Gateway 端到端三项入口；详细证据规则见 `spec.md`／`design.md`，任务进度见 `tasks.md`。
+为缩短后续模型接入并避免能力描述漂移，Registry 增加 `standard`／`custom` 整合 profile 和明确 API capability；共用 API 启动时验证其可提供的路由，Launcher 提供不加载权重或 GPU 的 `validate` 预检。逐模型测试统一放在 `tests/{model_alias}/`，仅保留计算图基线、实际推理性能比较和直接 FastAPI 端到端三项入口；详细证据规则见 `spec.md`／`design.md`，任务进度见 `tasks.md`。
 
 `standard` 使用共用文字默认组件，限定于单设备 causal LM、具有固定 revision 的 Tokenizer chat template、可逐步重用的 `past_key_values` 和 token ID 输出；每个 Scheduler work item 仍独立 forward，首版不宣称批次 forward。`custom` 用于需要模型包持有计算图、Cache、Tokenizer 或媒体流程的模型。Mage-VL 和 Qwen3-0.6B 保持目前的 `custom` 实现；Qwen snapshot 可用来实际验证标准默认执行路径，但不因此改变其 Registry profile 或原生 PyTorch 服务方式。预检与合成测试仍不能取代目标部署环境的实际模型／硬件验收。
 
@@ -87,7 +87,7 @@ KV block 所有权仍分成 Engine 的逻辑 reservation 和 Qwen Worker 的 GPU
 
 ## 新模型接入文档澄清
 
-本次只细化模型接入说明，不改变模型实现、API 契约、运行配置或启动方式。接入指南逐项描述需要新增或修改的文件及其内容，并说明 profile、Gateway、MediaMTX 和三项测试的使用条件；不附模型实现代码示例。验收以文件清单完整、内容职责与当前代码一致、README 链接有效及 Inference Spec validator 通过为准。
+本次只细化模型接入说明，不改变模型实现、API 契约、运行配置或启动方式。接入指南逐项描述需要新增或修改的文件及其内容，并说明 profile、FastAPI 认证、MediaMTX 和三项测试的使用条件；不附模型实现代码示例。验收以文件清单完整、内容职责与当前代码一致、README 链接有效及 Inference Spec validator 通过为准。
 
 ## Qwen 标准工具调用补强
 
@@ -109,7 +109,7 @@ KV block 所有权仍分成 Engine 的逻辑 reservation 和 Qwen Worker 的 GPU
 
 使用者要求先将当前工作树提交为基线，再以 Qwen3 系统性重构 Engine 组件，并以原生 CUDA 代码创建真正按 block table 读取 KV 的 Attention 路径。基线提交为 `9258379 chore: checkpoint project changes before Qwen3 refactor`；该提交只在本地，不推送。
 
-本次在概念上参考 nano-vLLM 的 `Sequence`、`BlockManager`、`Scheduler`、`ModelRunner` 与 Engine 编排职责，但按本项目现有多进程架构落位：新增轻量 Engine request state 与 Block Manager，继续扩展当前唯一的 Token Scheduler 和 Engine Core；Qwen 专属 Runner 留在模型包，CUDA kernel 是 Runner 可选的计算后端。不会另外创建重复的 `model_engine.py`、`scheduler.py` 或共用模型 Runner，也不改变 API、Mage-VL Cache 或 Gateway。
+本次在概念上参考 nano-vLLM 的 `Sequence`、`BlockManager`、`Scheduler`、`ModelRunner` 与 Engine 编排职责，但按本项目现有多进程架构落位：新增轻量 Engine request state 与 Block Manager，继续扩展当前唯一的 Token Scheduler 和 Engine Core；Qwen 专属 Runner 留在模型包，CUDA kernel 是 Runner 可选的计算后端。不会另外创建重复的 `model_engine.py`、`scheduler.py` 或共用模型 Runner，也不改变 API 或 Mage-VL Cache。
 
 实现分成两个可独立检查的任务：T-31 统一 Engine request/sequence 状态与 KV block 所有权，保持现有准入时按最大输出预留的安全行为；T-32 创建 PyTorch C++/CUDA custom op 的分页 decode attention，并保留 PyTorch 参考/fallback。优先完成单 token decode；prefill kernel、Prefix Cache、按需扩容、抢占、CUDA Graph、多 GPU 与跨模型 kernel 复用留在后续独立任务，避免首轮同时改变过多语义。按需扩容必须先设计可证明不会互相等待的资源不足策略。只有 CUDA 数值验收与目标 GPU profile 实际完成后，才将此路径称为可用 CUDA PagedAttention。
 
@@ -117,7 +117,7 @@ KV block 所有权仍分成 Engine 的逻辑 reservation 和 Qwen Worker 的 GPU
 
 ## Engine 扁平化与模型专属实现（T-33）
 
-使用者决定保持简单的模型插件组织：各模型包承载自身 Processor、Runner、Adapter、拓扑、Cache 计算、Sampling 和 kernels；共用 Engine 参考 nano-vLLM 的清晰执行流程，仅保留少数位于 `engine/` 根目录的关键文件。此次收敛只改变内部 Python 模块组织，不改变三个程序边界、请求协议、模型行为或 Gateway。
+使用者决定保持简单的模型插件组织：各模型包承载自身 Processor、Runner、Adapter、拓扑、Cache 计算、Sampling 和 kernels；共用 Engine 参考 nano-vLLM 的清晰执行流程，仅保留少数位于 `engine/` 根目录的关键文件。此次收敛只改变内部 Python 模块组织，不改变三个程序边界、请求协议或模型行为。
 
 将 Engine 既有 `core/`、`contracts/`、`scheduling/`、`cache/`、`execution/`、`transport/`、`bootstrap/` 和 `config/` 子 package 合并为平面 `sequence.py`、`block_manager.py`、`scheduler.py`、`inference_engine.py`、`worker.py`、`engine_client.py`、`config.py`、`bootstrap.py` 等模块；同一算法的 batch planner 并入 Scheduler，Engine 输出事件转换并入 Engine 编排。删除只用于 package 分层的 Executor Protocol，不增加注册中心或通用引擎插件体系。Qwen 模型插件导出轻量 Engine client 工厂，以便服务端示例只导入模型包；模型 manifest 与 YAML 仍是配置来源。
 
@@ -125,7 +125,7 @@ REQ-15 的 Engine 目录分层决定由 REQ-18 取代，API package 目录要求
 
 ## Network 扁平化与 API 行为保持（T-34）
 
-将共用 HTTP 层从 `inference.api` 重命名为 `inference.network`，并把应用装配、模型服务入口、HTTP schemas、serializers、工具调用协议、路由和输入／输出处理器直接放在 `network/` 根目录。扁平模块名描述具体职责，不保留 `application/`、`contracts/`、`processors/`、`routes/` 子 package。Launcher、模型包导入、Gateway 设计说明和当前架构文档同步新路径；HTTP 路由、schema、模型能力门控、Engine IPC 及三程序边界不变。
+将共用 HTTP 层从 `inference.api` 重命名为 `inference.network`，并把应用装配、模型服务入口、HTTP schemas、serializers、工具调用协议、路由和输入／输出处理器直接放在 `network/` 根目录。扁平模块名描述具体职责，不保留 `application/`、`contracts/`、`processors/`、`routes/` 子 package。Launcher、模型包导入和当前架构文档同步新路径；HTTP 路由、schema、模型能力门控、Engine IPC 及三程序边界不变。
 
 ## 共用 Media 组件归入 Processors（T-35）
 

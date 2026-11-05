@@ -2,6 +2,8 @@
 
 本记录对应固定 Hugging Face revision `89644892e4d85e24eaac8bacfd4f463576704203`，在 RTX 4060 Laptop GPU 上使用 BF16、Transformers 5.19.0、PyTorch 2.14.1+cu126 和 SDPA 完成。测试输入为仓库中的 `test.jpg`（960×540）及固定中文问题；Processor 产生 528 个 prompt token。Test、Bench、Profile 均只针对 Transformers 官方模型实现，尚未代表 Inference Engine 的性能。
 
+表中的 Bench 使用 32-token 生成上限，是旧版合并脚本的历史记录。当前拆分脚本默认生成 2 token，复测会写入新的六份 baseline/enhanced JSON；新旧测量设置不同，不可直接比较。
+
 ## 问题、解决方案、效果
 
 | 问题 | 解决方案 | 效果 |
@@ -17,10 +19,13 @@
 
 ```bash
 conda activate inference
-python tests/qwen3_vl_2b/test_components.py
-python tests/qwen3_vl_2b/test_performance.py
-python scripts/qwen3_vl_2b/forward.py
-python scripts/qwen3_vl_2b/analysis.py
+python tests/qwen3_vl_2b/baseline/test.py
+python tests/qwen3_vl_2b/enhanced/test.py
+python tests/qwen3_vl_2b/baseline/bench.py
+python tests/qwen3_vl_2b/enhanced/bench.py
+python tests/qwen3_vl_2b/baseline/prefill.py
+python tests/qwen3_vl_2b/enhanced/prefill.py
+python tests/qwen3_vl_2b/analysis.py
 ```
 
-Profiler trace 保存在 `artifacts/qwen3_vl_2b/traces/`；原始 Profile 与 Bench JSON 被脚本写入 `artifacts/`。XLSX 仅保存机器可读测量记录。GPU Profiler 的算子耗时是定位证据，受采集开销影响，不应与未开启 Profiler 的 Bench 延迟直接相加或混为同一指标。
+Profiler trace 保存在 `artifacts/qwen3_vl_2b/traces/`；结构化 JSON 分别保存在 `artifacts/qwen3_vl_2b/{baseline,enhanced}/`。`analysis.py` 汇总 JSON 并生成 CSV/XLSX。GPU Profiler 的算子耗时是定位证据，受采集开销影响，不应与未开启 Profiler 的 Bench 延迟直接相加或混为同一指标。

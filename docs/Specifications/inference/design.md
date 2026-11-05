@@ -8,7 +8,7 @@ vLLM V1 官方架构将 API Server、Engine Core 和 GPU Worker 分成不同程�
 
 [nano-vLLM README](https://github.com/GeeeekExplorer/nano-vllm) 将自身描述为精简、可读的 vLLM 实现，展示其以较小代码结构承载 Engine、批次和优化概念。本项目参考其「用可读的核心流程学习／组织 Engine」方向；不把 README 中宣称的功能或 benchmark 当成本项目能力，也不将 nano-vLLM 加入执行依赖。
 
-本地现况包含固定 revision 的 Qwen3 config／tokenizer／Safetensors 加载、自有 PyTorch 模型、批次 prefill/decode、Worker 实体 KV pool 和文字 SSE。Qwen3 当前使用 PyTorch Attention，并在 Attention 计算前将历史 KV pages gather 为连续张量。2026-10-25 曾完成单模型 CUDA prototype 的数值、profile、API 与 Gateway SSE 验收；后续依使用者决定已撤除其源码、构建脚本和运行时接口，历史测量保存在 `analysis/qwen3_0_6b/` 与 `tests/qwen3_0_6b/results/`。当前工作树中已不存在原 kernel 目录或编译产物。Mage-VL 仍使用 Transformers 模型路径；项目没有 SGLang/vLLM backend、Ray 或第二个原生模型。
+本地现况包含固定 revision 的 Qwen3 config／tokenizer／Safetensors 加载、自有 PyTorch 模型、批次 prefill/decode、Worker 实体 KV pool 和文字 SSE。Qwen3 当前使用 PyTorch Attention，并在 Attention 计算前将历史 KV pages gather 为连续张量。2026-10-25 曾完成单模型 CUDA prototype 的数值、profile 与 API/SSE 验收；后续依使用者决定已撤除其源码、构建脚本和运行时接口，历史测量保存在 `analysis/qwen3_0_6b/` 与 `tests/qwen3_0_6b/results/`。当前工作树中已不存在原 kernel 目录或编译产物。Mage-VL 仍使用 Transformers 模型路径；项目没有 SGLang/vLLM backend、Ray 或第二个原生模型。
 
 ## 五层责任与依赖
 
@@ -173,11 +173,11 @@ deploy/mediamtx/
 
 `integration_profile` 分成 `standard` 与 `custom`。`standard` 使用共用的受限文字 Runner，适用于符合本设计中 decoder-only、单设备、文字 Chat Template 与可延续 `past_key_values` 契约的模型；它不代表任意 `AutoModel` 都兼容。`custom` 代表模型包需拥有专属计算图、权重转换、影音前处理、Tokenizer 或 Cache 行为。Profile 是接入方式标记，不代表包或模型名称保证兼容。目前 Mage-VL 和 Qwen3-0.6B 都是 `custom`；项目已有标准文字默认 Runner，但尚无任意模型通用兼容层。
 
-`launcher.py validate` 为无权重预检：加载登记与 YAML，检查 profile、API capability、Runner／Adapter／选用工厂模块、`token_ids` 解码依赖及 Live manager；它不汇入工厂、不下载或加载 snapshot、不创建 CUDA context。MediaMTX 配置由部署文档独立维护，不属于模型预检。精简前曾以 AST 契约与跨服务 YAML 比对验证接入；该组测试已移除，现在由逐模型三项测试提供计算图、性能和 Gateway 请求验收，不宣称覆盖逐字段静态配置一致性。
+`launcher.py validate` 为无权重预检：加载登记与 YAML，检查 profile、API capability、Runner／Adapter／选用工厂模块、`token_ids` 解码依赖、Network API Key/限流字段及 Live manager；它不汇入工厂、不下载或加载 snapshot、不创建 CUDA context。MediaMTX 配置由部署文档独立维护，不属于模型预检。精简前曾以 AST 契约与跨服务 YAML 比对验证接入；该组测试已移除，现在由逐模型三项测试提供计算图、性能和直接 FastAPI 请求验收，不宣称覆盖逐字段静态配置一致性。
 
 ## 配置与营运
 
-Qwen `profiles/inference.yml` 保存 model repo／revision、dtype/device、`runtime.platform`、本地模型路径、Context、generation、Scheduler、KV block、Worker 和 Engine timeout。模型网络端点来自各自 `profiles/network.yml`。MediaMTX sidecar 配置独立放在 `deploy/mediamtx/mediamtx.yml`，不出现在模型 manifest，也不由推理 Launcher 读取或启停；部署者需单独执行 MediaMTX，并在推理 API 端口变更时同步更新授权回调。API／Gateway 边界不变；MediaMTX 只供宣告 Live 能力的模型使用。健康信息如实区分 API、Engine Core、Worker、逻辑 reservation、实体 KV page 和 GPU memory。
+Qwen `profiles/inference.yml` 保存 model repo／revision、dtype/device、`runtime.platform`、本地模型路径、Context、generation、Scheduler、KV block、Worker 和 Engine timeout。模型网络端点来自各自 `profiles/network.yml`。MediaMTX sidecar 配置独立放在 `deploy/mediamtx/mediamtx.yml`，不出现在模型 manifest，也不由推理 Launcher 读取或启停；部署者需单独执行 MediaMTX，并在推理 API 端口变更时同步更新授权回调。模型 API 与媒体服务配置各自独立；MediaMTX 只供宣告 Live 能力的模型使用。健康信息如实区分 API、Engine Core、Worker、逻辑 reservation、实体 KV page 和 GPU memory。
 
 错误按所在边界传递：InputProcessor 的非法模型输入回 4xx；Engine 准入／Cache 容量错误沿既有 `InferenceError` 映射；Executor／Worker 启动和 RPC 超时标为服务错误并走清理。Worker 不得在初始化失败后回退到 Transformers `generate()`。
 
@@ -185,12 +185,12 @@ Qwen `profiles/inference.yml` 保存 model repo／revision、dtype/device、`run
 
 - 模型组件对照：`tests/{model_alias}/test_components.py` 在 `meta` device 比较本地模型包与 Transformers 原生模型模块树，不加载权重、不创建 CUDA context。
 - 推理性能对照：`tests/{model_alias}/test_performance.py` 以同一输入比较已启动的 Inference API 与本地 Transformers 直接生成，报告平均 latency 和 token/s；需明确指定 YAML、模型 snapshot、GPU 与 API。
-- Gateway 端到端：`tests/{model_alias}/test_end2end.py` 验证公开 alias、SSE 和模型已宣告的媒体 API；服务／密钥／素材缺一时不构成实机通过证据。
+- FastAPI 端到端：`tests/{model_alias}/test_end2end.py` 直连模型服务，验证 manifest model ID、SSE 和模型已宣告的媒体 API；服务／密钥／素材缺一时不构成实机通过证据。
 - 历史真机报告按 alias 放在 `tests/{model_alias}/results/`；每个模型的分析、优化和验收工作流唯一记录在根目录 `analysis/{model_alias}/analysis.md` 与 `analysis.xlsx`。
 - 三类测试不执行数据集精度评估，也不取代对 Engine／Scheduler／Cache／IPC 的专项单元测试；本次采用逐模型简化包后，旧分层测试树不再是维护入口。
 - API 兼容：对 Qwen 调用一般 Chat、SSE、并发 SSE、非法输入和 disconnect；Mage-VL 的旧文字增量路径保留回归检查。
 - 固定 snapshot：确认 Qwen input tokenization、native model output、逐 token event 合并文字、SSE finish usage／`[DONE]` 和取消后 Worker page 回收。
-- 性能：在推理 API 验收后记录 request／token throughput、TTFT、inter-token latency、request latency p50/p95、错误率和 GPU peak memory；与端到端 Gateway performance test 分开，不配置硬 SLA。
+- 性能：在推理 API 验收后记录 request／token throughput、TTFT、inter-token latency、request latency p50/p95、错误率和 GPU peak memory；不配置硬 SLA。
 - 不执行数据集精度测试；vLLM/nano-vLLM 公开结果不作为本地性能证据。
 
 ## 标准工具调用 adapter
@@ -199,7 +199,7 @@ Qwen `profiles/inference.yml` 保存 model repo／revision、dtype/device、`run
 
 模型 manifest 透过 `api.capabilities.tool_calling` 与 `api.tool_call_adapter` 启用能力。Qwen3 adapter 消费 tokenizer 生成的原生 JSON 工具调用块，并把 ID/name/arguments 转成共用类型；future model 用同一 Protocol 实现自己的输出解析。Qwen processor 将 OpenAI 标准 `tools` 和 tool-history messages传给上游 Chat Template。Launcher 检查能力和 factory 符号，启动时检查 adapter 实例接口。
 
-首版允许 `tool_choice=auto/none` 和单个调用；不做 constrained decoding、并行调用或函数指定型 tool_choice。流式参数 delta 无法在完整生成前判定全体 JSON Schema，故 Inference 在块结束前只提供 SDK 可累积的 partial arguments；块完整后执行 JSON/Schema 验证。客户端／Agent 应用必须等待完整 SSE、`finish_reason=tool_calls` 与有效参数后才执行，并使用自身的工具注册表、权限和资源限制；模型输出本身不构成执行授权。标准工具循环由仓库根目录 `client.py` 示范，不另设项目专用 Agent HTTP API。
+首版允许 `tool_choice=auto/none` 和单个调用；不做 constrained decoding、并行调用或函数指定型 tool_choice。流式参数 delta 无法在完整生成前判定全体 JSON Schema，故 Inference 在块结束前只提供 SDK 可累积的 partial arguments；块完整后执行 JSON/Schema 验证。客户端／Agent 应用必须等待完整 SSE、`finish_reason=tool_calls` 与有效参数后才执行，并使用自身的工具注册表、权限和资源限制；模型输出本身不构成执行授权。标准工具循环由 `scripts/client.py` 示范，不另设项目专用 Agent HTTP API。
 
 ## Qwen3 算子分析入口
 
@@ -207,7 +207,7 @@ Qwen `profiles/inference.yml` 保存 model repo／revision、dtype/device、`run
 
 可选 `--profile-attention` 使用 inference YAML 的固定本地 snapshot，从 Safetensors 只读取第 0 层 Attention 投影和 Q/K norm 权重，构造与该模型 config 一致的 Attention layer 及 physical KV page pool。对合成 prefill hidden states 和一个 decode token 进行预热与重复量测；CUDA 可用时用 CUDA Event 计时，不可用时用 CPU wall time，再用 `torch.profiler` 记录可用的 CPU/CUDA 算子、shape 与 memory。报告同时列出设备、PyTorch/CUDA、dtype、工作负载、样本及限制。Profiler 结果含采集开销，只用于定位；CPU 回退结果不能作为 GPU 性能数据。
 
-阅读算子表时，先检查 `PagedKVCache.read_batch` 的 gather、padding、零初始化与张量复制，再对照 attention score/softmax/value aggregation 与 Q/K/V/O projection。Profiler 排序提示热点所在，不足以单凭某个 `aten::` 项判断 memory-bound 或 compute-bound；需结合 shape、CUDA 时间、分配量，并在必要时用 Nsight Systems 看调度/传输/空文件、用 Nsight Compute 看候选 kernel 的硬件 counters。优化每次只改变一个路径，先复跑模块数值基线，再比较相同 workload 和环境下的 profiler 外延迟与显存，最后跑完整模型 API/Gateway 检查。
+阅读算子表时，先检查 `PagedKVCache.read_batch` 的 gather、padding、零初始化与张量复制，再对照 attention score/softmax/value aggregation 与 Q/K/V/O projection。Profiler 排序提示热点所在，不足以单凭某个 `aten::` 项判断 memory-bound 或 compute-bound；需结合 shape、CUDA 时间、分配量，并在必要时用 Nsight Systems 看调度/传输/空文件、用 Nsight Compute 看候选 kernel 的硬件 counters。优化每次只改变一个路径，先复跑模块数值基线，再比较相同 workload 和环境下的 profiler 外延迟与显存，最后直连完整模型 FastAPI 检查。
 
 每个模型在 `analysis/{model_alias}/` 维护一份 `analysis.md` 与一份 `analysis.xlsx`。Markdown 单表严格按“问题、解决方案、效果”组织，每行引用 Excel 中的证据 ID；Excel 保留该行的测量数据和验收状态。算子实现变更后在对应模型表中保留前后测量和验收结果。旧 `val.md/xlsx` 的记录已按模型 alias 迁入对应目录。
 

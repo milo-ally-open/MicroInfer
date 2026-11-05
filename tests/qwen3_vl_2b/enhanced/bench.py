@@ -1,0 +1,97 @@
+"""Inference 实现 Bench：测量固定图文请求完整 Prefill + Decode。"""
+
+import json
+import os
+import statistics
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+root = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(root / "src"))
+config_path = root / "tests/qwen3_vl_2b/enhanced/profiles/inference.yml"
+model_config_path = root / "src/inference/models/qwen3_vl_2b/profiles/model.yml"
+network_config_path = root / "src/inference/models/qwen3_vl_2b/profiles/network.yml"
+os.environ.update({"INFERENCE_PROJECT_ROOT": str(root), "INFERENCE_MODEL_ALIAS": "qwen3-vl-2b", "INFERENCE_MODEL_MANIFEST": str(model_config_path), "INFERENCE_CONFIG": str(config_path), "INFERENCE_NETWORK_CONFIG": str(network_config_path), "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
+
+import torch
+import yaml
+from PIL import Image
+from transformers import AutoProcessor
+
+from inference.engine.sequence import ExecutionPhase, ScheduledWorkItem
+from inference.models.qwen3_vl_2b.runtime import create_runtime
+
+config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+model_path = (root / config["runtime"]["local_model_path"]).resolve()
+revision = str(config["model"]["revision"])
+alias = "qwen3-vl-2b"
+image_path = root / "test.jpg"
+prompt = "请简要描述图片中的主要内容。"
+max_new_tokens, warmups, iterations = 2, 1, 3
+cuda = torch.cuda.is_available()
+device = torch.device("cuda:0" if cuda else "cpu")
+baseline = json.loads((root / "artifacts/qwen3_vl_2b/baseline/test.json").read_text(encoding="utf-8"))["result"]["generated_token_ids"]
+processor = AutoProcessor.from_pretrained(model_path, revision=revision, local_files_only=True)
+image = Image.open(image_path).convert("RGB")
+messages = [{"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": prompt}]}]
+cpu_inputs = processor.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_dict=True, return_tensors="pt")
+cpu_inputs = {key: value for key, value in cpu_inputs.items() if key != "token_type_ids"}
+cpu_inputs.setdefault("attention_mask", torch.ones_like(cpu_inputs["input_ids"]))
+runtime = create_runtime()
+
+print("================= enhanced =================")
+try:
+    runtime.load()
+    runner = runtime.model_runner
+    inputs = {key: value.to(device=runner.input_device, dtype=runner.model.dtype) if key in {"pixel_values", "pixel_values_videos"} and value.is_floating_point() else value.to(runner.input_device) if isinstance(value, torch.Tensor) else value for key, value in cpu_inputs.items()}
+    prompt_tokens = int(inputs["input_ids"].shape[-1])
+    block_size = int(config["engine"]["kv_cache"]["block_size_tokens"])
+    block_count = (prompt_tokens + max_new_tokens + block_size - 1) // block_size
+    options = runtime.model_adapter.generation_options({"max_tokens": max_new_tokens, "temperature": 0})
+    runner.reset_peak_memory()
+    latencies_ms, token_counts, matches = [], [], []
+    for index in range(warmups + iterations):
+        request_id = f"qwen3-vl-enhanced-bench-{index}"
+        runner.begin_generation(request_id, inputs, options)
+        runner.bind_generation_cache(request_id, tuple(range(block_count)))
+        if cuda:
+            torch.cuda.synchronize(device)
+        started = time.perf_counter()
+        with torch.inference_mode():
+            runner.execute_batch((ScheduledWorkItem(request_id, ExecutionPhase.PREFILL, prompt_tokens),))
+            runner.execute_batch((ScheduledWorkItem(request_id, ExecutionPhase.DECODE, 1),))
+        if cuda:
+            torch.cuda.synchronize(device)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        generated, _ = runner.finish_generation(request_id)
+        generated_ids = generated.detach().cpu().reshape(-1).tolist()
+        matches.append(generated_ids == baseline)
+        if index >= warmups:
+            latencies_ms.append(elapsed_ms)
+            token_counts.append(len(generated_ids))
+    metrics = {
+        "warmup_iterations": warmups, "measured_iterations": iterations, "latency_ms_samples": latencies_ms,
+        "latency_ms_median": statistics.median(latencies_ms),
+        "tokens_per_second_median": statistics.median(count / (ms / 1000) for count, ms in zip(token_counts, latencies_ms)),
+        "baseline_test_token_match_all_runs": all(matches),
+        "peak_cuda_memory_bytes": runner.peak_memory()["peak_allocated"], "peak_cuda_reserved_bytes": runner.peak_memory()["peak_reserved"],
+    }
+    report = {
+        "schema_version": 1, "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
+        "model": {"name": "qwen3_vl_2b", "alias": alias, "repo_id": "Qwen/Qwen3-VL-2B-Instruct", "revision": revision},
+        "implementation": "enhanced", "task": "bench",
+        "environment": {"device": str(device), "gpu_name": torch.cuda.get_device_name(0) if cuda else "CPU", "torch_version": torch.__version__, "cuda_version": torch.version.cuda, "dtype": str(runner.model.dtype)},
+        "workload": {"input_type": "image", "prompt_tokens": prompt_tokens, "max_new_tokens": max_new_tokens},
+        "result": {"status": "passed" if all(matches) else "failed", "baseline_token_match_all_runs": all(matches)}, "metrics": metrics, "operator_records": [], "trace_path": None,
+    }
+    output_path = root / "artifacts/qwen3_vl_2b/enhanced/bench.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"latency_median_ms: {metrics['latency_ms_median']:.3f}")
+    print(f"throughput_median_tokens_s: {metrics['tokens_per_second_median']:.3f}")
+    print("json:", output_path)
+    if not all(matches): raise AssertionError(f"Bench 输出与 baseline Test token 不一致，记录见 {output_path}")
+finally:
+    runtime.close()

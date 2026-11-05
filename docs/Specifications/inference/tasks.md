@@ -1,5 +1,7 @@
 # 实施与验收任务：Inference Engine 五层架构
 
+本表包含已完成工作的历史状态，部分早期条目记录了后来移除的代理路径。T-39 明确当前仓库已不再包含 Go Gateway、其测试、部署或发布流程；历史数据仅用于追溯，不表示当前功能。
+
 > 提案：[proposal.md](proposal.md)｜规格：[spec.md](spec.md)｜设计：[design.md](design.md)
 > 任务状态涵盖五层引擎、模型接入、REQ-14 标准工具调用、REQ-16 算子分析、REQ-17 Qwen3 Engine 组件重构和 REQ-22 撤除单模型手写 CUDA 接入；模型分析、优化和验收记录按 alias 分别维护在根目录 `analysis/{model_alias}/`。T-32 与 CUDA 性能数据是历史记录，不代表当前实现。
 
@@ -53,6 +55,9 @@
 
 - [x] **T-37 撤除 Qwen3 单模型手写 CUDA Attention 接入** — 范围：Qwen3 CUDA extension 目录、KV Cache/Attention/Runner 接口、YAML 与 health 字段、组件 profile 入口、Inference/测试文档和规格；交付：移除自定义 CUDA 源码与构建脚本及 `attention_backend` 选择/回报接口，Qwen3 保留 PyTorch Attention 与实体 KV page pool，历史测量继续留文件；覆盖：REQ-22 / AC-22.1、AC-22.2、AC-22.3；依赖：T-32；状态：静态检查确认源码、配置、运行时接口、打包清单和文档已更新，原 kernel 目录及编译产物不存在；未运行模型/GPU功能测试。
 
+- [x] **T-38 将模型 API 鉴权收敛至 Python FastAPI** — 范围：Network API Key／tenant 限流／Live 句柄、Launcher 预检、双模型 `profiles/network.yml`、根目录直连客户端、部署及模型接入文档；交付：`inference serve --model <alias>` 直接提供 Bearer 保护的 `/v1/*` 模型 API；仓库外 JSON 密钥文件映射 key ID 与 tenant，FastAPI 统一执行鉴权和进程内限流；Live 句柄由 FastAPI 签名；覆盖：REQ-23 / AC-23.1–AC-23.5；依赖：T-34、T-35；状态：代码及文档已完成；旧 Go Gateway 的移除由 T-39 处理。
+- [x] **T-39 从仓库移除 Go Gateway** — 范围：Go 服务及独立集成测试、Gateway Docker 部署、专属 GitHub Actions、Gateway 规格与操作文档、架构说明；交付：FastAPI 是仓库唯一模型 API 服务入口，控制面由独立项目实现；不再保留 Gateway 的可执行代码、部署或发布路径；状态：完成；源码、测试、容器与工作流文件已删除，活跃 README／教程／测试说明已同步。
+
 ## 本次验收纪录
 
 | 检查 | 状态 | 证据／限制 |
@@ -63,6 +68,7 @@
 | REQ-21 Engine client 显式 YAML 配置 | 通过 | Qwen3 插件工厂默认 manifest 配置、显式 inference/network YAML、实际 timeout 覆盖、环境路径传递、缺失文件与非法 YAML 边界均通过；未启动 Engine 或加载权重。Python 编译、双模型 Launcher validate、Spec validator（21 REQ、105 AC、36 T）和 `git diff --check` 通过。 |
 | REQ-22 撤除 Qwen3 单模型 CUDA 接入 | 静态检查通过；未运行模型测试 | 当前 Qwen3 包无 `kernels/` 目录或 `.so/.pyd`；源码、配置、health schema 与 profile 入口未发现 `attention_backend`、`kernels/cuda` 或 `paged_decode`；打包清单已清除旧路径，历史测量仍保留。 |
 | REQ-20 Processors 跨模型组件 | 通过 | `src/inference/media/` 已移除，源码、Network、Engine 与 Mage-VL 的共用处理器 imports 均使用 `inference.processors`；`compileall`、双模型 Launcher 预检、Processor/Network 导入 smoke、Spec validator（20 REQ、101 AC、35 T）及 `git diff --check` 通过。未启动服务或加载 checkpoint。 |
+| REQ-23 FastAPI 直接服务与 API Key 鉴权 | 完成 | `python -m inference.network.auth` 自检通过；FastAPI `/v1/models` 在无 key 时返回 401、有效 key 时返回 `qwen3-vl-2b`；双模型 `launcher list/validate`、`compileall` 与 `git diff --check` 通过。未加载 checkpoint、启动模型服务或执行 GPU 推理。Gateway 已由 T-39 从仓库移除。 |
 | REQ-19 Network 平面模块 | 通过 | `compileall`、两个模型 Launcher `list/validate`、Launcher `_load_service_app()` 实际导入 `inference.network.service`（未启动 Engine）、Network OpenAPI path/schema smoke、双模型组件入口、Spec validator（19 REQ、97 AC、34 T）及 `git diff --check` 通过；没有加载模型权重或启动 API/Gateway 服务。 |
 | REQ-18 Engine 根目录模块 | 通过 | `compileall` 与 AST 解析、双模型 `inference launcher list/validate`、扁平 Engine／Qwen 插件 factory imports 和无权重 Sequence/BlockManager/Scheduler smoke 通过；Qwen3 9 个组件入口、Mage-VL 组件回归通过。执行时约 3.3–3.5 GiB RAM 可用；未并行运行或启动服务。 |
 | Qwen3 CUDA extension 与数值 | 通过 | 使用 `MAX_JOBS=1` 编译，RTX 4060 Laptop；float16/bfloat16 batch=3、context=[1,4,9]、非连续 page table、跨 block boundary 与非法 layer/page size 检查通过；profile 证据 `analysis/qwen3_0_6b/analysis.xlsx` QW-13/QW-14 及 `tests/qwen3_0_6b/results/qwen3_cuda_attention_profile.json`、`qwen3_pytorch_attention_profile.json`；同条件完整 Attention decode event 中位数 CUDA 10.813 ms、PyTorch 1.877 ms。 |
@@ -77,6 +83,6 @@
 | 标准默认组件 CPU 合成契约 | 通过 | `test_standard_text_runtime.py` 验证 chat template、文字能力拒绝、分块 prefill、独立 Cache、finish/cancel、Adapter token IDs 及无 import 预检；尚不代表真实模型兼容。 |
 | 标准默认 Runner 固定 snapshot smoke | 通过 | WSL CUDA 真实模型 smoke 验证 chat template、prefill、Cache 延续、逐 token 输出、增量／最终文本一致和取消释放；单请求、最多 2 个新 token，没有启动 API。 |
 | 标准 profile 完整 API 实机 smoke | 通过 | 临时 Registry 将 Qwen 设为 `standard` 并移除模型工厂；完整 API Server 真实加载 snapshot，`/health`、`/v1/models`、非流式／SSE、文本一致、finish usage 及 `[DONE]` 通过。直接 API 测试；不代表 Gateway 或 Mage 多模态整合。 |
-| 真实模型经 Gateway 端到端 | 功能验收通过；容量基线未创建 | 本次逐模型端到端测试：Qwen SSE 31 个文字 chunk；Mage 图片 SSE 8 个文字 chunk、视频上传／理解 25.91 秒，均透过 Go Gateway 和固定 snapshot。历史 Qwen 并发／取消、Mage Live／MediaMTX 与验收工作流见下方既有记录。三个性能样本只作功能性比较，不代表容量基线或 SLA。 |
-| Go Gateway 双模型 capability 测试（旧外置测试） | 历史通过纪录 | 精简前曾在 Windows Go toolchain 执行 Gateway mock 测试并通过；`tests/gateway/` 随三项测试入口整理移除，后续 Gateway 行为由逐模型端到端脚本实测。 |
-| REQ-14 Qwen3 tool calling | Inference 本地模型验收通过；Gateway 整合待验收 | 固定 snapshot 的 `/v1/chat/completions` 非流式工具调用完成客户端执行和 tool result 往返；SSE 返回 `finish_reason=tool_calls` 与标准 `delta.tool_calls`。Gateway Go `build` 通过，但 Windows Application Control 阻止启动 Gateway 可执行文件，因此未声称 Gateway 端到端通过。 |
+| 真实模型经旧代理端到端 | 历史功能验收；当前不适用 | 旧版逐模型验收曾记录 Qwen SSE 31 个文字 chunk；Mage 图片 SSE 8 个文字 chunk、视频上传／理解 25.91 秒。该代理现已删除，这些结果不能代表当前直连 FastAPI 的端到端验收。性能样本不构成容量基线或 SLA。 |
+| Go Gateway 双模型能力测试 | 历史记录；测试与实现已删除 | 精简前曾在 Windows Go toolchain 执行 Gateway mock 测试并通过；不再作为当前仓库的构建、部署或验收入口。 |
+| REQ-14 Qwen3 tool calling | Inference 本地模型验收通过；旧代理验证仅作历史记录 | 固定 snapshot 的 `/v1/chat/completions` 非流式工具调用完成客户端执行和 tool result 往返；SSE 返回 `finish_reason=tool_calls` 与标准 `delta.tool_calls`。旧 Gateway 可执行文件曾受 Windows Application Control 阻止启动；当前调用入口为 FastAPI。 |

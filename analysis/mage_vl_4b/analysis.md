@@ -1,4 +1,6 @@
-# Mage-VL Gateway 验收
+# Mage-VL 服务验收（历史记录）
+
+以下数据来自旧版 Gateway 转发路径，仅作为历史验收证据。Gateway 已从仓库移除；这些记录不描述当前部署拓扑或当前 FastAPI 直连性能。
 
 本目录保存 Mage-VL 的问题、解决方案和验收效果；表格中的编号对应 [analysis.xlsx](analysis.xlsx) 里的请求和测量数据。
 

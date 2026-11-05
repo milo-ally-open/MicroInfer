@@ -6,7 +6,7 @@ runtime_factory: inference.models.mage_vl_4b.runtime:create_runtime
 inference_config: inference.yml
 network_config: network.yml
 api:
-  model_id: microsoft/Mage-VL
+  model_id: mage-vl-4b
   capabilities:
     chat_inputs: [image]
     streaming: true

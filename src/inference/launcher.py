@@ -28,7 +28,9 @@ PROTECTED_ENV = {
     "HF_HUB_DISABLE_XET",
     "HF_HUB_DOWNLOAD_TIMEOUT",
     "INFERENCE_CONFIG",
+    "INFERENCE_API_KEYS_FILE",
     "INFERENCE_NETWORK_CONFIG",
+    "INFERENCE_SESSION_HMAC_KEYS",
     "INFERENCE_PROJECT_ROOT",
     "INFERENCE_MODEL_ALIAS",
     "INFERENCE_MODEL_MANIFEST",
@@ -79,8 +81,31 @@ def _validate_model_manifest(alias: str, model: dict[str, Any]) -> dict[str, Any
         str(model.get("network_config", "")), "Network configuration", base_dir=manifest_path.parent
     )
     network_config = _read_yaml(network_path)
-    if not isinstance(network_config.get("api"), dict):
+    network_api = network_config.get("api")
+    if not isinstance(network_api, dict):
         raise ValueError("network configuration must contain an api mapping.")
+    auth_settings = network_api.get("auth")
+    if not isinstance(auth_settings, dict):
+        raise ValueError("network.api.auth must configure API key authentication.")
+    api_keys_file_env = auth_settings.get("api_keys_file_env")
+    if not isinstance(api_keys_file_env, str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", api_keys_file_env):
+        raise ValueError("network.api.auth.api_keys_file_env must name an environment variable.")
+    if api_keys_file_env in PROTECTED_ENV - {"INFERENCE_API_KEYS_FILE"}:
+        raise ValueError("network.api.auth.api_keys_file_env conflicts with a protected runtime variable.")
+    requests_per_second = auth_settings.get("requests_per_second", 5)
+    burst = auth_settings.get("burst", 10)
+    if (
+        isinstance(requests_per_second, bool)
+        or not isinstance(requests_per_second, (int, float))
+        or not math.isfinite(requests_per_second)
+        or requests_per_second <= 0
+        or type(burst) is not int
+        or burst < 1
+    ):
+        raise ValueError("network.api.auth requires a positive requests_per_second and burst.")
+    session_handle_ttl = auth_settings.get("session_handle_ttl_seconds", 3660)
+    if type(session_handle_ttl) is not int or session_handle_ttl < 1:
+        raise ValueError("network.api.auth.session_handle_ttl_seconds must be a positive integer.")
     runtime_factory = model.get("runtime_factory")
     if not isinstance(runtime_factory, str) or not runtime_factory.strip():
         raise ValueError("Every model manifest must define runtime_factory in model.yml.")
@@ -107,6 +132,16 @@ def _validate_model_manifest(alias: str, model: dict[str, Any]) -> dict[str, Any
     for name in ("streaming", "tool_calling", "video_upload", "live_video"):
         if not isinstance(capabilities.get(name), bool):
             raise ValueError(f"api.capabilities.{name} must be a boolean.")
+    session_hmac_keys_env = auth_settings.get("session_hmac_keys_env")
+    if session_hmac_keys_env is not None and (
+        not isinstance(session_hmac_keys_env, str)
+        or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", session_hmac_keys_env)
+        or session_hmac_keys_env == api_keys_file_env
+        or session_hmac_keys_env in PROTECTED_ENV - {"INFERENCE_SESSION_HMAC_KEYS"}
+    ):
+        raise ValueError("network.api.auth.session_hmac_keys_env must name a distinct, unprotected variable.")
+    if capabilities["live_video"] and not session_hmac_keys_env:
+        raise ValueError("live_video requires network.api.auth.session_hmac_keys_env.")
     output_mode = capabilities.get("output_mode")
     if output_mode not in {"text_delta", "token_ids"}:
         raise ValueError("api.capabilities.output_mode must be text_delta or token_ids.")
@@ -386,7 +421,7 @@ def main() -> None:
     commands.add_parser("list", help="列出模型目录中的 manifest 与能力。")
     validate_parser = commands.add_parser("validate", help="预检模型 manifest、配置和能力；不加载权重或初始化 GPU。")
     validate_parser.add_argument("--model", action="append", help="指定模型别名；可重复。默认检查全部模型。")
-    start_parser = commands.add_parser("start", help="启动指定模型 manifest 的推理 API 服务。")
+    start_parser = commands.add_parser("serve", aliases=["start"], help="直接启动指定模型的对外 FastAPI 服务。")
     start_parser.add_argument("--model", required=True, help="要启动的模型 manifest alias。")
     start_parser.add_argument("--inference-config", type=Path, help="覆盖模型 manifest 中的推理配置 YAML。")
     start_parser.add_argument("--network-config", type=Path, help="覆盖模型 manifest 中的网络配置 YAML。")
